@@ -100,6 +100,11 @@ const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
 const SKY_TEXTURE_WIDTH = 256;
 const SKY_TEXTURE_HEIGHT = 128;
 const BYTES_PER_RGBA_PIXEL = 4;
+const BYTES_PER_FLOAT_RGBA_PIXEL = 16;
+const TRACE_ACCUMULATION_TEXTURE_TRANSFERS_PER_SAMPLE = 2;
+const BYTES_PER_MEGABYTE = 1000000;
+const BYTES_PER_GIGABYTE = 1000000000;
+const BYTES_PER_TERABYTE = 1000000000000;
 const UINT32_RECIPROCAL = 1 / 4294967296;
 const HALTON_BASE_3_RECIPROCAL = 1 / 3;
 const SHADER_EPSILON = '0.0001';
@@ -704,6 +709,24 @@ const formatBenchmarkRateValue = (value) => {
   return compactValue === '...' ? compactValue : `${compactValue}/s`;
 };
 
+const formatBandwidthValue = (bytesPerSecond) => {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+    return '...';
+  }
+  if (bytesPerSecond >= BYTES_PER_TERABYTE) {
+    return `${(bytesPerSecond / BYTES_PER_TERABYTE).toFixed(2)} TB/s`;
+  }
+  if (bytesPerSecond >= BYTES_PER_GIGABYTE) {
+    const gigabytesPerSecond = bytesPerSecond / BYTES_PER_GIGABYTE;
+    return `${gigabytesPerSecond >= 100 ? Math.round(gigabytesPerSecond) : gigabytesPerSecond.toFixed(1)} GB/s`;
+  }
+  if (bytesPerSecond >= BYTES_PER_MEGABYTE) {
+    const megabytesPerSecond = bytesPerSecond / BYTES_PER_MEGABYTE;
+    return `${megabytesPerSecond >= 100 ? Math.round(megabytesPerSecond) : megabytesPerSecond.toFixed(1)} MB/s`;
+  }
+  return `${Math.round(bytesPerSecond)} B/s`;
+};
+
 const formatFramesPerSecondValue = (value) => {
   if (!Number.isFinite(value) || value <= 0) {
     return '...';
@@ -728,6 +751,11 @@ const calculatePerformanceScore = (benchmarkSnapshot) => {
 
   const rayScore = benchmarkSnapshot.activeRaysPerSecond / PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT;
   return Math.max(0, Math.round(rayScore / PERFORMANCE_SCORE_QUANTUM) * PERFORMANCE_SCORE_QUANTUM);
+};
+
+const calculateTraceMemoryBytesPerSample = (webGlContext, textureType) => {
+  const bytesPerPixel = textureType === webGlContext.FLOAT ? BYTES_PER_FLOAT_RGBA_PIXEL : BYTES_PER_RGBA_PIXEL;
+  return bytesPerPixel * TRACE_ACCUMULATION_TEXTURE_TRANSFERS_PER_SAMPLE;
 };
 
 const writeIdentityMat4 = (matrix) => {
@@ -2245,6 +2273,7 @@ const createGpuBenchmarkTimer = (webGlContext) => {
 
 const createBenchmarkSnapshot = () => ({
   activeRaysPerSecond: 0,
+  estimatedRayBandwidthBytesPerSecond: 0,
   activeRaysPerFrame: 0,
   pathRayBudgetPerFrame: 0,
   samplesPerFrame: 0,
@@ -2259,9 +2288,10 @@ const createBenchmarkSnapshot = () => ({
 });
 
 class RollingBenchmarkWindow {
-  constructor() {
+  constructor(traceSampleBytes) {
     this.samples = [];
     this.sampleStartIndex = 0;
+    this.traceSampleBytes = traceSampleBytes;
     this.traceSampleCount = 0;
     this.frameSampleCount = 0;
     this.totalActiveRays = 0;
@@ -2270,6 +2300,11 @@ class RollingBenchmarkWindow {
     this.totalTraceMilliseconds = 0;
     this.totalFrameMilliseconds = 0;
     this.measurementSource = 'warming-up';
+  }
+
+  setTraceSampleBytes(traceSampleBytes) {
+    this.traceSampleBytes = traceSampleBytes;
+    return returnSuccess(undefined);
   }
 
   compactSamplesIfNeeded() {
@@ -2322,6 +2357,8 @@ class RollingBenchmarkWindow {
     benchmarkSnapshot.activeRaysPerSecond = this.totalTraceMilliseconds > 0
       ? this.totalActiveRays / (this.totalTraceMilliseconds * 0.001)
       : 0;
+    benchmarkSnapshot.estimatedRayBandwidthBytesPerSecond =
+      benchmarkSnapshot.activeRaysPerSecond * this.traceSampleBytes;
     benchmarkSnapshot.rollingSamplesPerFrame = this.totalRenderedSamples / traceSampleCount;
     benchmarkSnapshot.rollingTraceMilliseconds = this.totalTraceMilliseconds / traceSampleCount;
     benchmarkSnapshot.scoreSampleCount = this.traceSampleCount;
@@ -2473,8 +2510,9 @@ class PathTracer {
     this.sampleUniformValues = Object.create(null);
     this.sampleUniformValues.rayJitterX = 0;
     this.sampleUniformValues.rayJitterY = 0;
+    this.traceSampleBytes = calculateTraceMemoryBytesPerSample(webGlContext, textureType);
     this.benchmarkSnapshot = createBenchmarkSnapshot();
-    this.benchmarkWindow = new RollingBenchmarkWindow();
+    this.benchmarkWindow = new RollingBenchmarkWindow(this.traceSampleBytes);
     this.tracerFrameUniformLocations = Object.create(null);
     this.tracerSampleUniformLocations = Object.create(null);
     cacheNamedUniformLocations(
@@ -3068,6 +3106,11 @@ class PathTracer {
       !this.hasCheckedFloatFramebuffer
     ) {
       this.textureType = webGlContext.UNSIGNED_BYTE;
+      this.traceSampleBytes = calculateTraceMemoryBytesPerSample(webGlContext, this.textureType);
+      const [, benchmarkBytesError] = this.benchmarkWindow.setTraceSampleBytes(this.traceSampleBytes);
+      if (benchmarkBytesError) {
+        return returnFailure(benchmarkBytesError.code, benchmarkBytesError.message, benchmarkBytesError.details);
+      }
       this.hasCheckedFloatFramebuffer = true;
       this.hasDisplayHistory = false;
       this.hasValidatedRenderFramebuffer = false;
@@ -3305,7 +3348,7 @@ class PathTracer {
 
   resetBenchmark() {
     this.benchmarkSnapshot = createBenchmarkSnapshot();
-    this.benchmarkWindow = new RollingBenchmarkWindow();
+    this.benchmarkWindow = new RollingBenchmarkWindow(this.traceSampleBytes);
     return returnSuccess(undefined);
   }
 }
@@ -3499,6 +3542,7 @@ class BenchmarkDisplay {
   constructor(
     performanceScoreElement,
     raysPerSecondElement,
+    rayBandwidthElement,
     perceptualFramesPerSecondElement,
     raysPerFrameElement,
     samplesPerFrameElement,
@@ -3507,6 +3551,7 @@ class BenchmarkDisplay {
   ) {
     this.performanceScoreElement = performanceScoreElement;
     this.raysPerSecondElement = raysPerSecondElement;
+    this.rayBandwidthElement = rayBandwidthElement;
     this.perceptualFramesPerSecondElement = perceptualFramesPerSecondElement;
     this.raysPerFrameElement = raysPerFrameElement;
     this.samplesPerFrameElement = samplesPerFrameElement;
@@ -3538,6 +3583,14 @@ class BenchmarkDisplay {
     );
     if (raysPerSecondError) {
       return returnFailure(raysPerSecondError.code, raysPerSecondError.message, raysPerSecondError.details);
+    }
+
+    const [, rayBandwidthError] = writeElementTextIfChanged(
+      this.rayBandwidthElement,
+      formatBandwidthValue(benchmarkSnapshot.estimatedRayBandwidthBytesPerSecond)
+    );
+    if (rayBandwidthError) {
+      return returnFailure(rayBandwidthError.code, rayBandwidthError.message, rayBandwidthError.details);
     }
 
     const [, perceptualFramesPerSecondError] = writeElementTextIfChanged(
@@ -5681,6 +5734,18 @@ const createPathTracingApplication = async (documentObject) => {
     );
   }
 
+  const [benchmarkRayBandwidthElement, benchmarkRayBandwidthError] = readRequiredElement(
+    documentObject,
+    'benchmark-ray-bandwidth'
+  );
+  if (benchmarkRayBandwidthError) {
+    return returnFailure(
+      benchmarkRayBandwidthError.code,
+      benchmarkRayBandwidthError.message,
+      benchmarkRayBandwidthError.details
+    );
+  }
+
   const [benchmarkPerceptualFramesPerSecondElement, benchmarkPerceptualFramesPerSecondError] = readRequiredElement(
     documentObject,
     'benchmark-perceptual-fps'
@@ -6121,6 +6186,7 @@ const createPathTracingApplication = async (documentObject) => {
   const benchmarkDisplay = new BenchmarkDisplay(
     benchmarkPerformanceScoreElement,
     benchmarkRaysPerSecondElement,
+    benchmarkRayBandwidthElement,
     benchmarkPerceptualFramesPerSecondElement,
     benchmarkRaysPerFrameElement,
     benchmarkSamplesPerFrameElement,

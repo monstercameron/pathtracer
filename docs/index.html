@@ -310,13 +310,13 @@ input[type="range"] {
 
 .benchmark-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .benchmark-metric {
   min-width: 0;
-  padding: 9px 10px;
+  padding: 9px 8px;
   background: #1f2328;
   border: 1px solid #191c20;
   border-radius: 5px;
@@ -333,7 +333,7 @@ input[type="range"] {
 .benchmark-metric strong {
   overflow: hidden;
   color: #ffffff;
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -606,6 +606,13 @@ a {
       <div class="benchmark-metric">
         <strong id="benchmark-rays-per-second">...</strong>
         <span>Active rays/s</span>
+      </div>
+      <div
+        class="benchmark-metric"
+        title="Estimated memory traffic from rolling active rays per second."
+      >
+        <strong id="benchmark-ray-bandwidth">...</strong>
+        <span>Ray mem BW</span>
       </div>
       <div class="benchmark-metric">
         <strong id="benchmark-perceptual-fps">...</strong>
