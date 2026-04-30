@@ -204,6 +204,16 @@ input[type="range"] {
   text-align: left;
 }
 
+.presets .reset-all {
+  grid-column: 1 / -1;
+  text-align: center;
+  background: #5a4850;
+}
+
+.presets .reset-all:hover {
+  background: #66515b;
+}
+
 .color-reset {
   width: 100%;
   margin-top: 2px;
@@ -365,7 +375,7 @@ a {
     <div id="error"><noscript>Please enable JavaScript.</noscript></div>
 
     <div id="controls">
-      <button class="camera-playback" data-action="toggle-camera-playback" aria-pressed="true">Pause Camera</button>
+      <button id="camera-playback" class="camera-playback" data-action="toggle-camera-playback" aria-pressed="true">Pause Camera</button>
       <div id="gpu-status" class="gpu-status" role="status" aria-live="polite">
         <strong>GPU</strong>
         <span id="gpu-renderer">Requesting high-performance adapter...</span>
@@ -415,7 +425,7 @@ a {
             Light intensity
             <span id="light-intensity-value" class="slider-value">0.50</span>
           </label>
-          <button class="light-cycle-toggle" data-action="toggle-light-cycle" aria-pressed="false">Cycle Light</button>
+          <button id="light-cycle" class="light-cycle-toggle" data-action="toggle-light-cycle" aria-pressed="false">Cycle Light</button>
         </div>
 
         <div class="field slider-field">
@@ -445,25 +455,25 @@ a {
         <div class="field slider-field">
           <label for="rays-per-pixel">
             Rays per pixel
-            <span id="rays-per-pixel-value" class="slider-value">32</span>
+            <span id="rays-per-pixel-value" class="slider-value">12</span>
           </label>
-          <input id="rays-per-pixel" type="range" min="1" max="32" step="1" value="32">
+          <input id="rays-per-pixel" type="range" min="1" max="32" step="1" value="12">
         </div>
 
         <div class="field slider-field">
           <label for="temporal-blend-frames">
             Temporal AA
-            <span id="temporal-blend-frames-value" class="slider-value">32</span>
+            <span id="temporal-blend-frames-value" class="slider-value">16</span>
           </label>
-          <input id="temporal-blend-frames" type="range" min="1" max="32" step="1" value="32">
+          <input id="temporal-blend-frames" type="range" min="1" max="32" step="1" value="16">
         </div>
 
         <div class="field slider-field">
           <label for="denoiser-strength">
             Denoiser
-            <span id="denoiser-strength-value" class="slider-value">0.80</span>
+            <span id="denoiser-strength-value" class="slider-value">0.65</span>
           </label>
-          <input id="denoiser-strength" type="range" min="0" max="1" step="0.05" value="0.8">
+          <input id="denoiser-strength" type="range" min="0" max="1" step="0.05" value="0.65">
         </div>
       </div>
 
@@ -548,9 +558,9 @@ a {
         <div class="field slider-field">
           <label for="bloom-strength">
             Bloom
-            <span id="bloom-strength-value" class="slider-value">0.35</span>
+            <span id="bloom-strength-value" class="slider-value">0.25</span>
           </label>
-          <input id="bloom-strength" type="range" min="0" max="2" step="0.05" value="0.35">
+          <input id="bloom-strength" type="range" min="0" max="2" step="0.05" value="0.25">
         </div>
 
         <div class="field slider-field">
@@ -564,9 +574,9 @@ a {
         <div class="field slider-field">
           <label for="glare-strength">
             Glare
-            <span id="glare-strength-value" class="slider-value">0.20</span>
+            <span id="glare-strength-value" class="slider-value">0.10</span>
           </label>
-          <input id="glare-strength" type="range" min="0" max="2" step="0.05" value="0.2">
+          <input id="glare-strength" type="range" min="0" max="2" step="0.05" value="0.1">
         </div>
       </div>
 
@@ -578,6 +588,7 @@ a {
         <button data-preset="cubeAndSpheres">Cube and Spheres</button>
         <button data-preset="tableAndChair">Table and Chair</button>
         <button data-preset="stacks">Stacks</button>
+        <button class="reset-all" data-action="reset-all">Reset All</button>
       </div>
     </div>
   </div>

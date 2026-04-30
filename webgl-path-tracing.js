@@ -44,10 +44,10 @@ const MAX_SKY_BRIGHTNESS = 5;
 const DEFAULT_LIGHT_BOUNCE_COUNT = 5;
 const MIN_LIGHT_BOUNCE_COUNT = 1;
 const MAX_LIGHT_BOUNCE_COUNT = 8;
-const DEFAULT_RAYS_PER_PIXEL = 32;
+const DEFAULT_RAYS_PER_PIXEL = 12;
 const MIN_RAYS_PER_PIXEL = 1;
 const MAX_RAYS_PER_PIXEL = 32;
-const DEFAULT_TEMPORAL_BLEND_FRAMES = 32;
+const DEFAULT_TEMPORAL_BLEND_FRAMES = 16;
 const MIN_TEMPORAL_BLEND_FRAMES = 1;
 const MAX_TEMPORAL_BLEND_FRAMES = 32;
 const DEFAULT_COLOR_EXPOSURE = 0;
@@ -74,16 +74,16 @@ const MAX_CAMERA_APERTURE = 0.2;
 const DEFAULT_MOTION_BLUR_STRENGTH = 0;
 const MIN_MOTION_BLUR_STRENGTH = 0;
 const MAX_MOTION_BLUR_STRENGTH = 0.95;
-const DEFAULT_DENOISER_STRENGTH = 0.8;
+const DEFAULT_DENOISER_STRENGTH = 0.65;
 const MIN_DENOISER_STRENGTH = 0;
 const MAX_DENOISER_STRENGTH = 1;
-const DEFAULT_BLOOM_STRENGTH = 0.35;
+const DEFAULT_BLOOM_STRENGTH = 0.25;
 const MIN_BLOOM_STRENGTH = 0;
 const MAX_BLOOM_STRENGTH = 2;
 const DEFAULT_BLOOM_THRESHOLD = 1;
 const MIN_BLOOM_THRESHOLD = 0;
 const MAX_BLOOM_THRESHOLD = 4;
-const DEFAULT_GLARE_STRENGTH = 0.2;
+const DEFAULT_GLARE_STRENGTH = 0.1;
 const MIN_GLARE_STRENGTH = 0;
 const MAX_GLARE_STRENGTH = 2;
 const ACTIVE_RAYS_PER_SAMPLE = CANVAS_SIZE * CANVAS_SIZE;
@@ -3359,6 +3359,12 @@ class PathTracer {
     this.hasDisplayHistory = false;
     return returnSuccess(undefined);
   }
+
+  resetBenchmark() {
+    this.benchmarkSnapshot = createBenchmarkSnapshot();
+    this.benchmarkWindow = new RollingBenchmarkWindow();
+    return returnSuccess(undefined);
+  }
 }
 
 class SelectionRenderer {
@@ -3645,6 +3651,8 @@ class UserInterfaceController {
     physicsWorld,
     applicationState,
     canvasElement,
+    cameraPlaybackButton,
+    lightCycleButton,
     focusPickButton,
     glossinessContainer,
     materialSelect,
@@ -3692,6 +3700,8 @@ class UserInterfaceController {
     this.physicsWorld = physicsWorld;
     this.applicationState = applicationState;
     this.canvasElement = canvasElement;
+    this.cameraPlaybackButton = cameraPlaybackButton;
+    this.lightCycleButton = lightCycleButton;
     this.focusPickButton = focusPickButton;
     this.glossinessContainer = glossinessContainer;
     this.materialSelect = materialSelect;
@@ -4501,6 +4511,227 @@ class UserInterfaceController {
     }
 
     return returnSuccess(undefined);
+  }
+
+  syncIntegerControlFromState(inputElement, valueElement, value) {
+    inputElement.value = String(value);
+    valueElement.textContent = String(value);
+    return returnSuccess(undefined);
+  }
+
+  syncNumberControlFromState(inputElement, valueElement, value, formatValue) {
+    inputElement.value = value.toFixed(2);
+    valueElement.textContent = formatValue(value);
+    return returnSuccess(undefined);
+  }
+
+  syncAllControlsFromState() {
+    const state = this.applicationState;
+    this.materialSelect.value = String(state.material);
+    this.environmentSelect.value = String(state.environment);
+    this.glossinessInput.value = state.glossiness.toFixed(2);
+    this.glossinessContainer.style.display = state.material === MATERIAL.GLOSSY ? 'inline' : 'none';
+    this.isGlossinessVisible = state.material === MATERIAL.GLOSSY;
+
+    const syncActions = [
+      () => this.syncIntegerControlFromState(this.lightBounceInput, this.lightBounceValueElement, state.lightBounceCount),
+      () => this.syncNumberControlFromState(
+        this.lightSizeInput,
+        this.lightSizeValueElement,
+        state.lightSize,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.fogDensityInput,
+        this.fogDensityValueElement,
+        state.fogDensity,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.skyBrightnessInput,
+        this.skyBrightnessValueElement,
+        state.skyBrightness,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncIntegerControlFromState(this.raysPerPixelInput, this.raysPerPixelValueElement, state.raysPerPixel),
+      () => this.syncIntegerControlFromState(
+        this.temporalBlendFramesInput,
+        this.temporalBlendFramesValueElement,
+        state.temporalBlendFrames
+      ),
+      () => this.syncNumberControlFromState(
+        this.denoiserStrengthInput,
+        this.denoiserStrengthValueElement,
+        state.denoiserStrength,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.cameraFocusDistanceInput,
+        this.cameraFocusDistanceValueElement,
+        state.cameraFocusDistance,
+        formatCameraEffectValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.cameraApertureInput,
+        this.cameraApertureValueElement,
+        state.cameraAperture,
+        formatCameraEffectValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.motionBlurInput,
+        this.motionBlurValueElement,
+        state.motionBlurStrength,
+        formatCameraEffectValue
+      ),
+      () => this.syncColorCorrectionControlFromState(
+        this.colorExposureInput,
+        this.colorExposureValueElement,
+        state.colorExposure,
+        formatSignedColorAdjustmentValue
+      ),
+      () => this.syncColorCorrectionControlFromState(
+        this.colorBrightnessInput,
+        this.colorBrightnessValueElement,
+        state.colorBrightness,
+        formatSignedColorAdjustmentValue
+      ),
+      () => this.syncColorCorrectionControlFromState(
+        this.colorContrastInput,
+        this.colorContrastValueElement,
+        state.colorContrast,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncColorCorrectionControlFromState(
+        this.colorSaturationInput,
+        this.colorSaturationValueElement,
+        state.colorSaturation,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncColorCorrectionControlFromState(
+        this.colorGammaInput,
+        this.colorGammaValueElement,
+        state.colorGamma,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.bloomStrengthInput,
+        this.bloomStrengthValueElement,
+        state.bloomStrength,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.bloomThresholdInput,
+        this.bloomThresholdValueElement,
+        state.bloomThreshold,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.glareStrengthInput,
+        this.glareStrengthValueElement,
+        state.glareStrength,
+        formatColorAdjustmentValue
+      ),
+      () => this.syncLightIntensityValue(),
+      () => updateCameraAutoRotationButton(this.cameraPlaybackButton, state.isCameraAutoRotating),
+      () => updateLightIntensityCycleButton(this.lightCycleButton, state.isLightIntensityCycling),
+      () => this.syncFocusPickMode()
+    ];
+
+    for (const syncAction of syncActions) {
+      const [, syncError] = syncAction();
+      if (syncError) {
+        return returnFailure(syncError.code, syncError.message, syncError.details);
+      }
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  resetApplicationStateToDefaults() {
+    const state = this.applicationState;
+    state.cameraAngleX = 0;
+    state.cameraAngleY = 0;
+    state.cameraDistance = INITIAL_CAMERA_DISTANCE;
+    writeVec3(state.eyePosition, 0, 0, 0);
+    writeVec3(state.lightPosition, 0.4, 0.5, -0.6);
+    state.nextObjectId = 0;
+    state.material = MATERIAL.DIFFUSE;
+    state.glossiness = 0.6;
+    state.environment = ENVIRONMENT.YELLOW_BLUE_CORNELL_BOX;
+    state.lightIntensity = DEFAULT_LIGHT_INTENSITY;
+    state.lightSize = DEFAULT_LIGHT_SIZE;
+    state.fogDensity = DEFAULT_FOG_DENSITY;
+    state.skyBrightness = DEFAULT_SKY_BRIGHTNESS;
+    state.isLightIntensityCycling = false;
+    state.lightIntensityCycleDirection = 1;
+    state.lightBounceCount = DEFAULT_LIGHT_BOUNCE_COUNT;
+    state.raysPerPixel = DEFAULT_RAYS_PER_PIXEL;
+    state.temporalBlendFrames = DEFAULT_TEMPORAL_BLEND_FRAMES;
+    state.colorExposure = DEFAULT_COLOR_EXPOSURE;
+    state.colorBrightness = DEFAULT_COLOR_BRIGHTNESS;
+    state.colorContrast = DEFAULT_COLOR_CONTRAST;
+    state.colorSaturation = DEFAULT_COLOR_SATURATION;
+    state.colorGamma = DEFAULT_COLOR_GAMMA;
+    state.cameraFocusDistance = DEFAULT_CAMERA_FOCUS_DISTANCE;
+    state.cameraAperture = DEFAULT_CAMERA_APERTURE;
+    state.motionBlurStrength = DEFAULT_MOTION_BLUR_STRENGTH;
+    state.denoiserStrength = DEFAULT_DENOISER_STRENGTH;
+    state.bloomStrength = DEFAULT_BLOOM_STRENGTH;
+    state.bloomThreshold = DEFAULT_BLOOM_THRESHOLD;
+    state.glareStrength = DEFAULT_GLARE_STRENGTH;
+    state.isRotatingCamera = false;
+    state.isPickingFocus = false;
+    state.isPointerDown = false;
+    state.isCameraAutoRotating = true;
+    state.cameraAutoRotationSpeed = CAMERA_AUTO_ROTATION_SPEED;
+    state.previousPointerX = 0;
+    state.previousPointerY = 0;
+    return returnSuccess(undefined);
+  }
+
+  resetAllToDefaults() {
+    const [, cancelError] = this.cancelActivePointerInteraction();
+    if (cancelError) {
+      return returnFailure(cancelError.code, cancelError.message, cancelError.details);
+    }
+
+    const [, stateError] = this.resetApplicationStateToDefaults();
+    if (stateError) {
+      return returnFailure(stateError.code, stateError.message, stateError.details);
+    }
+
+    const [, lightTranslationError] = this.lightObject.setTemporaryTranslation(ORIGIN_VECTOR);
+    if (lightTranslationError) {
+      return returnFailure(lightTranslationError.code, lightTranslationError.message, lightTranslationError.details);
+    }
+
+    this.selectionRenderer.selectedObject = null;
+    this.isMovingSelection = false;
+    this.previousCameraAngleX = Number.NaN;
+    this.previousCameraAngleY = Number.NaN;
+    this.previousCameraDistance = Number.NaN;
+
+    const [, syncError] = this.syncAllControlsFromState();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    const [sceneObjects, sceneError] = createSphereColumnSceneObjects(this.applicationState);
+    if (sceneError) {
+      return returnFailure(sceneError.code, sceneError.message, sceneError.details);
+    }
+
+    const [, sceneSetError] = this.setSceneObjects(sceneObjects);
+    if (sceneSetError) {
+      return returnFailure(sceneSetError.code, sceneSetError.message, sceneSetError.details);
+    }
+
+    const [, benchmarkError] = this.selectionRenderer.pathTracer.resetBenchmark();
+    if (benchmarkError) {
+      return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
+    }
+
+    return this.selectionRenderer.pathTracer.clearSamples();
   }
 
   toggleCameraAutoRotation(toggleButton) {
@@ -5343,6 +5574,9 @@ const attachControlHandlers = (controlsElement, errorElement, uiController) => {
     if (actionName === 'reset-color-correction') {
       return runAndDisplayError(errorElement, () => uiController.resetColorCorrection());
     }
+    if (actionName === 'reset-all') {
+      return runAndDisplayError(errorElement, () => uiController.resetAllToDefaults());
+    }
     if (presetName) {
       const presetFactory = scenePresetFactories[presetName];
       if (!presetFactory) {
@@ -5468,6 +5702,16 @@ const createPathTracingApplication = async (documentObject) => {
   const [controlsElement, controlsElementError] = readRequiredElement(documentObject, 'controls');
   if (controlsElementError) {
     return returnFailure(controlsElementError.code, controlsElementError.message, controlsElementError.details);
+  }
+
+  const [cameraPlaybackButton, cameraPlaybackButtonError] = readRequiredButton(documentObject, 'camera-playback');
+  if (cameraPlaybackButtonError) {
+    return returnFailure(cameraPlaybackButtonError.code, cameraPlaybackButtonError.message, cameraPlaybackButtonError.details);
+  }
+
+  const [lightCycleButton, lightCycleButtonError] = readRequiredButton(documentObject, 'light-cycle');
+  if (lightCycleButtonError) {
+    return returnFailure(lightCycleButtonError.code, lightCycleButtonError.message, lightCycleButtonError.details);
   }
 
   const [benchmarkPerformanceScoreElement, benchmarkPerformanceScoreError] = readRequiredElement(
@@ -5886,6 +6130,8 @@ const createPathTracingApplication = async (documentObject) => {
     physicsWorld,
     applicationState,
     canvasElement,
+    cameraPlaybackButton,
+    lightCycleButton,
     focusPickButton,
     glossinessContainer,
     materialSelect,
