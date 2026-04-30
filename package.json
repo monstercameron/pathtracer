@@ -1,0 +1,13 @@
+{
+  "name": "webgl-path-tracing",
+  "version": "1.0.0",
+  "private": true,
+  "main": "electron-main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "start:b580": "electron ."
+  },
+  "devDependencies": {
+    "electron": "41.3.0"
+  }
+}

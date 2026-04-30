@@ -1,0 +1,6 @@
+node_modules/
+test-results/
+*.png
+*.log
+*.tmp
+*.cjs.tmp
