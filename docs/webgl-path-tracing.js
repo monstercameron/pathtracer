@@ -51,6 +51,7 @@ const MAX_RAYS_PER_PIXEL = 64;
 const DEFAULT_TEMPORAL_BLEND_FRAMES = 16;
 const MIN_TEMPORAL_BLEND_FRAMES = 1;
 const MAX_TEMPORAL_BLEND_FRAMES = 32;
+const TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR = 128;
 const DEFAULT_COLOR_EXPOSURE = 0;
 const MIN_COLOR_EXPOSURE = -4;
 const MAX_COLOR_EXPOSURE = 4;
@@ -3540,6 +3541,18 @@ class PathTracer {
     );
   }
 
+  shouldBypassSettledTemporalDisplay(temporalBlendFrames, motionBlurStrength) {
+    if (motionBlurStrength > MIN_MOTION_BLUR_STRENGTH) {
+      return false;
+    }
+
+    const settledSampleCount = Math.max(
+      TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR,
+      temporalBlendFrames * this.currentRaysPerPixel
+    );
+    return this.sampleCount >= settledSampleCount;
+  }
+
   readRenderTexture(applicationState) {
     const temporalBlendFrames = normalizeBoundedInteger(
       applicationState.temporalBlendFrames,
@@ -3559,6 +3572,11 @@ class PathTracer {
     );
 
     if (!this.shouldUseTemporalDisplayPass(temporalBlendFrames, motionBlurStrength, denoiserStrength)) {
+      this.hasDisplayHistory = false;
+      return this.textureSuccessResults[this.currentTextureIndex];
+    }
+
+    if (this.shouldBypassSettledTemporalDisplay(temporalBlendFrames, motionBlurStrength)) {
       this.hasDisplayHistory = false;
       return this.textureSuccessResults[this.currentTextureIndex];
     }
