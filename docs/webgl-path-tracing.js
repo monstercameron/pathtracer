@@ -2878,6 +2878,7 @@ class PathTracer {
     this.hasSetTemporalSamplerUniforms = false;
     this.hasSetRenderSamplerUniform = false;
     this.hasCompleteTracerSampleUniforms = false;
+    this.hasPendingSceneUniformUpdate = true;
     this.usesSkyTexture = false;
     this.cameraRight = createVec3(1, 0, 0);
     this.cameraUp = createVec3(0, 1, 0);
@@ -3061,6 +3062,7 @@ class PathTracer {
     this.tracerFrameUniformLocations = Object.create(null);
     this.tracerSampleUniformLocations = Object.create(null);
     this.hasCompleteTracerSampleUniforms = false;
+    this.hasPendingSceneUniformUpdate = true;
     this.previousTracerFrameScalarUniformValues = Object.create(null);
     writeVec3(this.previousEyePosition, Number.NaN, Number.NaN, Number.NaN);
     writeVec3(this.previousCameraRight, Number.NaN, Number.NaN, Number.NaN);
@@ -3098,6 +3100,11 @@ class PathTracer {
       }
     }
 
+    return returnSuccess(undefined);
+  }
+
+  markSceneUniformsDirty() {
+    this.hasPendingSceneUniformUpdate = true;
     return returnSuccess(undefined);
   }
 
@@ -3400,9 +3407,12 @@ class PathTracer {
 
     this.setTracerFrameUniforms(applicationState);
 
-    const sceneObjects = this.sceneObjects;
-    for (let objectIndex = 0; objectIndex < sceneObjects.length; objectIndex += 1) {
-      sceneObjects[objectIndex].setUniforms(webGlContext);
+    if (this.hasPendingSceneUniformUpdate) {
+      const sceneObjects = this.sceneObjects;
+      for (let objectIndex = 0; objectIndex < sceneObjects.length; objectIndex += 1) {
+        sceneObjects[objectIndex].setUniforms(webGlContext);
+      }
+      this.hasPendingSceneUniformUpdate = false;
     }
 
     if (!this.hasValidatedRenderFramebuffer) {
@@ -4208,6 +4218,11 @@ class UserInterfaceController {
       return returnSuccess(undefined);
     }
 
+    const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+    if (uniformDirtyError) {
+      return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+    }
+
     return this.selectionRenderer.pathTracer.clearSamples(false);
   }
 
@@ -4454,6 +4469,10 @@ class UserInterfaceController {
     this.applicationState[stateKey] = nextValue;
     if (stateKey === 'lightSize') {
       this.applicationState.lightPosition = clampLightPosition(this.applicationState.lightPosition, nextValue);
+      const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+      if (uniformDirtyError) {
+        return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+      }
     }
 
     const isFogEnabled = stateKey === 'fogDensity' && nextValue > 0.0001;
@@ -5205,6 +5224,10 @@ class UserInterfaceController {
     }
 
     this.isMovingSelection = false;
+    const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+    if (uniformDirtyError) {
+      return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+    }
     return this.selectionRenderer.pathTracer.clearSamples(false);
   }
 
@@ -5278,6 +5301,11 @@ class UserInterfaceController {
       return returnFailure(translateError.code, translateError.message, translateError.details);
     }
 
+    const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+    if (uniformDirtyError) {
+      return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+    }
+
     return this.selectionRenderer.pathTracer.clearSamples(false);
   }
 
@@ -5300,12 +5328,28 @@ class UserInterfaceController {
       return returnFailure(resetError.code, resetError.message, resetError.details);
     }
 
+    const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+    if (uniformDirtyError) {
+      this.isMovingSelection = false;
+      return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+    }
+
     if (hitPosition) {
       writeSubtractVec3(this.pointerTranslation, hitPosition, this.originalHitPosition);
       const [, commitError] = selectedObject.commitTranslation(this.pointerTranslation);
       if (commitError) {
         this.isMovingSelection = false;
         return returnFailure(commitError.code, commitError.message, commitError.details);
+      }
+
+      const [, commitUniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+      if (commitUniformDirtyError) {
+        this.isMovingSelection = false;
+        return returnFailure(
+          commitUniformDirtyError.code,
+          commitUniformDirtyError.message,
+          commitUniformDirtyError.details
+        );
       }
 
       const [, physicsError] = this.physicsWorld.rebuildScene(this.sceneObjects, this.applicationState);
