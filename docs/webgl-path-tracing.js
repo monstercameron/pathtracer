@@ -2708,6 +2708,7 @@ class RollingBenchmarkWindow {
     this.totalFrameMilliseconds = 0;
     this.activeFrameSample = null;
     this.measurementSource = 'warming-up';
+    this.previousFrameSnapshotMilliseconds = 0;
   }
 
   setTraceSampleBytes(traceSampleBytes) {
@@ -2827,11 +2828,6 @@ class RollingBenchmarkWindow {
       return returnSuccess(undefined);
     }
 
-    const [, pruneError] = this.pruneOldEntries(timestampMilliseconds);
-    if (pruneError) {
-      return returnFailure(pruneError.code, pruneError.message, pruneError.details);
-    }
-
     const frameMilliseconds = elapsedSeconds * 1000;
     if (
       this.activeFrameSample &&
@@ -2841,18 +2837,31 @@ class RollingBenchmarkWindow {
       this.activeFrameSample.frameMilliseconds += frameMilliseconds;
       this.frameSampleCount += 1;
       this.totalFrameMilliseconds += frameMilliseconds;
-      return this.writeSnapshot(benchmarkSnapshot);
+    } else {
+      this.activeFrameSample = {
+        kind: 'frame',
+        timestampMilliseconds,
+        frameMilliseconds,
+        frameCount: 1
+      };
+      this.samples.push(this.activeFrameSample);
+      this.frameSampleCount += 1;
+      this.totalFrameMilliseconds += frameMilliseconds;
     }
 
-    this.activeFrameSample = {
-      kind: 'frame',
-      timestampMilliseconds,
-      frameMilliseconds,
-      frameCount: 1
-    };
-    this.samples.push(this.activeFrameSample);
-    this.frameSampleCount += 1;
-    this.totalFrameMilliseconds += frameMilliseconds;
+    if (
+      this.previousFrameSnapshotMilliseconds > 0 &&
+      timestampMilliseconds - this.previousFrameSnapshotMilliseconds < BENCHMARK_UPDATE_INTERVAL_MILLISECONDS
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    this.previousFrameSnapshotMilliseconds = timestampMilliseconds;
+    const [, pruneError] = this.pruneOldEntries(timestampMilliseconds);
+    if (pruneError) {
+      return returnFailure(pruneError.code, pruneError.message, pruneError.details);
+    }
+
     return this.writeSnapshot(benchmarkSnapshot);
   }
 }
