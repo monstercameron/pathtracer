@@ -349,9 +349,9 @@ const tracerFragmentSourceHeader = [
 ].join('');
 
 const intersectCubeSource = [
-  'vec2 intersectCube(vec3 origin, vec3 ray, vec3 cubeMin, vec3 cubeMax) {',
-  '  vec3 tMin = (cubeMin - origin) / ray;',
-  '  vec3 tMax = (cubeMax - origin) / ray;',
+  'vec2 intersectCube(vec3 origin, vec3 inverseRay, vec3 cubeMin, vec3 cubeMax) {',
+  '  vec3 tMin = (cubeMin - origin) * inverseRay;',
+  '  vec3 tMax = (cubeMax - origin) * inverseRay;',
   '  vec3 t1 = min(tMin, tMax);',
   '  vec3 t2 = max(tMin, tMax);',
   '  float tNear = max(max(t1.x, t1.y), t1.z);',
@@ -1333,8 +1333,18 @@ const joinObjectShaderCode = (sceneObjects, readShaderCode) => {
   return shaderParts.join('');
 };
 
+const sceneUsesCubeShadowTests = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    if (sceneObject instanceof CubeSceneObject && !isTransparentMaterial(sceneObject.material)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 const createShadowShaderSource = (sceneObjects) => [
   'float shadow(vec3 origin, vec3 ray) {',
+  sceneUsesCubeShadowTests(sceneObjects) ? '  vec3 inverseRay = 1.0 / ray;' : '',
   joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getShadowTestCode()),
   '  return 1.0;',
   '}'
@@ -1485,7 +1495,8 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     '  vec3 colorMask = vec3(1.0);',
     '  vec3 accumulatedColor = vec3(0.0);',
     `  for(int bounce = 0; bounce < ${lightBounceCount}; bounce++) {`,
-    '    vec2 tRoom = intersectCube(origin, ray, roomCubeMin, roomCubeMax);',
+    '    vec3 inverseRay = 1.0 / ray;',
+    '    vec2 tRoom = intersectCube(origin, inverseRay, roomCubeMin, roomCubeMax);',
     `    float roomDistance = ${SHADER_INFINITY};`,
     '    vec3 roomHit = vec3(0.0);',
     '    vec3 roomNormal = vec3(0.0);',
@@ -1993,7 +2004,7 @@ class CubeSceneObject {
   }
 
   getIntersectCode() {
-    return `vec2 ${this.intersectionName} = intersectCube(origin, ray, ${this.minUniformName}, ${this.maxUniformName});`;
+    return `vec2 ${this.intersectionName} = intersectCube(origin, inverseRay, ${this.minUniformName}, ${this.maxUniformName});`;
   }
 
   getShadowTestCode() {
