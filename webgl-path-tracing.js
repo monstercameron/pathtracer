@@ -397,6 +397,15 @@ const intersectSphereSource = [
   '}'
 ].join('');
 
+const shadowSphereSource = [
+  'bool shadowSphere(vec3 origin, vec3 ray, float inverseRayLengthSquared, vec3 sphereCenter, float sphereRadius) {',
+  '  vec3 toSphere = origin - sphereCenter;',
+  `  float closestRayTime = clamp(-dot(toSphere, ray) * inverseRayLengthSquared, ${SHADER_EPSILON}, 1.0);`,
+  '  vec3 closestPoint = toSphere + ray * closestRayTime;',
+  '  return dot(closestPoint, closestPoint) <= sphereRadius * sphereRadius;',
+  '}'
+].join('');
+
 const normalForSphereSource = [
   'vec3 normalForSphere(vec3 hit, vec3 sphereCenter, float sphereRadius) {',
   '  return (hit - sphereCenter) / sphereRadius;',
@@ -1362,7 +1371,7 @@ const sceneUsesSphereShadowTests = (sceneObjects) => {
 const createShadowShaderSource = (sceneObjects) => [
   'float shadow(vec3 origin, vec3 ray) {',
   sceneUsesCubeShadowTests(sceneObjects) ? '  vec3 inverseRay = 1.0 / ray;' : '',
-  sceneUsesSphereShadowTests(sceneObjects) ? '  float rayLengthSquared = dot(ray, ray);' : '',
+  sceneUsesSphereShadowTests(sceneObjects) ? '  float inverseRayLengthSquared = 1.0 / dot(ray, ray);' : '',
   joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getShadowTestCode()),
   '  return 1.0;',
   '}'
@@ -1588,6 +1597,7 @@ const createTracerFragmentSource = (sceneObjects, renderSettings) => {
     intersectCubeDistanceSource,
     normalForCubeSource,
     intersectSphereSource,
+    sceneUsesSphereShadowTests(sceneObjects) ? shadowSphereSource : '',
     normalForSphereSource,
     randomSource,
     cosineWeightedDirectionSource,
@@ -1890,7 +1900,7 @@ class SphereSceneObject {
     if (isTransparentMaterial(this.material)) {
       return '';
     }
-    return `${this.getIntersectCode()}if(${this.intersectionName} < 1.0) return 0.0;`;
+    return `if(shadowSphere(origin, ray, inverseRayLengthSquared, ${this.centerUniformName}, ${this.radiusUniformName})) return 0.0;`;
   }
 
   getMinimumIntersectCode() {
