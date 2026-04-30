@@ -86,6 +86,11 @@ const MAX_BLOOM_THRESHOLD = 4;
 const DEFAULT_GLARE_STRENGTH = 0.2;
 const MIN_GLARE_STRENGTH = 0;
 const MAX_GLARE_STRENGTH = 2;
+const ACTIVE_RAYS_PER_SAMPLE = CANVAS_SIZE * CANVAS_SIZE;
+const BENCHMARK_TIMER_QUERY_LIMIT = 4;
+const BENCHMARK_UPDATE_INTERVAL_MILLISECONDS = 250;
+const BENCHMARK_SMOOTHING_FACTOR = 0.18;
+const NANOSECONDS_PER_MILLISECOND = 1000000;
 const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
 const SKY_TEXTURE_WIDTH = 256;
 const SKY_TEXTURE_HEIGHT = 128;
@@ -672,6 +677,34 @@ const formatSignedColorAdjustmentValue = (value) => {
 const formatLightIntensityValue = (value) => value.toFixed(2);
 
 const formatCameraEffectValue = (value) => value.toFixed(2);
+
+const formatCompactMetricValue = (value) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '...';
+  }
+  if (value >= 1000000000) {
+    return `${(value / 1000000000).toFixed(2)}B`;
+  }
+  if (value >= 1000000) {
+    return `${(value / 1000000).toFixed(2)}M`;
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}K`;
+  }
+  return String(Math.round(value));
+};
+
+const formatBenchmarkRateValue = (value) => {
+  const compactValue = formatCompactMetricValue(value);
+  return compactValue === '...' ? compactValue : `${compactValue}/s`;
+};
+
+const formatBenchmarkMilliseconds = (value) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '...';
+  }
+  return `${value.toFixed(2)} ms`;
+};
 
 const writeIdentityMat4 = (matrix) => {
   matrix.fill(0);
@@ -2073,6 +2106,128 @@ class RapierPhysicsWorld {
   }
 }
 
+class GpuBenchmarkTimer {
+  constructor(webGlContext, timerExtension) {
+    this.webGlContext = webGlContext;
+    this.timerExtension = timerExtension;
+    this.pendingQueries = [];
+    this.activeQuery = null;
+  }
+
+  beginTiming() {
+    if (this.activeQuery || this.pendingQueries.length >= BENCHMARK_TIMER_QUERY_LIMIT) {
+      return returnSuccess(false);
+    }
+
+    const query = this.timerExtension.createQueryEXT();
+    if (!query) {
+      return returnSuccess(false);
+    }
+
+    this.timerExtension.beginQueryEXT(this.timerExtension.TIME_ELAPSED_EXT, query);
+    this.activeQuery = query;
+    return returnSuccess(true);
+  }
+
+  endTiming(renderedSampleCount, lightBounceCount) {
+    if (!this.activeQuery) {
+      return returnSuccess(false);
+    }
+
+    const query = this.activeQuery;
+    this.timerExtension.endQueryEXT(this.timerExtension.TIME_ELAPSED_EXT);
+    this.pendingQueries.push({
+      query,
+      renderedSampleCount,
+      lightBounceCount
+    });
+    this.activeQuery = null;
+    return returnSuccess(true);
+  }
+
+  deletePendingQueries() {
+    const timerExtension = this.timerExtension;
+    while (this.pendingQueries.length > 0) {
+      timerExtension.deleteQueryEXT(this.pendingQueries.pop().query);
+    }
+    return returnSuccess(undefined);
+  }
+
+  readLatestCompletedTiming() {
+    const webGlContext = this.webGlContext;
+    const timerExtension = this.timerExtension;
+    if (this.pendingQueries.length === 0) {
+      return returnSuccess(null);
+    }
+
+    if (webGlContext.getParameter(timerExtension.GPU_DISJOINT_EXT)) {
+      const [, deleteError] = this.deletePendingQueries();
+      if (deleteError) {
+        return returnFailure(deleteError.code, deleteError.message, deleteError.details);
+      }
+      return returnSuccess(null);
+    }
+
+    let latestTiming = null;
+    while (this.pendingQueries.length > 0) {
+      const pendingQuery = this.pendingQueries[0];
+      const isAvailable = timerExtension.getQueryObjectEXT(
+        pendingQuery.query,
+        timerExtension.QUERY_RESULT_AVAILABLE_EXT
+      );
+      if (!isAvailable) {
+        return returnSuccess(latestTiming);
+      }
+
+      const elapsedNanoseconds = timerExtension.getQueryObjectEXT(
+        pendingQuery.query,
+        timerExtension.QUERY_RESULT_EXT
+      );
+      timerExtension.deleteQueryEXT(pendingQuery.query);
+      this.pendingQueries.shift();
+
+      if (Number.isFinite(elapsedNanoseconds) && elapsedNanoseconds > 0) {
+        latestTiming = {
+          durationMilliseconds: elapsedNanoseconds / NANOSECONDS_PER_MILLISECOND,
+          renderedSampleCount: pendingQuery.renderedSampleCount,
+          lightBounceCount: pendingQuery.lightBounceCount
+        };
+      }
+    }
+
+    return returnSuccess(latestTiming);
+  }
+}
+
+const createGpuBenchmarkTimer = (webGlContext) => {
+  const timerExtension = webGlContext.getExtension('EXT_disjoint_timer_query');
+  if (
+    !timerExtension ||
+    typeof timerExtension.createQueryEXT !== 'function' ||
+    typeof timerExtension.beginQueryEXT !== 'function' ||
+    typeof timerExtension.endQueryEXT !== 'function' ||
+    typeof timerExtension.getQueryObjectEXT !== 'function' ||
+    typeof timerExtension.deleteQueryEXT !== 'function' ||
+    typeof timerExtension.TIME_ELAPSED_EXT !== 'number' ||
+    typeof timerExtension.QUERY_RESULT_AVAILABLE_EXT !== 'number' ||
+    typeof timerExtension.QUERY_RESULT_EXT !== 'number' ||
+    typeof timerExtension.GPU_DISJOINT_EXT !== 'number'
+  ) {
+    return returnSuccess(null);
+  }
+
+  return returnSuccess(new GpuBenchmarkTimer(webGlContext, timerExtension));
+};
+
+const createBenchmarkSnapshot = () => ({
+  activeRaysPerSecond: 0,
+  activeRaysPerFrame: 0,
+  pathRayBudgetPerFrame: 0,
+  samplesPerFrame: 0,
+  traceMilliseconds: 0,
+  measurementSource: 'warming-up'
+});
+
 class PathTracer {
   constructor(
     webGlContext,
@@ -2086,7 +2241,8 @@ class PathTracer {
     renderProgram,
     renderVertexAttribute,
     temporalDisplayProgram,
-    temporalDisplayVertexAttribute
+    temporalDisplayVertexAttribute,
+    gpuBenchmarkTimer
   ) {
     this.webGlContext = webGlContext;
     this.vertexBuffer = vertexBuffer;
@@ -2105,6 +2261,7 @@ class PathTracer {
     this.renderVertexAttribute = renderVertexAttribute;
     this.temporalDisplayProgram = temporalDisplayProgram;
     this.temporalDisplayVertexAttribute = temporalDisplayVertexAttribute;
+    this.gpuBenchmarkTimer = gpuBenchmarkTimer;
     this.renderUniformLocations = createUniformLocationCache();
     this.temporalDisplayUniformLocations = createUniformLocationCache();
     this.tracerUniformLocations = createUniformLocationCache();
@@ -2148,6 +2305,7 @@ class PathTracer {
     this.sampleUniformValues = Object.create(null);
     this.sampleUniformValues.rayJitterX = 0;
     this.sampleUniformValues.rayJitterY = 0;
+    this.benchmarkSnapshot = createBenchmarkSnapshot();
     this.tracerFrameUniformLocations = Object.create(null);
     this.tracerSampleUniformLocations = Object.create(null);
     cacheNamedUniformLocations(
@@ -2264,6 +2422,11 @@ class PathTracer {
       return returnFailure('attribute-missing', 'Temporal display vertex attribute was not found.');
     }
 
+    const [gpuBenchmarkTimer, gpuBenchmarkTimerError] = createGpuBenchmarkTimer(webGlContext);
+    if (gpuBenchmarkTimerError) {
+      return returnFailure(gpuBenchmarkTimerError.code, gpuBenchmarkTimerError.message, gpuBenchmarkTimerError.details);
+    }
+
     webGlContext.enableVertexAttribArray(renderVertexAttribute);
     webGlContext.enableVertexAttribArray(temporalDisplayVertexAttribute);
     return returnSuccess(new PathTracer(
@@ -2278,7 +2441,8 @@ class PathTracer {
       renderProgram,
       renderVertexAttribute,
       temporalDisplayProgram,
-      temporalDisplayVertexAttribute
+      temporalDisplayVertexAttribute,
+      gpuBenchmarkTimer
     ));
   }
 
@@ -2531,6 +2695,48 @@ class PathTracer {
     this.randomSampleSequence = randomSampleSequence;
   }
 
+  readLatestBenchmarkTiming() {
+    if (!this.gpuBenchmarkTimer) {
+      return returnSuccess(null);
+    }
+
+    return this.gpuBenchmarkTimer.readLatestCompletedTiming();
+  }
+
+  beginBenchmarkTiming() {
+    if (!this.gpuBenchmarkTimer) {
+      return returnSuccess(false);
+    }
+
+    return this.gpuBenchmarkTimer.beginTiming();
+  }
+
+  endBenchmarkTiming(renderedSampleCount, lightBounceCount) {
+    if (!this.gpuBenchmarkTimer) {
+      return returnSuccess(false);
+    }
+
+    return this.gpuBenchmarkTimer.endTiming(renderedSampleCount, lightBounceCount);
+  }
+
+  writeBenchmarkSnapshot(renderedSampleCount, lightBounceCount, durationMilliseconds, measurementSource) {
+    const activeRaysPerFrame = ACTIVE_RAYS_PER_SAMPLE * renderedSampleCount;
+    const activeRaysPerSecond = durationMilliseconds > 0
+      ? activeRaysPerFrame / (durationMilliseconds * 0.001)
+      : 0;
+    const snapshot = this.benchmarkSnapshot;
+    const previousRaysPerSecond = snapshot.activeRaysPerSecond;
+    snapshot.activeRaysPerSecond = previousRaysPerSecond > 0
+      ? previousRaysPerSecond + (activeRaysPerSecond - previousRaysPerSecond) * BENCHMARK_SMOOTHING_FACTOR
+      : activeRaysPerSecond;
+    snapshot.activeRaysPerFrame = activeRaysPerFrame;
+    snapshot.pathRayBudgetPerFrame = activeRaysPerFrame * lightBounceCount;
+    snapshot.samplesPerFrame = renderedSampleCount;
+    snapshot.traceMilliseconds = durationMilliseconds;
+    snapshot.measurementSource = measurementSource;
+    return returnSuccess(undefined);
+  }
+
   update(inverseCameraMatrix, applicationState, didCameraChange, cameraRight, cameraUp) {
     if (!this.tracerProgram) {
       return returnFailure('missing-tracer-program', 'Path tracer program has not been created.');
@@ -2606,6 +2812,16 @@ class PathTracer {
       }
     }
 
+    const [latestGpuTiming, latestGpuTimingError] = this.readLatestBenchmarkTiming();
+    if (latestGpuTimingError) {
+      return returnFailure(latestGpuTimingError.code, latestGpuTimingError.message, latestGpuTimingError.details);
+    }
+
+    const [didStartGpuTiming, benchmarkStartError] = this.beginBenchmarkTiming();
+    if (benchmarkStartError) {
+      return returnFailure(benchmarkStartError.code, benchmarkStartError.message, benchmarkStartError.details);
+    }
+
     if (this.hasCompleteTracerSampleUniforms) {
       this.renderCompleteAccumulationSamples(raysPerPixel);
     } else {
@@ -2616,6 +2832,25 @@ class PathTracer {
         );
 
         this.renderAccumulationSample(sampleUniformValues);
+      }
+    }
+
+    if (didStartGpuTiming) {
+      const [, benchmarkEndError] = this.endBenchmarkTiming(raysPerPixel, applicationState.lightBounceCount);
+      if (benchmarkEndError) {
+        return returnFailure(benchmarkEndError.code, benchmarkEndError.message, benchmarkEndError.details);
+      }
+    }
+
+    if (latestGpuTiming) {
+      const [, benchmarkSnapshotError] = this.writeBenchmarkSnapshot(
+        latestGpuTiming.renderedSampleCount,
+        latestGpuTiming.lightBounceCount,
+        latestGpuTiming.durationMilliseconds,
+        'gpu-timer'
+      );
+      if (benchmarkSnapshotError) {
+        return returnFailure(benchmarkSnapshotError.code, benchmarkSnapshotError.message, benchmarkSnapshotError.details);
       }
     }
 
@@ -3057,6 +3292,95 @@ class SelectionRenderer {
     }
 
     webGlContext.drawElements(webGlContext.LINES, 24, webGlContext.UNSIGNED_SHORT, 0);
+    return returnSuccess(undefined);
+  }
+}
+
+const writeElementTextIfChanged = (element, nextText) => {
+  if (element.textContent !== nextText) {
+    element.textContent = nextText;
+  }
+  return returnSuccess(undefined);
+};
+
+const formatBenchmarkSourceLabel = (measurementSource) => {
+  if (measurementSource === 'gpu-timer') {
+    return 'GPU timer';
+  }
+  if (measurementSource === 'frame-estimate-pending') {
+    return 'Frame estimate';
+  }
+  if (measurementSource === 'frame-estimate') {
+    return 'Frame estimate';
+  }
+  return 'Warming up';
+};
+
+class BenchmarkDisplay {
+  constructor(
+    raysPerSecondElement,
+    raysPerFrameElement,
+    samplesPerFrameElement,
+    frameTimeElement,
+    sourceElement
+  ) {
+    this.raysPerSecondElement = raysPerSecondElement;
+    this.raysPerFrameElement = raysPerFrameElement;
+    this.samplesPerFrameElement = samplesPerFrameElement;
+    this.frameTimeElement = frameTimeElement;
+    this.sourceElement = sourceElement;
+    this.previousUpdateMilliseconds = 0;
+  }
+
+  update(currentTimeMilliseconds, benchmarkSnapshot) {
+    if (
+      this.previousUpdateMilliseconds > 0 &&
+      currentTimeMilliseconds - this.previousUpdateMilliseconds < BENCHMARK_UPDATE_INTERVAL_MILLISECONDS
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    this.previousUpdateMilliseconds = currentTimeMilliseconds;
+    const [, raysPerSecondError] = writeElementTextIfChanged(
+      this.raysPerSecondElement,
+      formatBenchmarkRateValue(benchmarkSnapshot.activeRaysPerSecond)
+    );
+    if (raysPerSecondError) {
+      return returnFailure(raysPerSecondError.code, raysPerSecondError.message, raysPerSecondError.details);
+    }
+
+    const [, raysPerFrameError] = writeElementTextIfChanged(
+      this.raysPerFrameElement,
+      formatCompactMetricValue(benchmarkSnapshot.activeRaysPerFrame)
+    );
+    if (raysPerFrameError) {
+      return returnFailure(raysPerFrameError.code, raysPerFrameError.message, raysPerFrameError.details);
+    }
+
+    const [, samplesPerFrameError] = writeElementTextIfChanged(
+      this.samplesPerFrameElement,
+      formatCompactMetricValue(benchmarkSnapshot.samplesPerFrame)
+    );
+    if (samplesPerFrameError) {
+      return returnFailure(samplesPerFrameError.code, samplesPerFrameError.message, samplesPerFrameError.details);
+    }
+
+    const [, frameTimeError] = writeElementTextIfChanged(
+      this.frameTimeElement,
+      formatBenchmarkMilliseconds(benchmarkSnapshot.traceMilliseconds)
+    );
+    if (frameTimeError) {
+      return returnFailure(frameTimeError.code, frameTimeError.message, frameTimeError.details);
+    }
+
+    const [, sourceError] = writeElementTextIfChanged(
+      this.sourceElement,
+      formatBenchmarkSourceLabel(benchmarkSnapshot.measurementSource)
+    );
+    if (sourceError) {
+      return returnFailure(sourceError.code, sourceError.message, sourceError.details);
+    }
+
     return returnSuccess(undefined);
   }
 }
@@ -4892,6 +5216,59 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(controlsElementError.code, controlsElementError.message, controlsElementError.details);
   }
 
+  const [benchmarkRaysPerSecondElement, benchmarkRaysPerSecondError] = readRequiredElement(
+    documentObject,
+    'benchmark-rays-per-second'
+  );
+  if (benchmarkRaysPerSecondError) {
+    return returnFailure(
+      benchmarkRaysPerSecondError.code,
+      benchmarkRaysPerSecondError.message,
+      benchmarkRaysPerSecondError.details
+    );
+  }
+
+  const [benchmarkRaysPerFrameElement, benchmarkRaysPerFrameError] = readRequiredElement(
+    documentObject,
+    'benchmark-rays-per-frame'
+  );
+  if (benchmarkRaysPerFrameError) {
+    return returnFailure(
+      benchmarkRaysPerFrameError.code,
+      benchmarkRaysPerFrameError.message,
+      benchmarkRaysPerFrameError.details
+    );
+  }
+
+  const [benchmarkSamplesPerFrameElement, benchmarkSamplesPerFrameError] = readRequiredElement(
+    documentObject,
+    'benchmark-samples-per-frame'
+  );
+  if (benchmarkSamplesPerFrameError) {
+    return returnFailure(
+      benchmarkSamplesPerFrameError.code,
+      benchmarkSamplesPerFrameError.message,
+      benchmarkSamplesPerFrameError.details
+    );
+  }
+
+  const [benchmarkFrameTimeElement, benchmarkFrameTimeError] = readRequiredElement(
+    documentObject,
+    'benchmark-frame-time'
+  );
+  if (benchmarkFrameTimeError) {
+    return returnFailure(
+      benchmarkFrameTimeError.code,
+      benchmarkFrameTimeError.message,
+      benchmarkFrameTimeError.details
+    );
+  }
+
+  const [benchmarkSourceElement, benchmarkSourceError] = readRequiredElement(documentObject, 'benchmark-source');
+  if (benchmarkSourceError) {
+    return returnFailure(benchmarkSourceError.code, benchmarkSourceError.message, benchmarkSourceError.details);
+  }
+
   const [glossinessContainer, glossinessContainerError] = readRequiredElement(documentObject, 'glossiness-factor');
   if (glossinessContainerError) {
     return returnFailure(glossinessContainerError.code, glossinessContainerError.message, glossinessContainerError.details);
@@ -5274,6 +5651,13 @@ const createPathTracingApplication = async (documentObject) => {
     glareStrengthInput,
     glareStrengthValueElement
   );
+  const benchmarkDisplay = new BenchmarkDisplay(
+    benchmarkRaysPerSecondElement,
+    benchmarkRaysPerFrameElement,
+    benchmarkSamplesPerFrameElement,
+    benchmarkFrameTimeElement,
+    benchmarkSourceElement
+  );
 
   const [, colorCorrectionError] = uiController.updateColorCorrectionFromInputs();
   if (colorCorrectionError) {
@@ -5327,6 +5711,7 @@ const createPathTracingApplication = async (documentObject) => {
     canvasElement,
     errorElement,
     uiController,
+    benchmarkDisplay,
     applicationState,
     gpuInfo
   });
@@ -5338,6 +5723,7 @@ const startAnimationLoop = (application) => {
   const renderFrame = (currentTime) => {
     const elapsedSeconds = (currentTime - previousFrameTime) * 0.001;
     previousFrameTime = currentTime;
+    const pathTracer = application.uiController.selectionRenderer.pathTracer;
 
     const [, physicsError] = application.uiController.stepPhysics(elapsedSeconds);
     if (physicsError) {
@@ -5348,7 +5734,7 @@ const startAnimationLoop = (application) => {
     const [, autoRotationError] = advanceCameraAutoRotation(
       application.applicationState,
       elapsedSeconds,
-      application.uiController.selectionRenderer.pathTracer
+      pathTracer
     );
     if (autoRotationError) {
       displayError(application.errorElement, autoRotationError);
@@ -5371,6 +5757,28 @@ const startAnimationLoop = (application) => {
     if (renderError) {
       displayError(application.errorElement, renderError);
       return returnFailure(renderError.code, renderError.message, renderError.details);
+    }
+
+    if (pathTracer.benchmarkSnapshot.measurementSource !== 'gpu-timer') {
+      const [, frameBenchmarkError] = pathTracer.writeBenchmarkSnapshot(
+        application.applicationState.raysPerPixel,
+        application.applicationState.lightBounceCount,
+        elapsedSeconds * 1000,
+        pathTracer.gpuBenchmarkTimer ? 'frame-estimate-pending' : 'frame-estimate'
+      );
+      if (frameBenchmarkError) {
+        displayError(application.errorElement, frameBenchmarkError);
+        return returnFailure(frameBenchmarkError.code, frameBenchmarkError.message, frameBenchmarkError.details);
+      }
+    }
+
+    const [, benchmarkError] = application.benchmarkDisplay.update(
+      currentTime,
+      pathTracer.benchmarkSnapshot
+    );
+    if (benchmarkError) {
+      displayError(application.errorElement, benchmarkError);
+      return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
     }
 
     application.applicationState.animationFrameId = requestAnimationFrame(renderFrame);
