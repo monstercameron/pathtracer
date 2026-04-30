@@ -484,7 +484,9 @@ const newGlassRaySource = [
 
 const surfaceShaderUtilitySource = [
   'float shaderNoise(vec3 point) {',
-  '  return fract(sin(dot(point, vec3(127.1, 311.7, 74.7))) * 43758.5453123);',
+  '  vec3 hashInput = fract(point * vec3(0.1031, 0.11369, 0.13787));',
+  '  hashInput += dot(hashInput, hashInput.yzx + 33.33);',
+  '  return fract((hashInput.x + hashInput.y) * hashInput.z);',
   '}',
   'float shaderFbm(vec3 point) {',
   '  float value = 0.0;',
@@ -560,7 +562,8 @@ const causticsSurfaceShaderSource = [
   'float isOutsideSurface = dot(normalizedRay, normal) < 0.0 ? 1.0 : 0.0;',
   'vec3 orientedNormal = isOutsideSurface > 0.5 ? normal : -normal;',
   'vec3 refractedRay = refract(normalizedRay, orientedNormal, isOutsideSurface > 0.5 ? 0.625 : 1.6);',
-  'float rimLight = pow(1.0 - max(dot(-normalizedRay, orientedNormal), 0.0), 3.0);',
+  'float rimBase = 1.0 - max(dot(-normalizedRay, orientedNormal), 0.0);',
+  'float rimLight = rimBase * rimBase * rimBase;',
   'accumulatedColor += colorMask * vec3(0.25, 0.95, 0.65) * rimLight * lightIntensity;',
   'ray = dot(refractedRay, refractedRay) <= 0.0001 ? reflect(normalizedRay, orientedNormal) : refractedRay;',
   'colorMask *= surfaceColor;',
@@ -593,7 +596,10 @@ const sdfFractalSurfaceShaderSource = [
 
 const volumetricShaftsSurfaceShaderSource = [
   'vec3 toLightDirection = normalize(light - hit);',
-  'float shaftAmount = pow(max(dot(toLightDirection, -normalize(ray)), 0.0), 8.0);',
+  'float shaftBase = max(dot(toLightDirection, -normalize(ray)), 0.0);',
+  'float shaftPower2 = shaftBase * shaftBase;',
+  'float shaftPower4 = shaftPower2 * shaftPower2;',
+  'float shaftAmount = shaftPower4 * shaftPower4;',
   'float densityNoise = shaderFbm(surfaceObjectPoint * 6.0 + vec3(0.0, sampleSeed * 0.01, 0.0));',
   'surfaceColor = mix(vec3(0.20, 0.34, 0.55), vec3(0.60, 0.78, 1.0), densityNoise);',
   'accumulatedColor += colorMask * surfaceColor * shaftAmount * lightIntensity * 1.8;',
@@ -606,7 +612,11 @@ const bokehSurfaceShaderSource = [
   'surfaceColor = mix(vec3(0.12, 0.12, 0.16), vec3(0.92, 0.82, 1.0), bokehRing);',
   'ray = normalize(mix(reflect(ray, normal), cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal), 0.22));',
   specularReflectionSource,
-  'specularHighlight = pow(max(specularHighlight, 0.0), 10.0) * (1.0 + bokehRing * 3.0);'
+  'float bokehSpecular = max(specularHighlight, 0.0);',
+  'float bokehSpecular2 = bokehSpecular * bokehSpecular;',
+  'float bokehSpecular4 = bokehSpecular2 * bokehSpecular2;',
+  'float bokehSpecular8 = bokehSpecular4 * bokehSpecular4;',
+  'specularHighlight = bokehSpecular8 * bokehSpecular2 * (1.0 + bokehRing * 3.0);'
 ].join('');
 
 const motionBlurStressSurfaceShaderSource = [
@@ -879,6 +889,34 @@ const isTransparentMaterial = (material) => (
   material === MATERIAL.GLASS ||
   material === MATERIAL.SPECTRAL_GLASS ||
   material === MATERIAL.CAUSTICS
+);
+
+const materialUsesSurfaceShaderUtilities = (material) => {
+  const normalizedMaterial = normalizeMaterial(material);
+  return (
+    normalizedMaterial === MATERIAL.GGX_PBR ||
+    normalizedMaterial === MATERIAL.SUBSURFACE ||
+    normalizedMaterial === MATERIAL.PROCEDURAL ||
+    normalizedMaterial === MATERIAL.SDF_FRACTAL ||
+    normalizedMaterial === MATERIAL.VOLUMETRIC_SHAFTS ||
+    normalizedMaterial === MATERIAL.BOKEH ||
+    normalizedMaterial === MATERIAL.MOTION_BLUR_STRESS ||
+    normalizedMaterial === MATERIAL.FIRE_PLASMA
+  );
+};
+
+const sceneUsesSurfaceShaderUtilities = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    if (materialUsesSurfaceShaderUtilities(sceneObject.material)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const renderSettingsUseSkyTexture = (renderSettings) => (
+  renderSettings.environment === ENVIRONMENT.OPEN_SKY_STUDIO ||
+  renderSettings.fogDensity > 0.0001
 );
 
 const normalizeBoundedNumber = (value, fallbackValue, minValue, maxValue) => {
@@ -1284,6 +1322,7 @@ const displayTemporalAntialiasingSource = [
   '}',
   'vec3 resolveTemporalAntialiasing(vec2 texCoord) {',
   '  vec3 currentColor = readCurrentFrameColor(texCoord);',
+  '  if(historyAvailability <= 0.5 && denoiserStrength <= 0.0001) return currentColor;',
   '  vec3 currentYCoCg = rgbToYCoCg(currentColor);',
   '  vec3 minYCoCg = currentYCoCg;',
   '  vec3 maxYCoCg = currentYCoCg;',
@@ -1450,10 +1489,8 @@ const createMainShaderSource = () => [
 ].join('');
 
 const createTracerFragmentSource = (sceneObjects, renderSettings) => {
-  const shouldUseSkyShader = (
-    renderSettings.environment === ENVIRONMENT.OPEN_SKY_STUDIO ||
-    renderSettings.fogDensity > 0.0001
-  );
+  const shouldUseSkyShader = renderSettingsUseSkyTexture(renderSettings);
+  const shouldUseSurfaceShaderUtilities = sceneUsesSurfaceShaderUtilities(sceneObjects);
 
   return [
     tracerFragmentSourceHeader,
@@ -1469,7 +1506,7 @@ const createTracerFragmentSource = (sceneObjects, renderSettings) => {
     uniformlyRandomVectorSource,
     createShadowShaderSource(sceneObjects),
     cameraFocusSource,
-    surfaceShaderUtilitySource,
+    shouldUseSurfaceShaderUtilities ? surfaceShaderUtilitySource : '',
     shouldUseSkyShader ? skyShaderSource : '',
     createCalculateColorShaderSource(sceneObjects, renderSettings),
     createMainShaderSource()
@@ -2738,6 +2775,7 @@ class PathTracer {
     this.hasSetTemporalSamplerUniforms = false;
     this.hasSetRenderSamplerUniform = false;
     this.hasCompleteTracerSampleUniforms = false;
+    this.usesSkyTexture = false;
     this.cameraRight = createVec3(1, 0, 0);
     this.cameraUp = createVec3(0, 1, 0);
     this.cameraRayCenter = createVec3(0, 0, 0);
@@ -2913,6 +2951,7 @@ class PathTracer {
     }
 
     this.sceneObjects = sceneObjects.slice();
+    this.usesSkyTexture = renderSettingsUseSkyTexture(renderSettings);
     this.tracerProgram = nextTracerProgram;
     this.tracerVertexAttribute = nextTracerVertexAttribute;
     this.tracerUniformLocations = createUniformLocationCache();
@@ -3229,22 +3268,26 @@ class PathTracer {
         return returnFailure(accumulationSamplerError.code, accumulationSamplerError.message, accumulationSamplerError.details);
       }
 
-      const [, skySamplerError] = setSamplerUniform(
-        webGlContext,
-        this.tracerProgram,
-        this.tracerUniformLocations,
-        'skyTexture',
-        1
-      );
-      if (skySamplerError) {
-        return returnFailure(skySamplerError.code, skySamplerError.message, skySamplerError.details);
+      if (this.usesSkyTexture) {
+        const [, skySamplerError] = setSamplerUniform(
+          webGlContext,
+          this.tracerProgram,
+          this.tracerUniformLocations,
+          'skyTexture',
+          1
+        );
+        if (skySamplerError) {
+          return returnFailure(skySamplerError.code, skySamplerError.message, skySamplerError.details);
+        }
       }
 
       this.hasSetTracerSamplerUniforms = true;
     }
 
-    webGlContext.activeTexture(webGlContext.TEXTURE1);
-    webGlContext.bindTexture(webGlContext.TEXTURE_2D, this.skyTexture);
+    if (this.usesSkyTexture) {
+      webGlContext.activeTexture(webGlContext.TEXTURE1);
+      webGlContext.bindTexture(webGlContext.TEXTURE_2D, this.skyTexture);
+    }
     webGlContext.activeTexture(webGlContext.TEXTURE0);
     webGlContext.bindBuffer(webGlContext.ARRAY_BUFFER, this.vertexBuffer);
     webGlContext.vertexAttribPointer(this.tracerVertexAttribute, 2, webGlContext.FLOAT, false, 0, 0);
