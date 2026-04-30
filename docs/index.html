@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html><head>
+  <meta charset="utf8">
+  <title>WebGL Path Tracing</title>
+  <style type="text/css"><!--
+
+body {
+  min-height: 100vh;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 30px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #aeb6bf;
+  color: #16181c;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#main {
+  width: 852px;
+  margin: 0 auto;
+  padding-left: 512px;
+  height: 512px;
+  box-sizing: border-box;
+  position: relative;
+  filter: drop-shadow(0 20px 32px rgba(28, 34, 44, 0.22));
+}
+
+#error {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 412px;
+  height: 412px;
+  padding: 50px;
+  text-align: center;
+  background: #DFDFDF;
+}
+
+canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 8px 0 0 8px;
+  touch-action: none; /* Need this to prevent scrolling on iOS 15+ */
+}
+
+canvas.focus-pick-mode {
+  cursor: crosshair;
+}
+
+#controls {
+  width: 340px;
+  height: 512px;
+  box-sizing: border-box;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  color: #f4f5f6;
+  background: #30343a;
+  border: 1px solid #25282d;
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -28px 48px rgba(0, 0, 0, 0.28),
+    inset 0 0 18px rgba(0, 0, 0, 0.34);
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.camera-playback {
+  width: 100%;
+  min-height: 34px;
+  margin-bottom: -4px;
+  background: #59616c;
+  font-weight: 700;
+}
+
+.camera-playback:hover {
+  background: #626b78;
+}
+
+.control-section {
+  display: grid;
+  gap: 8px;
+}
+
+.render-settings,
+.camera-settings,
+.color-settings,
+.bloom-settings {
+  gap: 8px;
+}
+
+.camera-settings,
+.color-settings,
+.bloom-settings {
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field label,
+.section-title {
+  color: #d6d9de;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.slider-field label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.slider-value {
+  min-width: 24px;
+  padding: 1px 6px;
+  color: #ffffff;
+  text-align: center;
+  background: #24282e;
+  border: 1px solid #1c1f24;
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+button,
+select {
+  min-height: 28px;
+  color: #f6f7f8;
+  background: #454b53;
+  border: 1px solid #1f2227;
+  border-radius: 5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+button {
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+button:hover,
+select:hover {
+  background: #505762;
+}
+
+button:active {
+  background: #3a3f46;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.32);
+}
+
+select {
+  width: 100%;
+  padding: 4px 8px;
+}
+
+input[type="range"] {
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  accent-color: #aab7c7;
+  cursor: pointer;
+}
+
+.presets {
+  grid-template-columns: 1fr 1fr;
+}
+
+.presets .section-title {
+  grid-column: 1 / -1;
+}
+
+.presets button {
+  width: 100%;
+  text-align: left;
+}
+
+.color-reset {
+  width: 100%;
+  margin-top: 2px;
+  background: #3f464e;
+}
+
+.color-reset:hover {
+  background: #48515b;
+}
+
+.light-cycle-toggle,
+.focus-pick-toggle {
+  width: 100%;
+  background: #4c5662;
+}
+
+.light-cycle-toggle:hover,
+.focus-pick-toggle:hover {
+  background: #566270;
+}
+
+.light-cycle-toggle[aria-pressed="true"],
+.focus-pick-toggle[aria-pressed="true"] {
+  background: #6b5a3d;
+}
+
+.light-cycle-toggle[aria-pressed="true"]:hover,
+.focus-pick-toggle[aria-pressed="true"]:hover {
+  background: #766546;
+}
+
+.gpu-status {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  color: #edf1f4;
+  background: #24282e;
+  border: 1px solid #191c20;
+  border-radius: 5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.22);
+}
+
+.gpu-status strong {
+  color: #b9c0c9;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gpu-status span {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.gpu-status.is-preferred {
+  border-color: rgba(109, 183, 126, 0.72);
+}
+
+.gpu-status.is-fallback {
+  border-color: rgba(218, 171, 85, 0.72);
+}
+
+a {
+  color: inherit;
+}
+
+#glossiness-factor {
+  display: none;
+  color: #d6d9de;
+  font-size: 12px;
+}
+
+#glossiness-factor input {
+  width: 40px;
+  text-align: center;
+  color: #f6f7f8;
+  background: #454b53;
+  border: 1px solid #1f2227;
+  border-radius: 4px;
+}
+
+  --></style>
+  <script type="module" src="webgl-path-tracing.js"></script>
+</head><body>
+  <div id="main">
+    <canvas id="canvas" width="512" height="512"></canvas>
+    <div id="error"><noscript>Please enable JavaScript.</noscript></div>
+
+    <div id="controls">
+      <button class="camera-playback" data-action="toggle-camera-playback" aria-pressed="true">Pause Camera</button>
+      <div id="gpu-status" class="gpu-status" role="status" aria-live="polite">
+        <strong>GPU</strong>
+        <span id="gpu-renderer">Requesting high-performance adapter...</span>
+      </div>
+
+      <div class="button-row">
+        <button data-action="select-light">Select Light</button>
+        <button data-action="add-sphere">Add Sphere</button>
+        <button data-action="add-cube">Add Cube</button>
+      </div>
+
+      <div class="control-section">
+        <div class="field">
+          <label for="material">Material</label>
+          <select id="material">
+            <option value="0" selected>Diffuse</option>
+            <option value="1">Mirror</option>
+            <option value="2">Glossy</option>
+            <option value="3">Glass</option>
+          </select>
+          <span id="glossiness-factor">
+            with glossiness factor: 0 &lt; <input id="glossiness" value="0.6"> &lt; 1
+          </span>
+        </div>
+
+        <div class="field">
+          <label for="environment">Environment</label>
+          <select id="environment">
+            <option value="0" selected>Cornell Box - Yellow and Blue</option>
+            <option value="1">Cornell Box - Red and Green</option>
+            <option value="2">Open Studio Sky</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="control-section render-settings">
+        <div class="field slider-field">
+          <label for="light-bounces">
+            Light bounces
+            <span id="light-bounces-value" class="slider-value">5</span>
+          </label>
+          <input id="light-bounces" type="range" min="1" max="8" step="1" value="5">
+        </div>
+
+        <div class="field slider-field">
+          <label>
+            Light intensity
+            <span id="light-intensity-value" class="slider-value">0.50</span>
+          </label>
+          <button class="light-cycle-toggle" data-action="toggle-light-cycle" aria-pressed="false">Cycle Light</button>
+        </div>
+
+        <div class="field slider-field">
+          <label for="light-size">
+            Light size
+            <span id="light-size-value" class="slider-value">0.10</span>
+          </label>
+          <input id="light-size" type="range" min="0.02" max="0.5" step="0.01" value="0.1">
+        </div>
+
+        <div class="field slider-field">
+          <label for="fog-density">
+            Fog density
+            <span id="fog-density-value" class="slider-value">0.00</span>
+          </label>
+          <input id="fog-density" type="range" min="0" max="2" step="0.05" value="0">
+        </div>
+
+        <div class="field slider-field">
+          <label for="sky-brightness">
+            Sky brightness
+            <span id="sky-brightness-value" class="slider-value">1.25</span>
+          </label>
+          <input id="sky-brightness" type="range" min="0.1" max="5" step="0.05" value="1.25">
+        </div>
+
+        <div class="field slider-field">
+          <label for="rays-per-pixel">
+            Rays per pixel
+            <span id="rays-per-pixel-value" class="slider-value">32</span>
+          </label>
+          <input id="rays-per-pixel" type="range" min="1" max="32" step="1" value="32">
+        </div>
+
+        <div class="field slider-field">
+          <label for="temporal-blend-frames">
+            Temporal AA
+            <span id="temporal-blend-frames-value" class="slider-value">32</span>
+          </label>
+          <input id="temporal-blend-frames" type="range" min="1" max="32" step="1" value="32">
+        </div>
+
+        <div class="field slider-field">
+          <label for="denoiser-strength">
+            Denoiser
+            <span id="denoiser-strength-value" class="slider-value">0.80</span>
+          </label>
+          <input id="denoiser-strength" type="range" min="0" max="1" step="0.05" value="0.8">
+        </div>
+      </div>
+
+      <div class="control-section camera-settings">
+        <div class="section-title">Camera effects</div>
+
+        <div class="field slider-field">
+          <label for="camera-focus-distance">
+            Focus distance
+            <span id="camera-focus-distance-value" class="slider-value">2.50</span>
+          </label>
+          <input id="camera-focus-distance" type="range" min="0.5" max="6" step="0.1" value="2.5">
+          <button id="focus-pick" class="focus-pick-toggle" data-action="toggle-focus-pick" aria-pressed="false">Pick Focus</button>
+        </div>
+
+        <div class="field slider-field">
+          <label for="camera-aperture">
+            Aperture
+            <span id="camera-aperture-value" class="slider-value">0.00</span>
+          </label>
+          <input id="camera-aperture" type="range" min="0" max="0.2" step="0.01" value="0">
+        </div>
+
+        <div class="field slider-field">
+          <label for="motion-blur">
+            Motion blur
+            <span id="motion-blur-value" class="slider-value">0.00</span>
+          </label>
+          <input id="motion-blur" type="range" min="0" max="0.95" step="0.05" value="0">
+        </div>
+      </div>
+
+      <div class="control-section color-settings">
+        <div class="section-title">Color correction</div>
+
+        <div class="field slider-field">
+          <label for="color-exposure">
+            Exposure
+            <span id="color-exposure-value" class="slider-value">0.00</span>
+          </label>
+          <input id="color-exposure" type="range" min="-4" max="4" step="0.25" value="0">
+        </div>
+
+        <div class="field slider-field">
+          <label for="color-brightness">
+            Brightness
+            <span id="color-brightness-value" class="slider-value">0.00</span>
+          </label>
+          <input id="color-brightness" type="range" min="-1" max="1" step="0.05" value="0">
+        </div>
+
+        <div class="field slider-field">
+          <label for="color-contrast">
+            Contrast
+            <span id="color-contrast-value" class="slider-value">1.00</span>
+          </label>
+          <input id="color-contrast" type="range" min="0" max="2" step="0.05" value="1">
+        </div>
+
+        <div class="field slider-field">
+          <label for="color-saturation">
+            Saturation
+            <span id="color-saturation-value" class="slider-value">1.00</span>
+          </label>
+          <input id="color-saturation" type="range" min="0" max="2" step="0.05" value="1">
+        </div>
+
+        <div class="field slider-field">
+          <label for="color-gamma">
+            Gamma
+            <span id="color-gamma-value" class="slider-value">1.00</span>
+          </label>
+          <input id="color-gamma" type="range" min="0.2" max="3" step="0.05" value="1">
+        </div>
+
+        <button class="color-reset" data-action="reset-color-correction">Reset Color</button>
+      </div>
+
+      <div class="control-section bloom-settings">
+        <div class="section-title">Bloom / Glare</div>
+
+        <div class="field slider-field">
+          <label for="bloom-strength">
+            Bloom
+            <span id="bloom-strength-value" class="slider-value">0.35</span>
+          </label>
+          <input id="bloom-strength" type="range" min="0" max="2" step="0.05" value="0.35">
+        </div>
+
+        <div class="field slider-field">
+          <label for="bloom-threshold">
+            Bloom threshold
+            <span id="bloom-threshold-value" class="slider-value">1.00</span>
+          </label>
+          <input id="bloom-threshold" type="range" min="0" max="4" step="0.05" value="1">
+        </div>
+
+        <div class="field slider-field">
+          <label for="glare-strength">
+            Glare
+            <span id="glare-strength-value" class="slider-value">0.20</span>
+          </label>
+          <input id="glare-strength" type="range" min="0" max="2" step="0.05" value="0.2">
+        </div>
+      </div>
+
+      <div class="control-section presets">
+        <div class="section-title">Load preset scene</div>
+        <button data-preset="sphereColumn">Sphere Column</button>
+        <button data-preset="spherePyramid">Sphere Pyramid</button>
+        <button data-preset="sphereAndCube">Sphere and Cube</button>
+        <button data-preset="cubeAndSpheres">Cube and Spheres</button>
+        <button data-preset="tableAndChair">Table and Chair</button>
+        <button data-preset="stacks">Stacks</button>
+      </div>
+    </div>
+  </div>
+</body></html>
