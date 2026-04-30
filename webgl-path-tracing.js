@@ -89,8 +89,8 @@ const MAX_GLARE_STRENGTH = 2;
 const ACTIVE_RAYS_PER_SAMPLE = CANVAS_SIZE * CANVAS_SIZE;
 const BENCHMARK_TIMER_QUERY_LIMIT = 4;
 const BENCHMARK_UPDATE_INTERVAL_MILLISECONDS = 250;
-const BENCHMARK_SMOOTHING_FACTOR = 0.18;
-const BENCHMARK_FRAME_RATE_SMOOTHING_FACTOR = 0.12;
+const BENCHMARK_ROLLING_WINDOW_MILLISECONDS = 60000;
+const BENCHMARK_ROLLING_COMPACT_THRESHOLD = 256;
 const MAX_PERCEPTUAL_FRAMES_PER_SECOND = 240;
 const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 1000000;
 const PERFORMANCE_SCORE_FRAME_RATE_MULTIPLIER = 12;
@@ -2273,6 +2273,141 @@ const createBenchmarkSnapshot = () => ({
   measurementSource: 'warming-up'
 });
 
+class RollingBenchmarkWindow {
+  constructor() {
+    this.samples = [];
+    this.sampleStartIndex = 0;
+    this.traceSampleCount = 0;
+    this.frameSampleCount = 0;
+    this.totalActiveRays = 0;
+    this.totalPathRayBudget = 0;
+    this.totalRenderedSamples = 0;
+    this.totalTraceMilliseconds = 0;
+    this.totalFrameMilliseconds = 0;
+    this.measurementSource = 'warming-up';
+  }
+
+  compactSamplesIfNeeded() {
+    if (
+      this.sampleStartIndex < BENCHMARK_ROLLING_COMPACT_THRESHOLD ||
+      this.sampleStartIndex * 2 < this.samples.length
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    this.samples = this.samples.slice(this.sampleStartIndex);
+    this.sampleStartIndex = 0;
+    return returnSuccess(undefined);
+  }
+
+  subtractSample(sample) {
+    if (sample.kind === 'trace') {
+      this.traceSampleCount -= 1;
+      this.totalActiveRays -= sample.activeRaysPerFrame;
+      this.totalPathRayBudget -= sample.pathRayBudgetPerFrame;
+      this.totalRenderedSamples -= sample.renderedSampleCount;
+      this.totalTraceMilliseconds -= sample.traceMilliseconds;
+      return returnSuccess(undefined);
+    }
+
+    this.frameSampleCount -= 1;
+    this.totalFrameMilliseconds -= sample.frameMilliseconds;
+    return returnSuccess(undefined);
+  }
+
+  pruneOldEntries(currentTimeMilliseconds) {
+    const cutoffMilliseconds = currentTimeMilliseconds - BENCHMARK_ROLLING_WINDOW_MILLISECONDS;
+    while (
+      this.sampleStartIndex < this.samples.length &&
+      this.samples[this.sampleStartIndex].timestampMilliseconds < cutoffMilliseconds
+    ) {
+      const [, subtractError] = this.subtractSample(this.samples[this.sampleStartIndex]);
+      if (subtractError) {
+        return returnFailure(subtractError.code, subtractError.message, subtractError.details);
+      }
+      this.sampleStartIndex += 1;
+    }
+
+    return this.compactSamplesIfNeeded();
+  }
+
+  writeSnapshot(benchmarkSnapshot) {
+    const traceSampleCount = Math.max(this.traceSampleCount, 1);
+    const frameSampleCount = Math.max(this.frameSampleCount, 1);
+    benchmarkSnapshot.activeRaysPerSecond = this.totalTraceMilliseconds > 0
+      ? this.totalActiveRays / (this.totalTraceMilliseconds * 0.001)
+      : 0;
+    benchmarkSnapshot.activeRaysPerFrame = this.totalActiveRays / traceSampleCount;
+    benchmarkSnapshot.pathRayBudgetPerFrame = this.totalPathRayBudget / traceSampleCount;
+    benchmarkSnapshot.samplesPerFrame = this.totalRenderedSamples / traceSampleCount;
+    benchmarkSnapshot.traceMilliseconds = this.totalTraceMilliseconds / traceSampleCount;
+    benchmarkSnapshot.perceptualFramesPerSecond = this.totalFrameMilliseconds > 0
+      ? clampNumber(1000 * this.frameSampleCount / this.totalFrameMilliseconds, 0, MAX_PERCEPTUAL_FRAMES_PER_SECOND)
+      : 0;
+    benchmarkSnapshot.perceptualFrameMilliseconds = this.totalFrameMilliseconds / frameSampleCount;
+    benchmarkSnapshot.measurementSource = this.measurementSource;
+    benchmarkSnapshot.performanceScore = calculatePerformanceScore(benchmarkSnapshot);
+    return returnSuccess(undefined);
+  }
+
+  recordTraceSample(
+    benchmarkSnapshot,
+    timestampMilliseconds,
+    renderedSampleCount,
+    lightBounceCount,
+    traceMilliseconds,
+    measurementSource
+  ) {
+    if (!Number.isFinite(traceMilliseconds) || traceMilliseconds <= 0 || renderedSampleCount <= 0) {
+      return returnSuccess(undefined);
+    }
+
+    const [, pruneError] = this.pruneOldEntries(timestampMilliseconds);
+    if (pruneError) {
+      return returnFailure(pruneError.code, pruneError.message, pruneError.details);
+    }
+
+    const activeRaysPerFrame = ACTIVE_RAYS_PER_SAMPLE * renderedSampleCount;
+    const pathRayBudgetPerFrame = activeRaysPerFrame * lightBounceCount;
+    this.samples.push({
+      kind: 'trace',
+      timestampMilliseconds,
+      activeRaysPerFrame,
+      pathRayBudgetPerFrame,
+      renderedSampleCount,
+      traceMilliseconds
+    });
+    this.traceSampleCount += 1;
+    this.totalActiveRays += activeRaysPerFrame;
+    this.totalPathRayBudget += pathRayBudgetPerFrame;
+    this.totalRenderedSamples += renderedSampleCount;
+    this.totalTraceMilliseconds += traceMilliseconds;
+    this.measurementSource = measurementSource;
+    return this.writeSnapshot(benchmarkSnapshot);
+  }
+
+  recordFramePacing(benchmarkSnapshot, timestampMilliseconds, elapsedSeconds) {
+    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
+      return returnSuccess(undefined);
+    }
+
+    const [, pruneError] = this.pruneOldEntries(timestampMilliseconds);
+    if (pruneError) {
+      return returnFailure(pruneError.code, pruneError.message, pruneError.details);
+    }
+
+    const frameMilliseconds = elapsedSeconds * 1000;
+    this.samples.push({
+      kind: 'frame',
+      timestampMilliseconds,
+      frameMilliseconds
+    });
+    this.frameSampleCount += 1;
+    this.totalFrameMilliseconds += frameMilliseconds;
+    return this.writeSnapshot(benchmarkSnapshot);
+  }
+}
+
 class PathTracer {
   constructor(
     webGlContext,
@@ -2351,6 +2486,7 @@ class PathTracer {
     this.sampleUniformValues.rayJitterX = 0;
     this.sampleUniformValues.rayJitterY = 0;
     this.benchmarkSnapshot = createBenchmarkSnapshot();
+    this.benchmarkWindow = new RollingBenchmarkWindow();
     this.tracerFrameUniformLocations = Object.create(null);
     this.tracerSampleUniformLocations = Object.create(null);
     cacheNamedUniformLocations(
@@ -2764,42 +2900,25 @@ class PathTracer {
     return this.gpuBenchmarkTimer.endTiming(renderedSampleCount, lightBounceCount);
   }
 
-  writeBenchmarkSnapshot(renderedSampleCount, lightBounceCount, durationMilliseconds, measurementSource) {
-    const activeRaysPerFrame = ACTIVE_RAYS_PER_SAMPLE * renderedSampleCount;
-    const activeRaysPerSecond = durationMilliseconds > 0
-      ? activeRaysPerFrame / (durationMilliseconds * 0.001)
-      : 0;
-    const snapshot = this.benchmarkSnapshot;
-    const previousRaysPerSecond = snapshot.activeRaysPerSecond;
-    snapshot.activeRaysPerSecond = previousRaysPerSecond > 0
-      ? previousRaysPerSecond + (activeRaysPerSecond - previousRaysPerSecond) * BENCHMARK_SMOOTHING_FACTOR
-      : activeRaysPerSecond;
-    snapshot.activeRaysPerFrame = activeRaysPerFrame;
-    snapshot.pathRayBudgetPerFrame = activeRaysPerFrame * lightBounceCount;
-    snapshot.samplesPerFrame = renderedSampleCount;
-    snapshot.traceMilliseconds = durationMilliseconds;
-    snapshot.measurementSource = measurementSource;
-    snapshot.performanceScore = calculatePerformanceScore(snapshot);
-    return returnSuccess(undefined);
+  writeBenchmarkSnapshot(
+    timestampMilliseconds,
+    renderedSampleCount,
+    lightBounceCount,
+    durationMilliseconds,
+    measurementSource
+  ) {
+    return this.benchmarkWindow.recordTraceSample(
+      this.benchmarkSnapshot,
+      timestampMilliseconds,
+      renderedSampleCount,
+      lightBounceCount,
+      durationMilliseconds,
+      measurementSource
+    );
   }
 
-  writeBenchmarkFramePacing(elapsedSeconds) {
-    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
-      return returnSuccess(undefined);
-    }
-
-    const frameMilliseconds = elapsedSeconds * 1000;
-    const nextPerceptualFramesPerSecond = clampNumber(1 / elapsedSeconds, 0, MAX_PERCEPTUAL_FRAMES_PER_SECOND);
-    const snapshot = this.benchmarkSnapshot;
-    const previousPerceptualFramesPerSecond = snapshot.perceptualFramesPerSecond;
-    snapshot.perceptualFramesPerSecond = previousPerceptualFramesPerSecond > 0
-      ? previousPerceptualFramesPerSecond + (
-        nextPerceptualFramesPerSecond - previousPerceptualFramesPerSecond
-      ) * BENCHMARK_FRAME_RATE_SMOOTHING_FACTOR
-      : nextPerceptualFramesPerSecond;
-    snapshot.perceptualFrameMilliseconds = frameMilliseconds;
-    snapshot.performanceScore = calculatePerformanceScore(snapshot);
-    return returnSuccess(undefined);
+  writeBenchmarkFramePacing(timestampMilliseconds, elapsedSeconds) {
+    return this.benchmarkWindow.recordFramePacing(this.benchmarkSnapshot, timestampMilliseconds, elapsedSeconds);
   }
 
   update(inverseCameraMatrix, applicationState, didCameraChange, cameraRight, cameraUp) {
@@ -2909,6 +3028,7 @@ class PathTracer {
 
     if (latestGpuTiming) {
       const [, benchmarkSnapshotError] = this.writeBenchmarkSnapshot(
+        performance.now(),
         latestGpuTiming.renderedSampleCount,
         latestGpuTiming.lightBounceCount,
         latestGpuTiming.durationMilliseconds,
@@ -5876,6 +5996,7 @@ const startAnimationLoop = (application) => {
 
     if (pathTracer.benchmarkSnapshot.measurementSource !== 'gpu-timer') {
       const [, frameBenchmarkError] = pathTracer.writeBenchmarkSnapshot(
+        currentTime,
         application.applicationState.raysPerPixel,
         application.applicationState.lightBounceCount,
         elapsedSeconds * 1000,
@@ -5887,7 +6008,7 @@ const startAnimationLoop = (application) => {
       }
     }
 
-    const [, framePacingError] = pathTracer.writeBenchmarkFramePacing(elapsedSeconds);
+    const [, framePacingError] = pathTracer.writeBenchmarkFramePacing(currentTime, elapsedSeconds);
     if (framePacingError) {
       displayError(application.errorElement, framePacingError);
       return returnFailure(framePacingError.code, framePacingError.message, framePacingError.details);
