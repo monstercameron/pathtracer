@@ -445,6 +445,17 @@ const uniformlyRandomVectorSource = [
   '}'
 ].join('');
 
+const randomLightOffsetSource = [
+  'vec3 randomLightOffset(float seed) {',
+  '  vec3 offset = vec3(',
+  '    random(vec3(17.17, 41.41, 73.73), seed),',
+  '    random(vec3(29.29, 59.59, 97.97), seed + 11.0),',
+  '    random(vec3(43.43, 83.83, 13.13), seed + 23.0)',
+  '  ) * 2.0 - 1.0;',
+  '  return offset * lightSize;',
+  '}'
+].join('');
+
 const specularReflectionSource = [
   'vec3 reflectedLight = normalize(reflect(light - hit, normal));',
   'specularHighlight = max(0.0, dot(reflectedLight, normalize(hit - origin)));'
@@ -1504,7 +1515,7 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
 
 const createMainShaderSource = () => [
   'void main() {',
-  '  vec3 newLight = light + uniformlyRandomVector(sampleSeed - 53.0) * lightSize;',
+  '  vec3 newLight = light + randomLightOffset(sampleSeed - 53.0);',
   `  vec3 texture = texture2D(texture, gl_FragCoord.xy / ${CANVAS_SIZE}.0).rgb;`,
   '  vec3 rayOrigin = eye;',
   '  vec3 rayDirection = initialRay;',
@@ -1529,6 +1540,7 @@ const createTracerFragmentSource = (sceneObjects, renderSettings) => {
     cosineWeightedDirectionSource,
     uniformlyRandomDirectionSource,
     uniformlyRandomVectorSource,
+    randomLightOffsetSource,
     createShadowShaderSource(sceneObjects),
     cameraFocusSource,
     shouldUseSurfaceShaderUtilities ? surfaceShaderUtilitySource : '',
@@ -1578,6 +1590,8 @@ const createLinkedProgram = (webGlContext, vertexSource, fragmentSource, label) 
   webGlContext.attachShader(program, vertexShader);
   webGlContext.attachShader(program, fragmentShader);
   webGlContext.linkProgram(program);
+  webGlContext.detachShader(program, vertexShader);
+  webGlContext.detachShader(program, fragmentShader);
   webGlContext.deleteShader(vertexShader);
   webGlContext.deleteShader(fragmentShader);
 
@@ -5738,6 +5752,8 @@ const createWebGlContext = (canvasElement) => {
       'Please see https://get.webgl.org/get-a-webgl-implementation/'
     );
   }
+
+  webGlContext.disable(webGlContext.DITHER);
 
   return returnSuccess(webGlContext);
 };
