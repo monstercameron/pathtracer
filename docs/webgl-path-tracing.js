@@ -21,6 +21,7 @@ const CAMERA_AUTO_ROTATION_SPEED = 0.12;
 const INITIAL_CAMERA_DISTANCE = 2.5;
 const PHYSICS_FIXED_TIMESTEP_SECONDS = 1 / 60;
 const PHYSICS_MAX_FRAME_SECONDS = 1 / 15;
+const PHYSICS_SLEEP_CHECK_INTERVAL_SECONDS = 0.25;
 const PHYSICS_GRAVITY_Y = -2.5;
 const PHYSICS_ROOM_WALL_THICKNESS = 0.04;
 const PHYSICS_SPHERE_RESTITUTION = 0.45;
@@ -91,6 +92,7 @@ const BENCHMARK_TIMER_QUERY_LIMIT = 4;
 const BENCHMARK_UPDATE_INTERVAL_MILLISECONDS = 250;
 const BENCHMARK_ROLLING_WINDOW_MILLISECONDS = 60000;
 const BENCHMARK_ROLLING_COMPACT_THRESHOLD = 256;
+const BENCHMARK_FRAME_BUCKET_MILLISECONDS = 500;
 const MAX_PERCEPTUAL_FRAMES_PER_SECOND = 240;
 const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 100000;
 const PERFORMANCE_SCORE_READY_TRACE_SAMPLE_COUNT = 12;
@@ -2232,6 +2234,7 @@ class RapierPhysicsWorld {
     this.dynamicSphereObjects = [];
     this.dynamicSphereRigidBodies = [];
     this.physicsAccumulatorSeconds = 0;
+    this.sleepCheckCooldownSeconds = 0;
   }
 
   rebuildScene(sceneObjects, applicationState) {
@@ -2240,6 +2243,7 @@ class RapierPhysicsWorld {
     this.dynamicSphereObjects = [];
     this.dynamicSphereRigidBodies = [];
     this.physicsAccumulatorSeconds = 0;
+    this.sleepCheckCooldownSeconds = 0;
 
     const [, clearError] = this.clearSpherePhysicsBodies(sceneObjects);
     if (clearError) {
@@ -2373,11 +2377,18 @@ class RapierPhysicsWorld {
       return returnSuccess(false);
     }
 
-    if (!this.hasAwakeDynamicSpheres()) {
-      this.physicsAccumulatorSeconds = 0;
+    if (this.sleepCheckCooldownSeconds > 0) {
+      this.sleepCheckCooldownSeconds = Math.max(0, this.sleepCheckCooldownSeconds - elapsedSeconds);
       return returnSuccess(false);
     }
 
+    if (!this.hasAwakeDynamicSpheres()) {
+      this.physicsAccumulatorSeconds = 0;
+      this.sleepCheckCooldownSeconds = PHYSICS_SLEEP_CHECK_INTERVAL_SECONDS;
+      return returnSuccess(false);
+    }
+
+    this.sleepCheckCooldownSeconds = 0;
     this.physicsAccumulatorSeconds += Math.min(elapsedSeconds, PHYSICS_MAX_FRAME_SECONDS);
     let didStepWorld = false;
 
@@ -2578,6 +2589,7 @@ class RollingBenchmarkWindow {
     this.totalRenderedSamples = 0;
     this.totalTraceMilliseconds = 0;
     this.totalFrameMilliseconds = 0;
+    this.activeFrameSample = null;
     this.measurementSource = 'warming-up';
   }
 
@@ -2609,8 +2621,11 @@ class RollingBenchmarkWindow {
       return returnSuccess(undefined);
     }
 
-    this.frameSampleCount -= 1;
+    this.frameSampleCount -= sample.frameCount || 1;
     this.totalFrameMilliseconds -= sample.frameMilliseconds;
+    if (sample === this.activeFrameSample) {
+      this.activeFrameSample = null;
+    }
     return returnSuccess(undefined);
   }
 
@@ -2701,11 +2716,24 @@ class RollingBenchmarkWindow {
     }
 
     const frameMilliseconds = elapsedSeconds * 1000;
-    this.samples.push({
+    if (
+      this.activeFrameSample &&
+      timestampMilliseconds - this.activeFrameSample.timestampMilliseconds < BENCHMARK_FRAME_BUCKET_MILLISECONDS
+    ) {
+      this.activeFrameSample.frameCount += 1;
+      this.activeFrameSample.frameMilliseconds += frameMilliseconds;
+      this.frameSampleCount += 1;
+      this.totalFrameMilliseconds += frameMilliseconds;
+      return this.writeSnapshot(benchmarkSnapshot);
+    }
+
+    this.activeFrameSample = {
       kind: 'frame',
       timestampMilliseconds,
-      frameMilliseconds
-    });
+      frameMilliseconds,
+      frameCount: 1
+    };
+    this.samples.push(this.activeFrameSample);
     this.frameSampleCount += 1;
     this.totalFrameMilliseconds += frameMilliseconds;
     return this.writeSnapshot(benchmarkSnapshot);
