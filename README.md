@@ -2,6 +2,9 @@
 
 Welcome. This is a modernized WebGL path tracing tech demo with interactive scene controls, Rapier-powered sphere physics, temporal anti-aliasing, bloom/glare, fog, glass materials, and an optional open-sky environment.
 
+Live demo:
+https://monstercameron.github.io/pathtracer/
+
 The project is forked from Evan Wallace's original WebGL path tracing demo:
 https://madebyevan.com/webgl-path-tracing/
 
