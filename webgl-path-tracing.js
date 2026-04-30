@@ -1502,7 +1502,7 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     '    vec3 surfaceColor = vec3(0.75);',
     '    float specularHighlight = 0.0;',
     '    float surfaceLightResponse = 1.0;',
-    '    vec3 surfaceObjectPoint = hit;',
+    sceneUsesSurfaceShaderUtilities(sceneObjects) ? '    vec3 surfaceObjectPoint;' : '',
     '    vec3 normal;',
     `    if(roomDistance < ${SHADER_INFINITY} && t == roomDistance) {`,
     '      hit = roomHit;',
@@ -1870,7 +1870,7 @@ class SphereSceneObject {
     return [
       `else if(t == ${this.intersectionName}) {`,
       `normal = normalForSphere(hit, ${this.centerUniformName}, ${this.radiusUniformName});`,
-      `surfaceObjectPoint = hit - ${this.centerUniformName};`,
+      materialUsesSurfaceShaderUtilities(this.material) ? `surfaceObjectPoint = hit - ${this.centerUniformName};` : '',
       createObjectSurfaceShaderSource(this.material),
       '}'
     ].join('');
@@ -2015,7 +2015,9 @@ class CubeSceneObject {
     return [
       `else if(t == ${this.intersectionDistanceName}) {`,
       `normal = normalForCube(hit, ${this.minUniformName}, ${this.maxUniformName});`,
-      `surfaceObjectPoint = hit - (${this.minUniformName} + ${this.maxUniformName}) * 0.5;`,
+      materialUsesSurfaceShaderUtilities(this.material)
+        ? `surfaceObjectPoint = hit - (${this.minUniformName} + ${this.maxUniformName}) * 0.5;`
+        : '',
       createObjectSurfaceShaderSource(this.material),
       '}'
     ].join('');
