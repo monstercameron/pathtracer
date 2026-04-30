@@ -90,6 +90,22 @@ const ACTIVE_RAYS_PER_SAMPLE = CANVAS_SIZE * CANVAS_SIZE;
 const BENCHMARK_TIMER_QUERY_LIMIT = 4;
 const BENCHMARK_UPDATE_INTERVAL_MILLISECONDS = 250;
 const BENCHMARK_SMOOTHING_FACTOR = 0.18;
+const BENCHMARK_FRAME_RATE_SMOOTHING_FACTOR = 0.12;
+const MAX_PERCEPTUAL_FRAMES_PER_SECOND = 240;
+const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 1000000;
+const PERFORMANCE_SCORE_FRAME_RATE_MULTIPLIER = 12;
+const PERFORMANCE_SCORE_SAMPLE_MULTIPLIER = 8;
+const PERFORMANCE_SCORE_TRACE_RATE_MULTIPLIER = 20;
+const PERFORMANCE_SCORE_RAY_WEIGHT = 0.55;
+const PERFORMANCE_SCORE_FRAME_RATE_WEIGHT = 0.3;
+const PERFORMANCE_SCORE_SAMPLE_WEIGHT = 0.1;
+const PERFORMANCE_SCORE_TRACE_WEIGHT = 0.05;
+const PERFORMANCE_SCORE_TOTAL_WEIGHT = (
+  PERFORMANCE_SCORE_RAY_WEIGHT +
+  PERFORMANCE_SCORE_FRAME_RATE_WEIGHT +
+  PERFORMANCE_SCORE_SAMPLE_WEIGHT +
+  PERFORMANCE_SCORE_TRACE_WEIGHT
+);
 const NANOSECONDS_PER_MILLISECOND = 1000000;
 const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
 const SKY_TEXTURE_WIDTH = 256;
@@ -699,11 +715,37 @@ const formatBenchmarkRateValue = (value) => {
   return compactValue === '...' ? compactValue : `${compactValue}/s`;
 };
 
+const formatFramesPerSecondValue = (value) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '...';
+  }
+  if (value >= 100) {
+    return String(Math.round(value));
+  }
+  return value.toFixed(1);
+};
+
 const formatBenchmarkMilliseconds = (value) => {
   if (!Number.isFinite(value) || value <= 0) {
     return '...';
   }
   return `${value.toFixed(2)} ms`;
+};
+
+const calculatePerformanceScore = (benchmarkSnapshot) => {
+  const rayScore = benchmarkSnapshot.activeRaysPerSecond / PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT;
+  const frameRateScore = benchmarkSnapshot.perceptualFramesPerSecond * PERFORMANCE_SCORE_FRAME_RATE_MULTIPLIER;
+  const sampleScore = benchmarkSnapshot.samplesPerFrame * PERFORMANCE_SCORE_SAMPLE_MULTIPLIER;
+  const traceRateScore = benchmarkSnapshot.traceMilliseconds > 0
+    ? (1000 / benchmarkSnapshot.traceMilliseconds) * PERFORMANCE_SCORE_TRACE_RATE_MULTIPLIER
+    : 0;
+  const weightedScore = (
+    rayScore * PERFORMANCE_SCORE_RAY_WEIGHT +
+    frameRateScore * PERFORMANCE_SCORE_FRAME_RATE_WEIGHT +
+    sampleScore * PERFORMANCE_SCORE_SAMPLE_WEIGHT +
+    traceRateScore * PERFORMANCE_SCORE_TRACE_WEIGHT
+  ) / PERFORMANCE_SCORE_TOTAL_WEIGHT;
+  return Math.max(0, Math.round(weightedScore));
 };
 
 const writeIdentityMat4 = (matrix) => {
@@ -2225,6 +2267,9 @@ const createBenchmarkSnapshot = () => ({
   pathRayBudgetPerFrame: 0,
   samplesPerFrame: 0,
   traceMilliseconds: 0,
+  perceptualFramesPerSecond: 0,
+  perceptualFrameMilliseconds: 0,
+  performanceScore: 0,
   measurementSource: 'warming-up'
 });
 
@@ -2734,6 +2779,26 @@ class PathTracer {
     snapshot.samplesPerFrame = renderedSampleCount;
     snapshot.traceMilliseconds = durationMilliseconds;
     snapshot.measurementSource = measurementSource;
+    snapshot.performanceScore = calculatePerformanceScore(snapshot);
+    return returnSuccess(undefined);
+  }
+
+  writeBenchmarkFramePacing(elapsedSeconds) {
+    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
+      return returnSuccess(undefined);
+    }
+
+    const frameMilliseconds = elapsedSeconds * 1000;
+    const nextPerceptualFramesPerSecond = clampNumber(1 / elapsedSeconds, 0, MAX_PERCEPTUAL_FRAMES_PER_SECOND);
+    const snapshot = this.benchmarkSnapshot;
+    const previousPerceptualFramesPerSecond = snapshot.perceptualFramesPerSecond;
+    snapshot.perceptualFramesPerSecond = previousPerceptualFramesPerSecond > 0
+      ? previousPerceptualFramesPerSecond + (
+        nextPerceptualFramesPerSecond - previousPerceptualFramesPerSecond
+      ) * BENCHMARK_FRAME_RATE_SMOOTHING_FACTOR
+      : nextPerceptualFramesPerSecond;
+    snapshot.perceptualFrameMilliseconds = frameMilliseconds;
+    snapshot.performanceScore = calculatePerformanceScore(snapshot);
     return returnSuccess(undefined);
   }
 
@@ -3318,13 +3383,17 @@ const formatBenchmarkSourceLabel = (measurementSource) => {
 
 class BenchmarkDisplay {
   constructor(
+    performanceScoreElement,
     raysPerSecondElement,
+    perceptualFramesPerSecondElement,
     raysPerFrameElement,
     samplesPerFrameElement,
     frameTimeElement,
     sourceElement
   ) {
+    this.performanceScoreElement = performanceScoreElement;
     this.raysPerSecondElement = raysPerSecondElement;
+    this.perceptualFramesPerSecondElement = perceptualFramesPerSecondElement;
     this.raysPerFrameElement = raysPerFrameElement;
     this.samplesPerFrameElement = samplesPerFrameElement;
     this.frameTimeElement = frameTimeElement;
@@ -3341,12 +3410,32 @@ class BenchmarkDisplay {
     }
 
     this.previousUpdateMilliseconds = currentTimeMilliseconds;
+    const [, performanceScoreError] = writeElementTextIfChanged(
+      this.performanceScoreElement,
+      formatCompactMetricValue(benchmarkSnapshot.performanceScore)
+    );
+    if (performanceScoreError) {
+      return returnFailure(performanceScoreError.code, performanceScoreError.message, performanceScoreError.details);
+    }
+
     const [, raysPerSecondError] = writeElementTextIfChanged(
       this.raysPerSecondElement,
       formatBenchmarkRateValue(benchmarkSnapshot.activeRaysPerSecond)
     );
     if (raysPerSecondError) {
       return returnFailure(raysPerSecondError.code, raysPerSecondError.message, raysPerSecondError.details);
+    }
+
+    const [, perceptualFramesPerSecondError] = writeElementTextIfChanged(
+      this.perceptualFramesPerSecondElement,
+      formatFramesPerSecondValue(benchmarkSnapshot.perceptualFramesPerSecond)
+    );
+    if (perceptualFramesPerSecondError) {
+      return returnFailure(
+        perceptualFramesPerSecondError.code,
+        perceptualFramesPerSecondError.message,
+        perceptualFramesPerSecondError.details
+      );
     }
 
     const [, raysPerFrameError] = writeElementTextIfChanged(
@@ -5216,6 +5305,18 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(controlsElementError.code, controlsElementError.message, controlsElementError.details);
   }
 
+  const [benchmarkPerformanceScoreElement, benchmarkPerformanceScoreError] = readRequiredElement(
+    documentObject,
+    'benchmark-performance-score'
+  );
+  if (benchmarkPerformanceScoreError) {
+    return returnFailure(
+      benchmarkPerformanceScoreError.code,
+      benchmarkPerformanceScoreError.message,
+      benchmarkPerformanceScoreError.details
+    );
+  }
+
   const [benchmarkRaysPerSecondElement, benchmarkRaysPerSecondError] = readRequiredElement(
     documentObject,
     'benchmark-rays-per-second'
@@ -5225,6 +5326,18 @@ const createPathTracingApplication = async (documentObject) => {
       benchmarkRaysPerSecondError.code,
       benchmarkRaysPerSecondError.message,
       benchmarkRaysPerSecondError.details
+    );
+  }
+
+  const [benchmarkPerceptualFramesPerSecondElement, benchmarkPerceptualFramesPerSecondError] = readRequiredElement(
+    documentObject,
+    'benchmark-perceptual-fps'
+  );
+  if (benchmarkPerceptualFramesPerSecondError) {
+    return returnFailure(
+      benchmarkPerceptualFramesPerSecondError.code,
+      benchmarkPerceptualFramesPerSecondError.message,
+      benchmarkPerceptualFramesPerSecondError.details
     );
   }
 
@@ -5652,7 +5765,9 @@ const createPathTracingApplication = async (documentObject) => {
     glareStrengthValueElement
   );
   const benchmarkDisplay = new BenchmarkDisplay(
+    benchmarkPerformanceScoreElement,
     benchmarkRaysPerSecondElement,
+    benchmarkPerceptualFramesPerSecondElement,
     benchmarkRaysPerFrameElement,
     benchmarkSamplesPerFrameElement,
     benchmarkFrameTimeElement,
@@ -5770,6 +5885,12 @@ const startAnimationLoop = (application) => {
         displayError(application.errorElement, frameBenchmarkError);
         return returnFailure(frameBenchmarkError.code, frameBenchmarkError.message, frameBenchmarkError.details);
       }
+    }
+
+    const [, framePacingError] = pathTracer.writeBenchmarkFramePacing(elapsedSeconds);
+    if (framePacingError) {
+      displayError(application.errorElement, framePacingError);
+      return returnFailure(framePacingError.code, framePacingError.message, framePacingError.details);
     }
 
     const [, benchmarkError] = application.benchmarkDisplay.update(

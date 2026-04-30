@@ -300,7 +300,7 @@ input[type="range"] {
 
 .benchmark-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -589,8 +589,16 @@ a {
     </div>
     <div class="benchmark-grid">
       <div class="benchmark-metric">
+        <strong id="benchmark-performance-score">...</strong>
+        <span>Score</span>
+      </div>
+      <div class="benchmark-metric">
         <strong id="benchmark-rays-per-second">...</strong>
         <span>Active rays/s</span>
+      </div>
+      <div class="benchmark-metric">
+        <strong id="benchmark-perceptual-fps">...</strong>
+        <span>Perceptual FPS</span>
       </div>
       <div class="benchmark-metric">
         <strong id="benchmark-rays-per-frame">...</strong>
