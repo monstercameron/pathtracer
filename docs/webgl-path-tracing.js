@@ -120,8 +120,14 @@ const FLOATS_PER_VEC3 = 3;
 const FLOATS_PER_MAT4 = 16;
 const WEBGL_POWER_PREFERENCE = 'high-performance';
 const HIGH_PERFORMANCE_WEBGL_CONTEXT_ATTRIBUTES = Object.freeze({
+  alpha: false,
+  antialias: false,
+  depth: false,
+  premultipliedAlpha: false,
+  preserveDrawingBuffer: false,
   powerPreference: WEBGL_POWER_PREFERENCE,
-  failIfMajorPerformanceCaveat: false
+  failIfMajorPerformanceCaveat: false,
+  stencil: false
 });
 const PREFERRED_GPU_RENDERER_PATTERNS = Object.freeze([/\bB580\b/i, /\bArc\b/i]);
 const TEMPORAL_DISPLAY_SCALAR_UNIFORM_NAMES = Object.freeze([
