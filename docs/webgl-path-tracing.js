@@ -381,17 +381,16 @@ const normalForCubeSource = [
 ].join('');
 
 const intersectSphereSource = [
-  'float intersectSphere(vec3 origin, vec3 ray, vec3 sphereCenter, float sphereRadius) {',
+  'float intersectSphere(vec3 origin, vec3 ray, float rayLengthSquared, vec3 sphereCenter, float sphereRadius) {',
   '  vec3 toSphere = origin - sphereCenter;',
-  '  float a = dot(ray, ray);',
   '  float halfB = dot(toSphere, ray);',
   '  float c = dot(toSphere, toSphere) - sphereRadius*sphereRadius;',
-  '  float discriminant = halfB*halfB - a*c;',
+  '  float discriminant = halfB*halfB - rayLengthSquared*c;',
   '  if(discriminant > 0.0) {',
   '    float root = sqrt(discriminant);',
-  '    float tNear = (-halfB - root) / a;',
+  '    float tNear = (-halfB - root) / rayLengthSquared;',
   `    if(tNear > ${SHADER_EPSILON}) return tNear;`,
-  '    float tFar = (-halfB + root) / a;',
+  '    float tFar = (-halfB + root) / rayLengthSquared;',
   `    if(tFar > ${SHADER_EPSILON}) return tFar;`,
   '  }',
   `  return ${SHADER_INFINITY};`,
@@ -1342,9 +1341,28 @@ const sceneUsesCubeShadowTests = (sceneObjects) => {
   return false;
 };
 
+const sceneUsesSphereObjects = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    if (sceneObject instanceof SphereSceneObject) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const sceneUsesSphereShadowTests = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    if (sceneObject instanceof SphereSceneObject && !isTransparentMaterial(sceneObject.material)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 const createShadowShaderSource = (sceneObjects) => [
   'float shadow(vec3 origin, vec3 ray) {',
   sceneUsesCubeShadowTests(sceneObjects) ? '  vec3 inverseRay = 1.0 / ray;' : '',
+  sceneUsesSphereShadowTests(sceneObjects) ? '  float rayLengthSquared = dot(ray, ray);' : '',
   joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getShadowTestCode()),
   '  return 1.0;',
   '}'
@@ -1466,6 +1484,7 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     : yellowBlueCornellBoxSource;
   const isOpenSkyEnvironment = renderSettings.environment === ENVIRONMENT.OPEN_SKY_STUDIO;
   const isFogEnabled = renderSettings.fogDensity > 0.0001;
+  const hasSphereObjects = sceneUsesSphereObjects(sceneObjects);
   const lightBounceCount = normalizeBoundedInteger(
     renderSettings.lightBounceCount,
     DEFAULT_LIGHT_BOUNCE_COUNT,
@@ -1505,6 +1524,7 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     '      roomNormal = -normalForCube(roomHit, roomCubeMin, roomCubeMax);',
     roomOpenSource,
     '    }',
+    hasSphereObjects ? '    float rayLengthSquared = dot(ray, ray);' : '',
     joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getIntersectCode()),
     '    float t = roomDistance;',
     joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getMinimumIntersectCode()),
@@ -1863,7 +1883,7 @@ class SphereSceneObject {
   }
 
   getIntersectCode() {
-    return `float ${this.intersectionName} = intersectSphere(origin, ray, ${this.centerUniformName}, ${this.radiusUniformName});`;
+    return `float ${this.intersectionName} = intersectSphere(origin, ray, rayLengthSquared, ${this.centerUniformName}, ${this.radiusUniformName});`;
   }
 
   getShadowTestCode() {
