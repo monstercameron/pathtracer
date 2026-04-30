@@ -2455,9 +2455,38 @@ class GpuBenchmarkTimer {
     this.webGlContext = webGlContext;
     this.timerExtension = timerExtension;
     this.pendingQueries = [];
+    this.queryPool = [];
     this.activeQuery = null;
     this.previousQueryStartMilliseconds = 0;
     this.previousPollMilliseconds = 0;
+  }
+
+  acquireQuery() {
+    const pooledQuery = this.queryPool.pop();
+    if (pooledQuery) {
+      return returnSuccess(pooledQuery);
+    }
+
+    const query = this.timerExtension.createQueryEXT();
+    if (!query) {
+      return returnSuccess(null);
+    }
+
+    return returnSuccess(query);
+  }
+
+  releaseQuery(query) {
+    if (!query) {
+      return returnSuccess(undefined);
+    }
+
+    if (this.queryPool.length < BENCHMARK_TIMER_QUERY_LIMIT) {
+      this.queryPool.push(query);
+      return returnSuccess(undefined);
+    }
+
+    this.timerExtension.deleteQueryEXT(query);
+    return returnSuccess(undefined);
   }
 
   beginTiming() {
@@ -2473,7 +2502,10 @@ class GpuBenchmarkTimer {
       return returnSuccess(false);
     }
 
-    const query = this.timerExtension.createQueryEXT();
+    const [query, queryError] = this.acquireQuery();
+    if (queryError) {
+      return returnFailure(queryError.code, queryError.message, queryError.details);
+    }
     if (!query) {
       return returnSuccess(false);
     }
@@ -2504,6 +2536,9 @@ class GpuBenchmarkTimer {
     const timerExtension = this.timerExtension;
     while (this.pendingQueries.length > 0) {
       timerExtension.deleteQueryEXT(this.pendingQueries.pop().query);
+    }
+    while (this.queryPool.length > 0) {
+      timerExtension.deleteQueryEXT(this.queryPool.pop());
     }
     return returnSuccess(undefined);
   }
@@ -2547,8 +2582,11 @@ class GpuBenchmarkTimer {
         pendingQuery.query,
         timerExtension.QUERY_RESULT_EXT
       );
-      timerExtension.deleteQueryEXT(pendingQuery.query);
       this.pendingQueries.shift();
+      const [, releaseError] = this.releaseQuery(pendingQuery.query);
+      if (releaseError) {
+        return returnFailure(releaseError.code, releaseError.message, releaseError.details);
+      }
 
       if (Number.isFinite(elapsedNanoseconds) && elapsedNanoseconds > 0) {
         latestTiming = {
