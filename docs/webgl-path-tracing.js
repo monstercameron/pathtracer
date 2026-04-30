@@ -96,10 +96,21 @@ const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 1000000;
 const PERFORMANCE_SCORE_FRAME_RATE_MULTIPLIER = 12;
 const PERFORMANCE_SCORE_SAMPLE_MULTIPLIER = 8;
 const PERFORMANCE_SCORE_TRACE_RATE_MULTIPLIER = 20;
+const PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER = 0.75;
+const PERFORMANCE_SCORE_WORKLOAD_MULTIPLIER_RANGE = 1.25;
 const PERFORMANCE_SCORE_RAY_WEIGHT = 0.55;
 const PERFORMANCE_SCORE_FRAME_RATE_WEIGHT = 0.3;
 const PERFORMANCE_SCORE_SAMPLE_WEIGHT = 0.1;
 const PERFORMANCE_SCORE_TRACE_WEIGHT = 0.05;
+const PERFORMANCE_SCORE_RAY_SLIDER_WEIGHT = 0.34;
+const PERFORMANCE_SCORE_BOUNCE_SLIDER_WEIGHT = 0.26;
+const PERFORMANCE_SCORE_TEMPORAL_SLIDER_WEIGHT = 0.08;
+const PERFORMANCE_SCORE_DENOISER_SLIDER_WEIGHT = 0.07;
+const PERFORMANCE_SCORE_BLOOM_SLIDER_WEIGHT = 0.06;
+const PERFORMANCE_SCORE_GLARE_SLIDER_WEIGHT = 0.06;
+const PERFORMANCE_SCORE_FOG_SLIDER_WEIGHT = 0.05;
+const PERFORMANCE_SCORE_APERTURE_SLIDER_WEIGHT = 0.04;
+const PERFORMANCE_SCORE_MOTION_BLUR_SLIDER_WEIGHT = 0.04;
 const PERFORMANCE_SCORE_TOTAL_WEIGHT = (
   PERFORMANCE_SCORE_RAY_WEIGHT +
   PERFORMANCE_SCORE_FRAME_RATE_WEIGHT +
@@ -732,12 +743,43 @@ const formatBenchmarkMilliseconds = (value) => {
   return `${value.toFixed(2)} ms`;
 };
 
+const normalizeScoreSliderValue = (value, minValue, maxValue) => {
+  if (!Number.isFinite(value) || maxValue <= minValue) {
+    return 0;
+  }
+  return clampNumber((value - minValue) / (maxValue - minValue), 0, 1);
+};
+
+const calculateBenchmarkWorkloadMultiplier = (renderedSampleCount, applicationState) => {
+  const sliderWeight = (
+    normalizeScoreSliderValue(renderedSampleCount, MIN_RAYS_PER_PIXEL, MAX_RAYS_PER_PIXEL) *
+      PERFORMANCE_SCORE_RAY_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.lightBounceCount, MIN_LIGHT_BOUNCE_COUNT, MAX_LIGHT_BOUNCE_COUNT) *
+      PERFORMANCE_SCORE_BOUNCE_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.temporalBlendFrames, MIN_TEMPORAL_BLEND_FRAMES, MAX_TEMPORAL_BLEND_FRAMES) *
+      PERFORMANCE_SCORE_TEMPORAL_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.denoiserStrength, MIN_DENOISER_STRENGTH, MAX_DENOISER_STRENGTH) *
+      PERFORMANCE_SCORE_DENOISER_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.bloomStrength, MIN_BLOOM_STRENGTH, MAX_BLOOM_STRENGTH) *
+      PERFORMANCE_SCORE_BLOOM_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.glareStrength, MIN_GLARE_STRENGTH, MAX_GLARE_STRENGTH) *
+      PERFORMANCE_SCORE_GLARE_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.fogDensity, MIN_FOG_DENSITY, MAX_FOG_DENSITY) *
+      PERFORMANCE_SCORE_FOG_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.cameraAperture, MIN_CAMERA_APERTURE, MAX_CAMERA_APERTURE) *
+      PERFORMANCE_SCORE_APERTURE_SLIDER_WEIGHT +
+    normalizeScoreSliderValue(applicationState.motionBlurStrength, MIN_MOTION_BLUR_STRENGTH, MAX_MOTION_BLUR_STRENGTH) *
+      PERFORMANCE_SCORE_MOTION_BLUR_SLIDER_WEIGHT
+  );
+  return PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER + sliderWeight * PERFORMANCE_SCORE_WORKLOAD_MULTIPLIER_RANGE;
+};
+
 const calculatePerformanceScore = (benchmarkSnapshot) => {
   const rayScore = benchmarkSnapshot.activeRaysPerSecond / PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT;
   const frameRateScore = benchmarkSnapshot.perceptualFramesPerSecond * PERFORMANCE_SCORE_FRAME_RATE_MULTIPLIER;
-  const sampleScore = benchmarkSnapshot.samplesPerFrame * PERFORMANCE_SCORE_SAMPLE_MULTIPLIER;
-  const traceRateScore = benchmarkSnapshot.traceMilliseconds > 0
-    ? (1000 / benchmarkSnapshot.traceMilliseconds) * PERFORMANCE_SCORE_TRACE_RATE_MULTIPLIER
+  const sampleScore = benchmarkSnapshot.rollingSamplesPerFrame * PERFORMANCE_SCORE_SAMPLE_MULTIPLIER;
+  const traceRateScore = benchmarkSnapshot.rollingTraceMilliseconds > 0
+    ? (1000 / benchmarkSnapshot.rollingTraceMilliseconds) * PERFORMANCE_SCORE_TRACE_RATE_MULTIPLIER
     : 0;
   const weightedScore = (
     rayScore * PERFORMANCE_SCORE_RAY_WEIGHT +
@@ -745,7 +787,7 @@ const calculatePerformanceScore = (benchmarkSnapshot) => {
     sampleScore * PERFORMANCE_SCORE_SAMPLE_WEIGHT +
     traceRateScore * PERFORMANCE_SCORE_TRACE_WEIGHT
   ) / PERFORMANCE_SCORE_TOTAL_WEIGHT;
-  return Math.max(0, Math.round(weightedScore));
+  return Math.max(0, Math.round(weightedScore * benchmarkSnapshot.workloadMultiplier));
 };
 
 const writeIdentityMat4 = (matrix) => {
@@ -2171,7 +2213,7 @@ class GpuBenchmarkTimer {
     return returnSuccess(true);
   }
 
-  endTiming(renderedSampleCount, lightBounceCount) {
+  endTiming(renderedSampleCount, lightBounceCount, workloadMultiplier) {
     if (!this.activeQuery) {
       return returnSuccess(false);
     }
@@ -2181,7 +2223,8 @@ class GpuBenchmarkTimer {
     this.pendingQueries.push({
       query,
       renderedSampleCount,
-      lightBounceCount
+      lightBounceCount,
+      workloadMultiplier
     });
     this.activeQuery = null;
     return returnSuccess(true);
@@ -2232,7 +2275,8 @@ class GpuBenchmarkTimer {
         latestTiming = {
           durationMilliseconds: elapsedNanoseconds / NANOSECONDS_PER_MILLISECOND,
           renderedSampleCount: pendingQuery.renderedSampleCount,
-          lightBounceCount: pendingQuery.lightBounceCount
+          lightBounceCount: pendingQuery.lightBounceCount,
+          workloadMultiplier: pendingQuery.workloadMultiplier
         };
       }
     }
@@ -2267,8 +2311,11 @@ const createBenchmarkSnapshot = () => ({
   pathRayBudgetPerFrame: 0,
   samplesPerFrame: 0,
   traceMilliseconds: 0,
+  rollingSamplesPerFrame: 0,
+  rollingTraceMilliseconds: 0,
   perceptualFramesPerSecond: 0,
   perceptualFrameMilliseconds: 0,
+  workloadMultiplier: PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER,
   performanceScore: 0,
   measurementSource: 'warming-up'
 });
@@ -2284,6 +2331,7 @@ class RollingBenchmarkWindow {
     this.totalRenderedSamples = 0;
     this.totalTraceMilliseconds = 0;
     this.totalFrameMilliseconds = 0;
+    this.totalWorkloadMultiplier = 0;
     this.measurementSource = 'warming-up';
   }
 
@@ -2307,6 +2355,7 @@ class RollingBenchmarkWindow {
       this.totalPathRayBudget -= sample.pathRayBudgetPerFrame;
       this.totalRenderedSamples -= sample.renderedSampleCount;
       this.totalTraceMilliseconds -= sample.traceMilliseconds;
+      this.totalWorkloadMultiplier -= sample.workloadMultiplier;
       return returnSuccess(undefined);
     }
 
@@ -2337,10 +2386,11 @@ class RollingBenchmarkWindow {
     benchmarkSnapshot.activeRaysPerSecond = this.totalTraceMilliseconds > 0
       ? this.totalActiveRays / (this.totalTraceMilliseconds * 0.001)
       : 0;
-    benchmarkSnapshot.activeRaysPerFrame = this.totalActiveRays / traceSampleCount;
-    benchmarkSnapshot.pathRayBudgetPerFrame = this.totalPathRayBudget / traceSampleCount;
-    benchmarkSnapshot.samplesPerFrame = this.totalRenderedSamples / traceSampleCount;
-    benchmarkSnapshot.traceMilliseconds = this.totalTraceMilliseconds / traceSampleCount;
+    benchmarkSnapshot.rollingSamplesPerFrame = this.totalRenderedSamples / traceSampleCount;
+    benchmarkSnapshot.rollingTraceMilliseconds = this.totalTraceMilliseconds / traceSampleCount;
+    benchmarkSnapshot.workloadMultiplier = this.totalWorkloadMultiplier > 0
+      ? this.totalWorkloadMultiplier / traceSampleCount
+      : PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER;
     benchmarkSnapshot.perceptualFramesPerSecond = this.totalFrameMilliseconds > 0
       ? clampNumber(1000 * this.frameSampleCount / this.totalFrameMilliseconds, 0, MAX_PERCEPTUAL_FRAMES_PER_SECOND)
       : 0;
@@ -2356,7 +2406,8 @@ class RollingBenchmarkWindow {
     renderedSampleCount,
     lightBounceCount,
     traceMilliseconds,
-    measurementSource
+    measurementSource,
+    workloadMultiplier
   ) {
     if (!Number.isFinite(traceMilliseconds) || traceMilliseconds <= 0 || renderedSampleCount <= 0) {
       return returnSuccess(undefined);
@@ -2369,19 +2420,32 @@ class RollingBenchmarkWindow {
 
     const activeRaysPerFrame = ACTIVE_RAYS_PER_SAMPLE * renderedSampleCount;
     const pathRayBudgetPerFrame = activeRaysPerFrame * lightBounceCount;
+    const normalizedWorkloadMultiplier = Number.isFinite(workloadMultiplier)
+      ? clampNumber(
+        workloadMultiplier,
+        PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER,
+        PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER + PERFORMANCE_SCORE_WORKLOAD_MULTIPLIER_RANGE
+      )
+      : PERFORMANCE_SCORE_MIN_WORKLOAD_MULTIPLIER;
     this.samples.push({
       kind: 'trace',
       timestampMilliseconds,
       activeRaysPerFrame,
       pathRayBudgetPerFrame,
       renderedSampleCount,
-      traceMilliseconds
+      traceMilliseconds,
+      workloadMultiplier: normalizedWorkloadMultiplier
     });
     this.traceSampleCount += 1;
     this.totalActiveRays += activeRaysPerFrame;
     this.totalPathRayBudget += pathRayBudgetPerFrame;
     this.totalRenderedSamples += renderedSampleCount;
     this.totalTraceMilliseconds += traceMilliseconds;
+    this.totalWorkloadMultiplier += normalizedWorkloadMultiplier;
+    benchmarkSnapshot.activeRaysPerFrame = activeRaysPerFrame;
+    benchmarkSnapshot.pathRayBudgetPerFrame = pathRayBudgetPerFrame;
+    benchmarkSnapshot.samplesPerFrame = renderedSampleCount;
+    benchmarkSnapshot.traceMilliseconds = traceMilliseconds;
     this.measurementSource = measurementSource;
     return this.writeSnapshot(benchmarkSnapshot);
   }
@@ -2892,12 +2956,12 @@ class PathTracer {
     return this.gpuBenchmarkTimer.beginTiming();
   }
 
-  endBenchmarkTiming(renderedSampleCount, lightBounceCount) {
+  endBenchmarkTiming(renderedSampleCount, lightBounceCount, workloadMultiplier) {
     if (!this.gpuBenchmarkTimer) {
       return returnSuccess(false);
     }
 
-    return this.gpuBenchmarkTimer.endTiming(renderedSampleCount, lightBounceCount);
+    return this.gpuBenchmarkTimer.endTiming(renderedSampleCount, lightBounceCount, workloadMultiplier);
   }
 
   writeBenchmarkSnapshot(
@@ -2905,7 +2969,8 @@ class PathTracer {
     renderedSampleCount,
     lightBounceCount,
     durationMilliseconds,
-    measurementSource
+    measurementSource,
+    workloadMultiplier
   ) {
     return this.benchmarkWindow.recordTraceSample(
       this.benchmarkSnapshot,
@@ -2913,7 +2978,8 @@ class PathTracer {
       renderedSampleCount,
       lightBounceCount,
       durationMilliseconds,
-      measurementSource
+      measurementSource,
+      workloadMultiplier
     );
   }
 
@@ -2934,6 +3000,7 @@ class PathTracer {
       MAX_RAYS_PER_PIXEL
     );
     const sampleUniformValues = this.sampleUniformValues;
+    const benchmarkWorkloadMultiplier = calculateBenchmarkWorkloadMultiplier(raysPerPixel, applicationState);
     this.currentRaysPerPixel = raysPerPixel;
 
     if (didCameraChange) {
@@ -3020,7 +3087,11 @@ class PathTracer {
     }
 
     if (didStartGpuTiming) {
-      const [, benchmarkEndError] = this.endBenchmarkTiming(raysPerPixel, applicationState.lightBounceCount);
+      const [, benchmarkEndError] = this.endBenchmarkTiming(
+        raysPerPixel,
+        applicationState.lightBounceCount,
+        benchmarkWorkloadMultiplier
+      );
       if (benchmarkEndError) {
         return returnFailure(benchmarkEndError.code, benchmarkEndError.message, benchmarkEndError.details);
       }
@@ -3032,7 +3103,8 @@ class PathTracer {
         latestGpuTiming.renderedSampleCount,
         latestGpuTiming.lightBounceCount,
         latestGpuTiming.durationMilliseconds,
-        'gpu-timer'
+        'gpu-timer',
+        latestGpuTiming.workloadMultiplier
       );
       if (benchmarkSnapshotError) {
         return returnFailure(benchmarkSnapshotError.code, benchmarkSnapshotError.message, benchmarkSnapshotError.details);
@@ -5995,12 +6067,17 @@ const startAnimationLoop = (application) => {
     }
 
     if (pathTracer.benchmarkSnapshot.measurementSource !== 'gpu-timer') {
+      const benchmarkWorkloadMultiplier = calculateBenchmarkWorkloadMultiplier(
+        application.applicationState.raysPerPixel,
+        application.applicationState
+      );
       const [, frameBenchmarkError] = pathTracer.writeBenchmarkSnapshot(
         currentTime,
         application.applicationState.raysPerPixel,
         application.applicationState.lightBounceCount,
         elapsedSeconds * 1000,
-        pathTracer.gpuBenchmarkTimer ? 'frame-estimate-pending' : 'frame-estimate'
+        pathTracer.gpuBenchmarkTimer ? 'frame-estimate-pending' : 'frame-estimate',
+        benchmarkWorkloadMultiplier
       );
       if (frameBenchmarkError) {
         displayError(application.errorElement, frameBenchmarkError);
