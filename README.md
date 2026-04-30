@@ -42,6 +42,8 @@ Useful controls:
 
 Click objects in the canvas to select and move them.
 
+The benchmark score is a 60-second rolling active-rays-per-second score, rounded to reduce jitter. To compare graphics performance across computers, use the same scene and settings on each machine.
+
 ## Running Locally
 
 Install dependencies:
