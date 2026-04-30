@@ -149,8 +149,20 @@ const MATERIAL = Object.freeze({
   DIFFUSE: 0,
   MIRROR: 1,
   GLOSSY: 2,
-  GLASS: 3
+  GLASS: 3,
+  GGX_PBR: 4,
+  SPECTRAL_GLASS: 5,
+  SUBSURFACE: 6,
+  CAUSTICS: 7,
+  PROCEDURAL: 8,
+  SDF_FRACTAL: 9,
+  VOLUMETRIC_SHAFTS: 10,
+  BOKEH: 11,
+  MOTION_BLUR_STRESS: 12,
+  FIRE_PLASMA: 13
 });
+const MIN_MATERIAL = MATERIAL.DIFFUSE;
+const MAX_MATERIAL = MATERIAL.FIRE_PLASMA;
 
 const ENVIRONMENT = Object.freeze({
   YELLOW_BLUE_CORNELL_BOX: 0,
@@ -470,6 +482,193 @@ const newGlassRaySource = [
   'continue;'
 ].join('');
 
+const surfaceShaderUtilitySource = [
+  'float shaderNoise(vec3 point) {',
+  '  return fract(sin(dot(point, vec3(127.1, 311.7, 74.7))) * 43758.5453123);',
+  '}',
+  'float shaderFbm(vec3 point) {',
+  '  float value = 0.0;',
+  '  float amplitude = 0.5;',
+  '  vec3 samplePoint = point;',
+  '  for(int octave = 0; octave < 4; octave++) {',
+  '    value += shaderNoise(samplePoint) * amplitude;',
+  '    samplePoint = samplePoint * 2.17 + vec3(13.7, 5.1, 9.2);',
+  '    amplitude *= 0.5;',
+  '  }',
+  '  return value;',
+  '}',
+  'float shaderRing(vec3 point, float scale) {',
+  '  return abs(sin(length(point.xz) * scale + shaderFbm(point * 3.0) * 5.0));',
+  '}',
+  'vec3 shaderHeatPalette(float value) {',
+  '  vec3 ember = vec3(0.35, 0.03, 0.01);',
+  '  vec3 orange = vec3(1.0, 0.32, 0.04);',
+  '  vec3 yellow = vec3(1.0, 0.86, 0.25);',
+  '  return mix(mix(ember, orange, smoothstep(0.0, 0.7, value)), yellow, smoothstep(0.55, 1.0, value));',
+  '}',
+  'vec3 shaderStableTangent(vec3 normal) {',
+  '  vec3 axis = abs(normal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);',
+  '  return normalize(cross(normal, axis));',
+  '}'
+].join('');
+
+const ggxPbrSurfaceShaderSource = [
+  'float pbrRoughness = clamp(0.12 + shaderFbm(surfaceObjectPoint * 7.0) * 0.52, 0.08, 0.72);',
+  'surfaceColor = mix(vec3(0.95, 0.82, 0.58), vec3(0.55, 0.62, 0.70), pbrRoughness * 0.65);',
+  'vec3 pbrReflection = normalize(reflect(ray, normal));',
+  'vec3 pbrDiffuseRay = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);',
+  'ray = normalize(mix(pbrReflection, pbrDiffuseRay, pbrRoughness));',
+  specularReflectionSource,
+  'float pbrSpecularPower = max(2.0, 48.0 / max(pbrRoughness * pbrRoughness, 0.04));',
+  'specularHighlight = pow(max(specularHighlight, 0.0), pbrSpecularPower) * (1.0 - pbrRoughness) * 2.5;'
+].join('');
+
+const spectralGlassSurfaceShaderSource = [
+  'surfaceLightResponse = 0.0;',
+  'float spectralSample = random(vec3(19.37, 71.91, 43.11), sampleSeed + float(bounce) * 31.0);',
+  'surfaceColor = mix(vec3(0.86, 0.96, 1.0), vec3(1.0, 0.78, 0.58), spectralSample);',
+  'vec3 normalizedRay = normalize(ray);',
+  'float isOutsideSurface = dot(normalizedRay, normal) < 0.0 ? 1.0 : 0.0;',
+  'vec3 orientedNormal = isOutsideSurface > 0.5 ? normal : -normal;',
+  'float spectralIor = mix(1.44, 1.72, spectralSample);',
+  'float etaRatio = isOutsideSurface > 0.5 ? 1.0 / spectralIor : spectralIor;',
+  'float cosTheta = min(dot(-normalizedRay, orientedNormal), 1.0);',
+  'float oneMinusCosTheta = 1.0 - cosTheta;',
+  'float fresnelFactor2 = oneMinusCosTheta * oneMinusCosTheta;',
+  'float fresnel = 0.04 + 0.96 * fresnelFactor2 * fresnelFactor2 * oneMinusCosTheta;',
+  'vec3 refractedRay = refract(normalizedRay, orientedNormal, etaRatio);',
+  'float reflectionSample = random(vec3(89.11, 37.19, 11.43), sampleSeed + float(bounce) * 43.0);',
+  'ray = dot(refractedRay, refractedRay) <= 0.0001 || reflectionSample < fresnel ? reflect(normalizedRay, orientedNormal) : refractedRay;',
+  'colorMask *= surfaceColor;',
+  `origin = hit + normalize(ray) * ${SHADER_EPSILON};`,
+  'continue;'
+].join('');
+
+const subsurfaceSurfaceShaderSource = [
+  'float subsurfaceNoise = shaderFbm(surfaceObjectPoint * 5.0);',
+  'surfaceColor = mix(vec3(1.0, 0.48, 0.32), vec3(1.0, 0.82, 0.58), subsurfaceNoise);',
+  'surfaceLightResponse = 1.25;',
+  'accumulatedColor += colorMask * surfaceColor * 0.055;',
+  'vec3 softenedNormal = normalize(normal + uniformlyRandomVector(sampleSeed + float(bounce) * 23.0) * 0.28);',
+  'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, softenedNormal);'
+].join('');
+
+const causticsSurfaceShaderSource = [
+  'surfaceColor = vec3(0.82, 1.0, 0.92);',
+  'surfaceLightResponse = 0.0;',
+  'vec3 normalizedRay = normalize(ray);',
+  'float isOutsideSurface = dot(normalizedRay, normal) < 0.0 ? 1.0 : 0.0;',
+  'vec3 orientedNormal = isOutsideSurface > 0.5 ? normal : -normal;',
+  'vec3 refractedRay = refract(normalizedRay, orientedNormal, isOutsideSurface > 0.5 ? 0.625 : 1.6);',
+  'float rimLight = pow(1.0 - max(dot(-normalizedRay, orientedNormal), 0.0), 3.0);',
+  'accumulatedColor += colorMask * vec3(0.25, 0.95, 0.65) * rimLight * lightIntensity;',
+  'ray = dot(refractedRay, refractedRay) <= 0.0001 ? reflect(normalizedRay, orientedNormal) : refractedRay;',
+  'colorMask *= surfaceColor;',
+  `origin = hit + normalize(ray) * ${SHADER_EPSILON};`,
+  'continue;'
+].join('');
+
+const proceduralSurfaceShaderSource = [
+  'float checker = mod(floor(surfaceObjectPoint.x * 8.0) + floor(surfaceObjectPoint.y * 8.0) + floor(surfaceObjectPoint.z * 8.0), 2.0);',
+  'float marble = shaderRing(surfaceObjectPoint, 18.0);',
+  'float grain = shaderFbm(surfaceObjectPoint * 10.0);',
+  'vec3 checkerColor = mix(vec3(0.08, 0.10, 0.12), vec3(0.85, 0.78, 0.64), checker);',
+  'vec3 marbleColor = mix(vec3(0.24, 0.28, 0.34), vec3(0.92, 0.88, 0.78), marble);',
+  'surfaceColor = mix(checkerColor, marbleColor, grain);',
+  'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);'
+].join('');
+
+const sdfFractalSurfaceShaderSource = [
+  'vec3 fractalPoint = surfaceObjectPoint * 2.8;',
+  'float fractalValue = 0.0;',
+  'for(int fractalStep = 0; fractalStep < 4; fractalStep++) {',
+  '  fractalPoint = abs(fractalPoint) / max(dot(fractalPoint, fractalPoint), 0.18) - vec3(0.72);',
+  '  fractalValue += exp(-abs(length(fractalPoint) - 1.0));',
+  '}',
+  'fractalValue = clamp(fractalValue * 0.18, 0.0, 1.0);',
+  'surfaceColor = mix(vec3(0.06, 0.09, 0.14), vec3(0.35, 0.85, 1.0), fractalValue);',
+  'specularHighlight += fractalValue * fractalValue * 1.7;',
+  'ray = normalize(mix(reflect(ray, normal), cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal), 0.42));'
+].join('');
+
+const volumetricShaftsSurfaceShaderSource = [
+  'vec3 toLightDirection = normalize(light - hit);',
+  'float shaftAmount = pow(max(dot(toLightDirection, -normalize(ray)), 0.0), 8.0);',
+  'float densityNoise = shaderFbm(surfaceObjectPoint * 6.0 + vec3(0.0, sampleSeed * 0.01, 0.0));',
+  'surfaceColor = mix(vec3(0.20, 0.34, 0.55), vec3(0.60, 0.78, 1.0), densityNoise);',
+  'accumulatedColor += colorMask * surfaceColor * shaftAmount * lightIntensity * 1.8;',
+  'surfaceLightResponse = 0.9;',
+  'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);'
+].join('');
+
+const bokehSurfaceShaderSource = [
+  'float bokehRing = smoothstep(0.42, 0.55, shaderRing(surfaceObjectPoint, 30.0));',
+  'surfaceColor = mix(vec3(0.12, 0.12, 0.16), vec3(0.92, 0.82, 1.0), bokehRing);',
+  'ray = normalize(mix(reflect(ray, normal), cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal), 0.22));',
+  specularReflectionSource,
+  'specularHighlight = pow(max(specularHighlight, 0.0), 10.0) * (1.0 + bokehRing * 3.0);'
+].join('');
+
+const motionBlurStressSurfaceShaderSource = [
+  'float band = sin(surfaceObjectPoint.x * 24.0 + surfaceObjectPoint.y * 11.0 + sampleSeed * 0.025);',
+  'vec3 tangentDirection = shaderStableTangent(normal);',
+  'surfaceColor = mix(vec3(0.05, 0.08, 0.10), vec3(0.95, 0.28, 0.18), band * 0.5 + 0.5);',
+  'ray = normalize(cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal) + tangentDirection * band * 0.42);',
+  'surfaceLightResponse = 1.15;'
+].join('');
+
+const firePlasmaSurfaceShaderSource = [
+  'float flame = shaderFbm(surfaceObjectPoint * 8.0 + vec3(0.0, sampleSeed * 0.02, 0.0));',
+  'surfaceColor = shaderHeatPalette(flame);',
+  'accumulatedColor += colorMask * surfaceColor * (0.55 + flame * 2.25);',
+  'surfaceLightResponse = 0.45;',
+  'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);'
+].join('');
+
+const createObjectSurfaceShaderSource = (material) => {
+  const normalizedMaterial = normalizeMaterial(material);
+  if (normalizedMaterial === MATERIAL.MIRROR) {
+    return newReflectiveRaySource;
+  }
+  if (normalizedMaterial === MATERIAL.GLOSSY) {
+    return newGlossyRaySource;
+  }
+  if (normalizedMaterial === MATERIAL.GLASS) {
+    return newGlassRaySource;
+  }
+  if (normalizedMaterial === MATERIAL.GGX_PBR) {
+    return ggxPbrSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.SPECTRAL_GLASS) {
+    return spectralGlassSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.SUBSURFACE) {
+    return subsurfaceSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.CAUSTICS) {
+    return causticsSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.PROCEDURAL) {
+    return proceduralSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.SDF_FRACTAL) {
+    return sdfFractalSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.VOLUMETRIC_SHAFTS) {
+    return volumetricShaftsSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.BOKEH) {
+    return bokehSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.MOTION_BLUR_STRESS) {
+    return motionBlurStressSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.FIRE_PLASMA) {
+    return firePlasmaSurfaceShaderSource;
+  }
+  return newDiffuseRaySource;
+};
+
 const yellowBlueCornellBoxSource = [
   'if(hit.x < -0.9999) surfaceColor = vec3(0.1, 0.5, 1.0);',
   'else if(hit.x > 0.9999) surfaceColor = vec3(1.0, 0.9, 0.1);'
@@ -661,6 +860,26 @@ const parseBoundedInteger = (rawValue, fallbackValue, minValue, maxValue) => {
   }
   return returnSuccess(normalizeBoundedInteger(parsedValue, fallbackValue, minValue, maxValue));
 };
+
+const normalizeMaterial = (material) => normalizeBoundedInteger(
+  material,
+  MATERIAL.DIFFUSE,
+  MIN_MATERIAL,
+  MAX_MATERIAL
+);
+
+const parseMaterial = (rawValue) => parseBoundedInteger(
+  rawValue,
+  MATERIAL.DIFFUSE,
+  MIN_MATERIAL,
+  MAX_MATERIAL
+);
+
+const isTransparentMaterial = (material) => (
+  material === MATERIAL.GLASS ||
+  material === MATERIAL.SPECTRAL_GLASS ||
+  material === MATERIAL.CAUSTICS
+);
 
 const normalizeBoundedNumber = (value, fallbackValue, minValue, maxValue) => {
   if (!Number.isFinite(value)) {
@@ -1020,11 +1239,9 @@ const joinObjectShaderCode = (sceneObjects, readShaderCode) => {
   return shaderParts.join('');
 };
 
-const createShadowShaderSource = (sceneObjects, renderSettings) => [
+const createShadowShaderSource = (sceneObjects) => [
   'float shadow(vec3 origin, vec3 ray) {',
-  renderSettings.material === MATERIAL.GLASS
-    ? ''
-    : joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getShadowTestCode()),
+  joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getShadowTestCode()),
   '  return 1.0;',
   '}'
 ].join('');
@@ -1154,12 +1371,6 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     MIN_LIGHT_BOUNCE_COUNT,
     MAX_LIGHT_BOUNCE_COUNT
   );
-  const materialSource = [
-    newDiffuseRaySource,
-    newReflectiveRaySource,
-    newGlossyRaySource,
-    newGlassRaySource
-  ][renderSettings.material] || newDiffuseRaySource;
   const roomOpenSource = isOpenSkyEnvironment
     ? '      if(roomNormal.y > 0.5) roomDistance = tRoom.y;'
     : '      roomDistance = tRoom.y;';
@@ -1200,19 +1411,19 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     '    vec3 surfaceColor = vec3(0.75);',
     '    float specularHighlight = 0.0;',
     '    float surfaceLightResponse = 1.0;',
+    '    vec3 surfaceObjectPoint = hit;',
     '    vec3 normal;',
     `    if(roomDistance < ${SHADER_INFINITY} && t == roomDistance) {`,
     '      hit = roomHit;',
     '      normal = roomNormal;',
     environmentSource,
-    materialSource === newDiffuseRaySource ? newDiffuseRaySource : newDiffuseRaySource,
+    newDiffuseRaySource,
     `    } else if(t == ${SHADER_INFINITY}) {`,
     missSource,
     '      break;',
     '    } else {',
-    '      if(false) ;',
+      '      if(false) ;',
     joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getNormalCalculationCode()),
-    materialSource,
     '    }',
     '    vec3 toLight = light - hit;',
     '    float diffuse = max(0.0, dot(normalize(toLight), normal));',
@@ -1256,8 +1467,9 @@ const createTracerFragmentSource = (sceneObjects, renderSettings) => {
     cosineWeightedDirectionSource,
     uniformlyRandomDirectionSource,
     uniformlyRandomVectorSource,
-    createShadowShaderSource(sceneObjects, renderSettings),
+    createShadowShaderSource(sceneObjects),
     cameraFocusSource,
+    surfaceShaderUtilitySource,
     shouldUseSkyShader ? skyShaderSource : '',
     createCalculateColorShaderSource(sceneObjects, renderSettings),
     createMainShaderSource()
@@ -1515,9 +1727,10 @@ const setChangedCachedMat4UniformValue = (webGlContext, uniformLocation, matrixV
 };
 
 class SphereSceneObject {
-  constructor(centerPosition, radius, objectId) {
+  constructor(centerPosition, radius, objectId, material = MATERIAL.DIFFUSE) {
     this.centerPosition = cloneVec3(centerPosition);
     this.radius = radius;
+    this.material = normalizeMaterial(material);
     this.centerUniformName = `sphereCenter${objectId}`;
     this.radiusUniformName = `sphereRadius${objectId}`;
     this.intersectionName = `tSphere${objectId}`;
@@ -1545,6 +1758,9 @@ class SphereSceneObject {
   }
 
   getShadowTestCode() {
+    if (isTransparentMaterial(this.material)) {
+      return '';
+    }
     return `${this.getIntersectCode()}if(${this.intersectionName} < 1.0) return 0.0;`;
   }
 
@@ -1553,7 +1769,18 @@ class SphereSceneObject {
   }
 
   getNormalCalculationCode() {
-    return `else if(t == ${this.intersectionName}) normal = normalForSphere(hit, ${this.centerUniformName}, ${this.radiusUniformName});`;
+    return [
+      `else if(t == ${this.intersectionName}) {`,
+      `normal = normalForSphere(hit, ${this.centerUniformName}, ${this.radiusUniformName});`,
+      `surfaceObjectPoint = hit - ${this.centerUniformName};`,
+      createObjectSurfaceShaderSource(this.material),
+      '}'
+    ].join('');
+  }
+
+  setMaterial(material) {
+    this.material = normalizeMaterial(material);
+    return returnSuccess(undefined);
   }
 
   cacheUniformLocations(webGlContext, program, uniformLocationCache) {
@@ -1641,9 +1868,10 @@ class SphereSceneObject {
 }
 
 class CubeSceneObject {
-  constructor(minCorner, maxCorner, objectId) {
+  constructor(minCorner, maxCorner, objectId, material = MATERIAL.DIFFUSE) {
     this.minCorner = cloneVec3(minCorner);
     this.maxCorner = cloneVec3(maxCorner);
+    this.material = normalizeMaterial(material);
     this.minUniformName = `cubeMin${objectId}`;
     this.maxUniformName = `cubeMax${objectId}`;
     this.intersectionName = `tCube${objectId}`;
@@ -1671,6 +1899,9 @@ class CubeSceneObject {
   }
 
   getShadowTestCode() {
+    if (isTransparentMaterial(this.material)) {
+      return '';
+    }
     return [
       this.getIntersectCode(),
       `float ${this.intersectionDistanceName} = intersectCubeDistance(${this.intersectionName});`,
@@ -1683,7 +1914,18 @@ class CubeSceneObject {
   }
 
   getNormalCalculationCode() {
-    return `else if(t == ${this.intersectionDistanceName}) normal = normalForCube(hit, ${this.minUniformName}, ${this.maxUniformName});`;
+    return [
+      `else if(t == ${this.intersectionDistanceName}) {`,
+      `normal = normalForCube(hit, ${this.minUniformName}, ${this.maxUniformName});`,
+      `surfaceObjectPoint = hit - (${this.minUniformName} + ${this.maxUniformName}) * 0.5;`,
+      createObjectSurfaceShaderSource(this.material),
+      '}'
+    ].join('');
+  }
+
+  setMaterial(material) {
+    this.material = normalizeMaterial(material);
+    return returnSuccess(undefined);
   }
 
   cacheUniformLocations(webGlContext, program, uniformLocationCache) {
@@ -3880,7 +4122,12 @@ class UserInterfaceController {
   }
 
   addSphere() {
-    const sphereObject = new SphereSceneObject(createVec3(0, 0, 0), 0.25, allocateSceneObjectId(this.applicationState));
+    const sphereObject = new SphereSceneObject(
+      createVec3(0, 0, 0),
+      0.25,
+      allocateSceneObjectId(this.applicationState),
+      this.applicationState.material
+    );
     this.sceneObjects.push(sphereObject);
     return this.syncSceneObjectsToRendererAndPhysics();
   }
@@ -3889,7 +4136,8 @@ class UserInterfaceController {
     const cubeObject = new CubeSceneObject(
       createVec3(-0.25, -0.25, -0.25),
       createVec3(0.25, 0.25, 0.25),
-      allocateSceneObjectId(this.applicationState)
+      allocateSceneObjectId(this.applicationState),
+      this.applicationState.material
     );
     this.sceneObjects.push(cubeObject);
     return this.syncSceneObjectsToRendererAndPhysics();
@@ -3911,9 +4159,9 @@ class UserInterfaceController {
   }
 
   updateMaterialFromSelect() {
-    const nextMaterial = Number.parseInt(this.materialSelect.value, 10);
-    if (Number.isNaN(nextMaterial)) {
-      return returnFailure('invalid-material', 'Selected material is invalid.');
+    const [nextMaterial, materialError] = parseMaterial(this.materialSelect.value);
+    if (materialError) {
+      return returnFailure(materialError.code, materialError.message, materialError.details);
     }
 
     if (this.applicationState.material === nextMaterial) {
@@ -3921,10 +4169,44 @@ class UserInterfaceController {
     }
 
     this.applicationState.material = nextMaterial;
+    return returnSuccess(undefined);
+  }
+
+  applyMaterialToSelection() {
+    const [nextMaterial, materialError] = parseMaterial(this.materialSelect.value);
+    if (materialError) {
+      return returnFailure(materialError.code, materialError.message, materialError.details);
+    }
+
+    this.applicationState.material = nextMaterial;
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (!selectedObject || selectedObject === this.lightObject || typeof selectedObject.setMaterial !== 'function') {
+      return returnSuccess(undefined);
+    }
+
+    if (selectedObject.material === nextMaterial) {
+      return returnSuccess(undefined);
+    }
+
+    const [, materialSetError] = selectedObject.setMaterial(nextMaterial);
+    if (materialSetError) {
+      return returnFailure(materialSetError.code, materialSetError.message, materialSetError.details);
+    }
+
     const [, rendererError] = this.selectionRenderer.setObjects(this.sceneObjects, this.applicationState);
     if (rendererError) {
       return returnFailure(rendererError.code, rendererError.message, rendererError.details);
     }
+    return returnSuccess(undefined);
+  }
+
+  syncMaterialSelectToObject(sceneObject) {
+    if (!sceneObject || sceneObject === this.lightObject || !Number.isFinite(sceneObject.material)) {
+      return returnSuccess(undefined);
+    }
+
+    this.applicationState.material = normalizeMaterial(sceneObject.material);
+    this.materialSelect.value = String(this.applicationState.material);
     return returnSuccess(undefined);
   }
 
@@ -4803,6 +5085,10 @@ class UserInterfaceController {
     }
 
     this.selectionRenderer.selectedObject = closestObject;
+    const [, materialSyncError] = this.syncMaterialSelectToObject(closestObject);
+    if (materialSyncError) {
+      return returnFailure(materialSyncError.code, materialSyncError.message, materialSyncError.details);
+    }
     return returnSuccess(closestDistance < MAX_INTERSECTION_DISTANCE);
   }
 
@@ -4994,16 +5280,27 @@ const advanceCameraAutoRotation = (applicationState, elapsedSeconds, pathTracer)
   return returnSuccess(undefined);
 };
 
-const createSphereObject = (applicationState, x, y, z, radius) => new SphereSceneObject(
+const createSphereObject = (applicationState, x, y, z, radius, material = MATERIAL.DIFFUSE) => new SphereSceneObject(
   createVec3(x, y, z),
   radius,
-  allocateSceneObjectId(applicationState)
+  allocateSceneObjectId(applicationState),
+  material
 );
 
-const createCubeObject = (applicationState, minX, minY, minZ, maxX, maxY, maxZ) => new CubeSceneObject(
+const createCubeObject = (
+  applicationState,
+  minX,
+  minY,
+  minZ,
+  maxX,
+  maxY,
+  maxZ,
+  material = MATERIAL.DIFFUSE
+) => new CubeSceneObject(
   createVec3(minX, minY, minZ),
   createVec3(maxX, maxY, maxZ),
-  allocateSceneObjectId(applicationState)
+  allocateSceneObjectId(applicationState),
+  material
 );
 
 const createStacksSceneObjects = (applicationState) => returnSuccess([
@@ -5126,6 +5423,19 @@ const createRecursiveSpheresSceneObjects = (applicationState) => {
   return returnSuccess(sceneObjects);
 };
 
+const createShaderShowcaseSceneObjects = (applicationState) => returnSuccess([
+  createSphereObject(applicationState, -0.72, -0.72, -0.42, 0.15, MATERIAL.GGX_PBR),
+  createSphereObject(applicationState, -0.36, -0.72, -0.42, 0.15, MATERIAL.SPECTRAL_GLASS),
+  createSphereObject(applicationState, 0.0, -0.72, -0.42, 0.15, MATERIAL.SUBSURFACE),
+  createSphereObject(applicationState, 0.36, -0.72, -0.42, 0.15, MATERIAL.CAUSTICS),
+  createCubeObject(applicationState, 0.58, -0.87, -0.57, 0.86, -0.59, -0.29, MATERIAL.PROCEDURAL),
+  createCubeObject(applicationState, -0.86, -0.37, 0.20, -0.58, -0.09, 0.48, MATERIAL.SDF_FRACTAL),
+  createSphereObject(applicationState, -0.36, -0.22, 0.34, 0.15, MATERIAL.VOLUMETRIC_SHAFTS),
+  createSphereObject(applicationState, 0.0, -0.22, 0.34, 0.15, MATERIAL.BOKEH),
+  createCubeObject(applicationState, 0.22, -0.37, 0.20, 0.50, -0.09, 0.48, MATERIAL.MOTION_BLUR_STRESS),
+  createSphereObject(applicationState, 0.72, -0.22, 0.34, 0.15, MATERIAL.FIRE_PLASMA)
+]);
+
 const scenePresetFactories = Object.freeze({
   sphereColumn: createSphereColumnSceneObjects,
   spherePyramid: createSpherePyramidSceneObjects,
@@ -5133,8 +5443,25 @@ const scenePresetFactories = Object.freeze({
   cubeAndSpheres: createCubeAndSpheresSceneObjects,
   tableAndChair: createTableAndChairSceneObjects,
   stacks: createStacksSceneObjects,
+  shaderShowcase: createShaderShowcaseSceneObjects,
   recursiveSpheres: createRecursiveSpheresSceneObjects
 });
+
+const readInitialPresetName = (documentObject) => {
+  const windowObject = documentObject.defaultView;
+  if (!windowObject || !windowObject.location || !windowObject.URLSearchParams) {
+    return 'sphereColumn';
+  }
+
+  const urlParameters = new windowObject.URLSearchParams(windowObject.location.search);
+  const presetName = urlParameters.get('preset');
+  return scenePresetFactories[presetName] ? presetName : 'sphereColumn';
+};
+
+const createInitialSceneObjects = (applicationState, documentObject) => {
+  const presetName = readInitialPresetName(documentObject);
+  return scenePresetFactories[presetName](applicationState);
+};
 
 const readRequiredElement = (documentObject, elementId) => {
   const element = documentObject.getElementById(elementId);
@@ -5557,6 +5884,9 @@ const attachControlHandlers = (controlsElement, errorElement, uiController) => {
     }
     if (actionName === 'add-cube') {
       return runAndDisplayError(errorElement, () => uiController.addCube());
+    }
+    if (actionName === 'apply-object-shader') {
+      return runAndDisplayError(errorElement, () => uiController.applyMaterialToSelection());
     }
     if (actionName === 'toggle-camera-playback') {
       return runAndDisplayError(errorElement, () => uiController.toggleCameraAutoRotation(event.target));
@@ -6082,8 +6412,12 @@ const createPathTracingApplication = async (documentObject) => {
   }
 
   const applicationState = createApplicationState();
-  applicationState.material = Number.parseInt(materialSelect.value, 10);
   applicationState.environment = Number.parseInt(environmentSelect.value, 10);
+  const [initialMaterial, initialMaterialError] = parseMaterial(materialSelect.value);
+  if (initialMaterialError) {
+    return returnFailure(initialMaterialError.code, initialMaterialError.message, initialMaterialError.details);
+  }
+  applicationState.material = initialMaterial;
   lightIntensityValueElement.textContent = formatLightIntensityValue(applicationState.lightIntensity);
   const [lightBounceCount, lightBounceCountError] = parseBoundedInteger(
     lightBounceInput.value,
@@ -6220,7 +6554,7 @@ const createPathTracingApplication = async (documentObject) => {
     }
   }
 
-  const [initialSceneObjects, sceneError] = createSphereColumnSceneObjects(applicationState);
+  const [initialSceneObjects, sceneError] = createInitialSceneObjects(applicationState, documentObject);
   if (sceneError) {
     return returnFailure(sceneError.code, sceneError.message, sceneError.details);
   }

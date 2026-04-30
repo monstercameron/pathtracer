@@ -389,13 +389,24 @@ a {
 
       <div class="control-section">
         <div class="field">
-          <label for="material">Material</label>
+          <label for="material">Object shader</label>
           <select id="material">
             <option value="0" selected>Diffuse</option>
             <option value="1">Mirror</option>
             <option value="2">Glossy</option>
             <option value="3">Glass</option>
+            <option value="4">GGX PBR</option>
+            <option value="5">Spectral Glass</option>
+            <option value="6">Subsurface</option>
+            <option value="7">Caustics</option>
+            <option value="8">Procedural Pack</option>
+            <option value="9">SDF Fractal</option>
+            <option value="10">Volumetric Shafts</option>
+            <option value="11">Bokeh</option>
+            <option value="12">Motion Blur Stress</option>
+            <option value="13">Fire Plasma</option>
           </select>
+          <button data-action="apply-object-shader">Apply to Selection</button>
           <span id="glossiness-factor">
             with glossiness factor: 0 &lt; <input id="glossiness" value="0.6"> &lt; 1
           </span>
@@ -588,6 +599,7 @@ a {
         <button data-preset="cubeAndSpheres">Cube and Spheres</button>
         <button data-preset="tableAndChair">Table and Chair</button>
         <button data-preset="stacks">Stacks</button>
+        <button data-preset="shaderShowcase">Shader Showcase</button>
         <button class="reset-all" data-action="reset-all">Reset All</button>
       </div>
     </div>
