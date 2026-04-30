@@ -112,6 +112,7 @@ const BYTES_PER_GIGABYTE = 1000000000;
 const BYTES_PER_TERABYTE = 1000000000000;
 const UINT32_RECIPROCAL = 1 / 4294967296;
 const HALTON_BASE_3_RECIPROCAL = 1 / 3;
+const RAY_JITTER_COMPONENT_COUNT = 2;
 const SHADER_EPSILON = '0.0001';
 const SHADER_INFINITY = '10000.0';
 const MAX_INTERSECTION_DISTANCE = Number.MAX_VALUE;
@@ -1268,10 +1269,23 @@ const readHaltonBase3 = (sequenceIndex) => {
   return haltonValue;
 };
 
+const createRayJitterValues = () => {
+  const jitterValues = new Float32Array(RANDOM_SAMPLE_SEQUENCE_WRAP * RAY_JITTER_COMPONENT_COUNT);
+  for (let sequenceIndex = 1; sequenceIndex <= RANDOM_SAMPLE_SEQUENCE_WRAP; sequenceIndex += 1) {
+    const valueIndex = (sequenceIndex - 1) * RAY_JITTER_COMPONENT_COUNT;
+    jitterValues[valueIndex] = (readHaltonBase2(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
+    jitterValues[valueIndex + 1] = (readHaltonBase3(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
+  }
+  return jitterValues;
+};
+
+const RAY_JITTER_VALUES = createRayJitterValues();
+
 const writeRayJitterUniformValues = (uniformValues, sampleSequence) => {
   const sequenceIndex = sampleSequence + 1;
-  uniformValues.rayJitterX = (readHaltonBase2(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
-  uniformValues.rayJitterY = (readHaltonBase3(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
+  const valueIndex = (sequenceIndex - 1) * RAY_JITTER_COMPONENT_COUNT;
+  uniformValues.rayJitterX = RAY_JITTER_VALUES[valueIndex];
+  uniformValues.rayJitterY = RAY_JITTER_VALUES[valueIndex + 1];
 };
 
 const joinObjectShaderCode = (sceneObjects, readShaderCode) => {
@@ -3252,9 +3266,12 @@ class PathTracer {
       const writeTextureIndex = 1 - currentTextureIndex;
       const nextSampleCount = sampleCount + 1;
       const sampleSeed = randomSampleSequence + 1;
-      const jitterX = (readHaltonBase2(sampleSeed) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
-      const jitterY = (readHaltonBase3(sampleSeed) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
-      webGlContext.uniform2f(locations.rayJitter, jitterX, jitterY);
+      const jitterValueIndex = (sampleSeed - 1) * RAY_JITTER_COMPONENT_COUNT;
+      webGlContext.uniform2f(
+        locations.rayJitter,
+        RAY_JITTER_VALUES[jitterValueIndex],
+        RAY_JITTER_VALUES[jitterValueIndex + 1]
+      );
       webGlContext.uniform1f(locations.textureWeight, sampleCount / nextSampleCount);
       webGlContext.uniform1f(locations.sampleSeed, sampleSeed);
 
