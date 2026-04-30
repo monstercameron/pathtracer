@@ -89,6 +89,8 @@ const MIN_GLARE_STRENGTH = 0;
 const MAX_GLARE_STRENGTH = 2;
 const ACTIVE_RAYS_PER_SAMPLE = CANVAS_SIZE * CANVAS_SIZE;
 const BENCHMARK_TIMER_QUERY_LIMIT = 4;
+const BENCHMARK_TIMER_QUERY_INTERVAL_MILLISECONDS = 250;
+const BENCHMARK_TIMER_POLL_INTERVAL_MILLISECONDS = 125;
 const BENCHMARK_UPDATE_INTERVAL_MILLISECONDS = 250;
 const BENCHMARK_ROLLING_WINDOW_MILLISECONDS = 60000;
 const BENCHMARK_ROLLING_COMPACT_THRESHOLD = 256;
@@ -2454,10 +2456,20 @@ class GpuBenchmarkTimer {
     this.timerExtension = timerExtension;
     this.pendingQueries = [];
     this.activeQuery = null;
+    this.previousQueryStartMilliseconds = 0;
+    this.previousPollMilliseconds = 0;
   }
 
   beginTiming() {
     if (this.activeQuery || this.pendingQueries.length >= BENCHMARK_TIMER_QUERY_LIMIT) {
+      return returnSuccess(false);
+    }
+
+    const currentMilliseconds = performance.now();
+    if (
+      this.previousQueryStartMilliseconds > 0 &&
+      currentMilliseconds - this.previousQueryStartMilliseconds < BENCHMARK_TIMER_QUERY_INTERVAL_MILLISECONDS
+    ) {
       return returnSuccess(false);
     }
 
@@ -2468,6 +2480,7 @@ class GpuBenchmarkTimer {
 
     this.timerExtension.beginQueryEXT(this.timerExtension.TIME_ELAPSED_EXT, query);
     this.activeQuery = query;
+    this.previousQueryStartMilliseconds = currentMilliseconds;
     return returnSuccess(true);
   }
 
@@ -2501,6 +2514,15 @@ class GpuBenchmarkTimer {
     if (this.pendingQueries.length === 0) {
       return returnSuccess(null);
     }
+
+    const currentMilliseconds = performance.now();
+    if (
+      this.previousPollMilliseconds > 0 &&
+      currentMilliseconds - this.previousPollMilliseconds < BENCHMARK_TIMER_POLL_INTERVAL_MILLISECONDS
+    ) {
+      return returnSuccess(null);
+    }
+    this.previousPollMilliseconds = currentMilliseconds;
 
     if (webGlContext.getParameter(timerExtension.GPU_DISJOINT_EXT)) {
       const [, deleteError] = this.deletePendingQueries();
