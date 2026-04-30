@@ -105,11 +105,13 @@ const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
 const SKY_TEXTURE_WIDTH = 256;
 const SKY_TEXTURE_HEIGHT = 128;
 const BYTES_PER_RGBA_PIXEL = 4;
+const BYTES_PER_HALF_FLOAT_RGBA_PIXEL = 8;
 const BYTES_PER_FLOAT_RGBA_PIXEL = 16;
 const TRACE_ACCUMULATION_TEXTURE_TRANSFERS_PER_SAMPLE = 2;
 const BYTES_PER_MEGABYTE = 1000000;
 const BYTES_PER_GIGABYTE = 1000000000;
 const BYTES_PER_TERABYTE = 1000000000000;
+const HALF_FLOAT_TEXTURE_TYPE = 0x8D61;
 const UINT32_RECIPROCAL = 1 / 4294967296;
 const HALTON_BASE_3_RECIPROCAL = 1 / 3;
 const RAY_JITTER_COMPONENT_COUNT = 2;
@@ -1034,8 +1036,26 @@ const calculatePerformanceScore = (benchmarkSnapshot) => {
 };
 
 const calculateTraceMemoryBytesPerSample = (webGlContext, textureType) => {
-  const bytesPerPixel = textureType === webGlContext.FLOAT ? BYTES_PER_FLOAT_RGBA_PIXEL : BYTES_PER_RGBA_PIXEL;
+  const bytesPerPixel = textureType === webGlContext.FLOAT
+    ? BYTES_PER_FLOAT_RGBA_PIXEL
+    : (textureType === HALF_FLOAT_TEXTURE_TYPE ? BYTES_PER_HALF_FLOAT_RGBA_PIXEL : BYTES_PER_RGBA_PIXEL);
   return bytesPerPixel * TRACE_ACCUMULATION_TEXTURE_TRANSFERS_PER_SAMPLE;
+};
+
+const readRenderTextureTypes = (webGlContext) => {
+  const textureTypes = [];
+  const halfFloatTextureExtension = webGlContext.getExtension('OES_texture_half_float');
+  if (
+    halfFloatTextureExtension &&
+    typeof halfFloatTextureExtension.HALF_FLOAT_OES === 'number'
+  ) {
+    textureTypes.push(halfFloatTextureExtension.HALF_FLOAT_OES);
+  }
+  if (webGlContext.getExtension('OES_texture_float')) {
+    textureTypes.push(webGlContext.FLOAT);
+  }
+  textureTypes.push(webGlContext.UNSIGNED_BYTE);
+  return textureTypes;
 };
 
 const writeIdentityMat4 = (matrix) => {
@@ -2847,6 +2867,7 @@ class PathTracer {
     displayTextures,
     skyTexture,
     textureType,
+    renderTextureTypes,
     renderProgram,
     renderVertexAttribute,
     temporalDisplayProgram,
@@ -2866,6 +2887,8 @@ class PathTracer {
     ]);
     this.skyTexture = skyTexture;
     this.textureType = textureType;
+    this.renderTextureTypes = renderTextureTypes;
+    this.textureTypeIndex = 0;
     this.renderProgram = renderProgram;
     this.renderVertexAttribute = renderVertexAttribute;
     this.temporalDisplayProgram = temporalDisplayProgram;
@@ -2892,7 +2915,6 @@ class PathTracer {
     this.tracerVertexAttribute = -1;
     this.currentTextureIndex = 0;
     this.currentDisplayTextureIndex = 0;
-    this.hasCheckedFloatFramebuffer = false;
     this.hasDisplayHistory = false;
     this.hasValidatedRenderFramebuffer = false;
     this.hasValidatedDisplayFramebuffer = false;
@@ -2949,7 +2971,8 @@ class PathTracer {
       return returnFailure(vertexBufferError.code, vertexBufferError.message, vertexBufferError.details);
     }
 
-    const textureType = webGlContext.getExtension('OES_texture_float') ? webGlContext.FLOAT : webGlContext.UNSIGNED_BYTE;
+    const renderTextureTypes = readRenderTextureTypes(webGlContext);
+    const textureType = renderTextureTypes[0];
     const [firstTexture, firstTextureError] = createRenderTexture(webGlContext, textureType);
     if (firstTextureError) {
       return returnFailure(firstTextureError.code, firstTextureError.message, firstTextureError.details);
@@ -3051,6 +3074,7 @@ class PathTracer {
       [firstDisplayTexture, secondDisplayTexture],
       skyTexture,
       textureType,
+      renderTextureTypes,
       renderProgram,
       renderVertexAttribute,
       temporalDisplayProgram,
@@ -3521,20 +3545,20 @@ class PathTracer {
     const webGlContext = this.webGlContext;
     const firstFramebuffer = this.framebuffers[0];
     webGlContext.bindFramebuffer(webGlContext.FRAMEBUFFER, firstFramebuffer);
-    const framebufferStatus = webGlContext.checkFramebufferStatus(webGlContext.FRAMEBUFFER);
+    let framebufferStatus = webGlContext.checkFramebufferStatus(webGlContext.FRAMEBUFFER);
 
-    if (
+    while (
       framebufferStatus !== webGlContext.FRAMEBUFFER_COMPLETE &&
-      this.textureType === webGlContext.FLOAT &&
-      !this.hasCheckedFloatFramebuffer
+      this.textureTypeIndex + 1 < this.renderTextureTypes.length
     ) {
-      this.textureType = webGlContext.UNSIGNED_BYTE;
+      this.textureTypeIndex += 1;
+      this.textureType = this.renderTextureTypes[this.textureTypeIndex];
       this.traceSampleBytes = calculateTraceMemoryBytesPerSample(webGlContext, this.textureType);
       const [, benchmarkBytesError] = this.benchmarkWindow.setTraceSampleBytes(this.traceSampleBytes);
       if (benchmarkBytesError) {
         return returnFailure(benchmarkBytesError.code, benchmarkBytesError.message, benchmarkBytesError.details);
       }
-      this.hasCheckedFloatFramebuffer = true;
+      this.sampleCount = 0;
       this.hasDisplayHistory = false;
       this.hasValidatedRenderFramebuffer = false;
       this.hasValidatedDisplayFramebuffer = false;
@@ -3568,6 +3592,9 @@ class PathTracer {
           null
         );
       }
+
+      webGlContext.bindFramebuffer(webGlContext.FRAMEBUFFER, firstFramebuffer);
+      framebufferStatus = webGlContext.checkFramebufferStatus(webGlContext.FRAMEBUFFER);
     }
 
     for (const framebuffer of this.framebuffers) {
