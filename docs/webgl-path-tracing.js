@@ -10,31 +10,136 @@
 
 const DEFAULT_CANVAS_SIZE = 512;
 const MIN_CANVAS_SIZE = 256;
-const MAX_CANVAS_SIZE = 1024;
+const MAX_CANVAS_SIZE = 2048;
 const CANVAS_SIZE_STEP = 64;
 const CANVAS_SIZE_PRESETS = Object.freeze([256, 384, 512, 768, 1024]);
-const normalizeCanvasSize = (value) => {
+const DEFAULT_RENDER_SCALE = 1;
+const MIN_RENDER_SCALE = 0.25;
+const MAX_RENDER_SCALE = 2;
+const RENDER_SCALE_STEP = 0.25;
+const normalizeCanvasDimension = (value, fallbackValue = DEFAULT_CANVAS_SIZE) => {
   const parsedSize = Number.parseInt(value, 10);
   if (!Number.isFinite(parsedSize)) {
-    return DEFAULT_CANVAS_SIZE;
+    return fallbackValue;
   }
   const steppedSize = Math.round(parsedSize / CANVAS_SIZE_STEP) * CANVAS_SIZE_STEP;
   return Math.min(Math.max(steppedSize, MIN_CANVAS_SIZE), MAX_CANVAS_SIZE);
 };
-const readInitialCanvasSize = () => {
+const normalizeCustomCanvasDimension = (value, fallbackValue = DEFAULT_CANVAS_SIZE) => {
+  const parsedSize = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsedSize)) {
+    return fallbackValue;
+  }
+  return Math.min(Math.max(parsedSize, MIN_CANVAS_SIZE), MAX_CANVAS_SIZE);
+};
+const normalizeCanvasSize = (value) => normalizeCanvasDimension(value, DEFAULT_CANVAS_SIZE);
+const normalizeRenderScale = (value) => {
+  const parsedScale = Number.parseFloat(value);
+  if (!Number.isFinite(parsedScale)) {
+    return DEFAULT_RENDER_SCALE;
+  }
+  const steppedScale = Math.round(parsedScale / RENDER_SCALE_STEP) * RENDER_SCALE_STEP;
+  return Math.min(Math.max(steppedScale, MIN_RENDER_SCALE), MAX_RENDER_SCALE);
+};
+const formatRenderScaleValue = (renderScale) => `${Math.round(renderScale * 100)}%`;
+const formatRenderResolution = (renderWidth, renderHeight) => `${renderWidth} x ${renderHeight}`;
+const readVisibleCanvasSize = () => {
+  const fallbackSize = (() => {
+    if (typeof window === 'undefined') {
+      return DEFAULT_CANVAS_SIZE;
+    }
+    const viewportWidth = Number.isFinite(window.innerWidth) ? window.innerWidth : DEFAULT_CANVAS_SIZE;
+    const viewportHeight = Number.isFinite(window.innerHeight) ? window.innerHeight : DEFAULT_CANVAS_SIZE;
+    return Math.max(MIN_CANVAS_SIZE, Math.min(viewportWidth, viewportHeight));
+  })();
+  const fallbackDimensions = { width: fallbackSize, height: fallbackSize };
+
+  if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
+    return fallbackDimensions;
+  }
+
+  const canvasElement = document.getElementById('canvas');
+  if (!(canvasElement instanceof HTMLCanvasElement)) {
+    return fallbackDimensions;
+  }
+
+  const canvasBounds = typeof canvasElement.getBoundingClientRect === 'function'
+    ? canvasElement.getBoundingClientRect()
+    : null;
+  const canvasWidth = canvasBounds && canvasBounds.width > 0 ? canvasBounds.width : canvasElement.clientWidth;
+  const canvasHeight = canvasBounds && canvasBounds.height > 0 ? canvasBounds.height : canvasElement.clientHeight;
+  if (canvasWidth > 0 && canvasHeight > 0) {
+    return { width: canvasWidth, height: canvasHeight };
+  }
+  return fallbackDimensions;
+};
+const estimateRenderScaleForResolution = (renderWidth, renderHeight, visibleCanvasSize = readVisibleCanvasSize()) => {
+  const widthScale = visibleCanvasSize.width > 0 ? renderWidth / visibleCanvasSize.width : DEFAULT_RENDER_SCALE;
+  const heightScale = visibleCanvasSize.height > 0 ? renderHeight / visibleCanvasSize.height : DEFAULT_RENDER_SCALE;
+  return normalizeRenderScale((widthScale + heightScale) / 2);
+};
+const deriveRenderResolutionForScale = (renderScale, visibleCanvasSize = readVisibleCanvasSize()) => ({
+  width: normalizeCanvasDimension(visibleCanvasSize.width * renderScale, DEFAULT_CANVAS_SIZE),
+  height: normalizeCanvasDimension(visibleCanvasSize.height * renderScale, DEFAULT_CANVAS_SIZE)
+});
+const readInitialRenderConfig = () => {
   if (typeof window === 'undefined' || !window.location || !window.URLSearchParams) {
-    return DEFAULT_CANVAS_SIZE;
+    return {
+      width: DEFAULT_CANVAS_SIZE,
+      height: DEFAULT_CANVAS_SIZE,
+      renderScale: DEFAULT_RENDER_SCALE
+    };
   }
   const urlParameters = new window.URLSearchParams(window.location.search);
-  return normalizeCanvasSize(urlParameters.get('resolution'));
+  const visibleCanvasSize = readVisibleCanvasSize();
+  const requestedRenderScale = normalizeRenderScale(urlParameters.get('renderScale'));
+  const hasRenderWidth = urlParameters.has('renderWidth');
+  const hasRenderHeight = urlParameters.has('renderHeight');
+
+  if (hasRenderWidth || hasRenderHeight) {
+    const scaleResolution = deriveRenderResolutionForScale(requestedRenderScale, visibleCanvasSize);
+    const width = normalizeCustomCanvasDimension(urlParameters.get('renderWidth'), scaleResolution.width);
+    const height = normalizeCustomCanvasDimension(urlParameters.get('renderHeight'), scaleResolution.height);
+    return {
+      width,
+      height,
+      renderScale: estimateRenderScaleForResolution(width, height, visibleCanvasSize)
+    };
+  }
+
+  if (urlParameters.has('resolution')) {
+    const legacySize = normalizeCanvasSize(urlParameters.get('resolution'));
+    return {
+      width: legacySize,
+      height: legacySize,
+      renderScale: estimateRenderScaleForResolution(legacySize, legacySize, visibleCanvasSize)
+    };
+  }
+
+  const derivedResolution = deriveRenderResolutionForScale(
+    urlParameters.has('renderScale') ? requestedRenderScale : DEFAULT_RENDER_SCALE,
+    visibleCanvasSize
+  );
+  return {
+    width: derivedResolution.width,
+    height: derivedResolution.height,
+    renderScale: urlParameters.has('renderScale') ? requestedRenderScale : DEFAULT_RENDER_SCALE
+  };
 };
-const CANVAS_SIZE = readInitialCanvasSize();
-const HALF_CANVAS_SIZE = CANVAS_SIZE / 2;
-const CANVAS_SIZE_RECIPROCAL = 1 / CANVAS_SIZE;
-const CAMERA_FIELD_OF_VIEW_DEGREES = 55;
+const INITIAL_RENDER_CONFIG = readInitialRenderConfig();
+const CANVAS_RENDER_WIDTH = INITIAL_RENDER_CONFIG.width;
+const CANVAS_RENDER_HEIGHT = INITIAL_RENDER_CONFIG.height;
+const CANVAS_RENDER_SCALE = INITIAL_RENDER_CONFIG.renderScale;
+const CANVAS_SIZE = Math.max(CANVAS_RENDER_WIDTH, CANVAS_RENDER_HEIGHT);
+const CANVAS_RENDER_RESOLUTION_LABEL = formatRenderResolution(CANVAS_RENDER_WIDTH, CANVAS_RENDER_HEIGHT);
+const CANVAS_SIZE_RECIPROCAL_X = 1 / CANVAS_RENDER_WIDTH;
+const CANVAS_SIZE_RECIPROCAL_Y = 1 / CANVAS_RENDER_HEIGHT;
+const CANVAS_ASPECT_RATIO = CANVAS_RENDER_WIDTH / CANVAS_RENDER_HEIGHT;
+const DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES = 55;
+const MIN_CAMERA_FIELD_OF_VIEW_DEGREES = 35;
+const MAX_CAMERA_FIELD_OF_VIEW_DEGREES = 85;
 const CAMERA_NEAR_PLANE = 0.1;
 const CAMERA_FAR_PLANE = 100;
-const CAMERA_FIELD_SCALE = 1 / Math.tan((CAMERA_FIELD_OF_VIEW_DEGREES * Math.PI / 180) / 2);
 const CAMERA_NEAR_FAR_RANGE = 1 / (CAMERA_NEAR_PLANE - CAMERA_FAR_PLANE);
 const CAMERA_ROTATION_SPEED = 0.01;
 const CAMERA_AUTO_ROTATION_SPEED = 0.12;
@@ -48,6 +153,13 @@ const PHYSICS_SPHERE_RESTITUTION = 0.45;
 const PHYSICS_SPHERE_FRICTION = 0.75;
 const PHYSICS_CUBE_FRICTION = 0.85;
 const PHYSICS_CUBE_RESTITUTION = 0.15;
+// Rapier collision group masks: high 16 bits = memberships, low 16 bits = filter
+// GROUP_FLOOR=0x0001, GROUP_OBJECTS=0x0002, GROUP_GHOST=0x0004
+const PHYSICS_COLLISION_MASK_FLOOR = (0x0001 << 16) | 0xFFFF;    // floor collides with everything
+const PHYSICS_COLLISION_MASK_OBJECTS = (0x0002 << 16) | 0x0003;  // normal objects: floor + other objects
+const PHYSICS_COLLISION_MASK_GHOST = (0x0004 << 16) | 0x0001;    // ghost objects: floor only
+const MIN_PHYSICS_SURFACE_COEFFICIENT = 0;
+const MAX_PHYSICS_SURFACE_COEFFICIENT = 1;
 const PHYSICS_POSITION_EPSILON = 0.00001;
 const DEFAULT_LIGHT_SIZE = 0.1;
 const MIN_LIGHT_SIZE = 0.02;
@@ -56,6 +168,7 @@ const DEFAULT_LIGHT_INTENSITY = 0.5;
 const MIN_LIGHT_INTENSITY = 0.1;
 const MAX_LIGHT_INTENSITY = 1;
 const LIGHT_INTENSITY_CYCLE_SPEED = 0.45;
+const DEFAULT_LIGHT_COLOR_HEX = '#ffffff';
 const DEFAULT_FOG_DENSITY = 0;
 const MIN_FOG_DENSITY = 0;
 const MAX_FOG_DENSITY = 2;
@@ -100,6 +213,26 @@ const MAX_MOTION_BLUR_STRENGTH = 0.95;
 const DEFAULT_DENOISER_STRENGTH = 0.65;
 const MIN_DENOISER_STRENGTH = 0;
 const MAX_DENOISER_STRENGTH = 1;
+const QUALITY_PRESETS = Object.freeze({
+  draft: Object.freeze({
+    lightBounceCount: 2,
+    raysPerPixel: 2,
+    temporalBlendFrames: 4,
+    denoiserStrength: 0.8
+  }),
+  preview: Object.freeze({
+    lightBounceCount: DEFAULT_LIGHT_BOUNCE_COUNT,
+    raysPerPixel: DEFAULT_RAYS_PER_PIXEL,
+    temporalBlendFrames: DEFAULT_TEMPORAL_BLEND_FRAMES,
+    denoiserStrength: DEFAULT_DENOISER_STRENGTH
+  }),
+  final: Object.freeze({
+    lightBounceCount: 8,
+    raysPerPixel: 32,
+    temporalBlendFrames: 24,
+    denoiserStrength: 0.45
+  })
+});
 const DEFAULT_BLOOM_STRENGTH = 0.25;
 const MIN_BLOOM_STRENGTH = 0;
 const MAX_BLOOM_STRENGTH = 2;
@@ -109,18 +242,24 @@ const MAX_BLOOM_THRESHOLD = 4;
 const DEFAULT_GLARE_STRENGTH = 0.1;
 const MIN_GLARE_STRENGTH = 0;
 const MAX_GLARE_STRENGTH = 2;
-const ACTIVE_RAYS_PER_SAMPLE = CANVAS_SIZE * CANVAS_SIZE;
+const ACTIVE_RAYS_PER_SAMPLE = CANVAS_RENDER_WIDTH * CANVAS_RENDER_HEIGHT;
 const BENCHMARK_TIMER_QUERY_LIMIT = 4;
 const BENCHMARK_TIMER_QUERY_INTERVAL_MILLISECONDS = 250;
 const BENCHMARK_TIMER_POLL_INTERVAL_MILLISECONDS = 125;
 const BENCHMARK_UPDATE_INTERVAL_MILLISECONDS = 250;
 const BENCHMARK_ROLLING_WINDOW_MILLISECONDS = 60000;
-const BENCHMARK_ROLLING_COMPACT_THRESHOLD = 256;
+const BENCHMARK_ROLLING_INITIAL_SAMPLE_CAPACITY = 4096;
 const BENCHMARK_FRAME_BUCKET_MILLISECONDS = 500;
+const BENCHMARK_RUNNER_DEFAULT_WARMUP_MILLISECONDS = 3000;
+const BENCHMARK_RUNNER_DEFAULT_MEASUREMENT_MILLISECONDS = 10000;
+const BENCHMARK_RUNNER_SAMPLE_INTERVAL_MILLISECONDS = BENCHMARK_UPDATE_INTERVAL_MILLISECONDS;
+const BENCHMARK_BASELINE_STORAGE_KEY = 'pathtracer-benchmark-baseline-v1';
 const MAX_PERCEPTUAL_FRAMES_PER_SECOND = 240;
 const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 100000;
 const PERFORMANCE_SCORE_READY_TRACE_SAMPLE_COUNT = 12;
 const PERFORMANCE_SCORE_QUANTUM = 5;
+const DEFAULT_BENCHMARK_SCENE_NAME = 'standard';
+const BENCHMARK_CAMERA_AUTO_ROTATION_SPEED = CAMERA_AUTO_ROTATION_SPEED;
 const NANOSECONDS_PER_MILLISECOND = 1000000;
 const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
 const SKY_TEXTURE_WIDTH = 256;
@@ -171,7 +310,8 @@ const TRACER_FRAME_SCALAR_UNIFORM_NAMES = Object.freeze([
   'fogDensity',
   'skyBrightness',
   'cameraFocusDistance',
-  'cameraAperture'
+  'cameraAperture',
+  'renderDebugViewMode'
 ]);
 const RENDER_SCALAR_UNIFORM_NAMES = Object.freeze([
   'colorExposureScale',
@@ -198,15 +338,39 @@ const MATERIAL = Object.freeze({
   VOLUMETRIC_SHAFTS: 10,
   BOKEH: 11,
   MOTION_BLUR_STRESS: 12,
-  FIRE_PLASMA: 13
+  FIRE_PLASMA: 13,
+  THIN_FILM: 14,
+  RETROREFLECTOR: 15,
+  VELVET: 16,
+  VORONOI_CRACKS: 17,
+  DIFFRACTION_GRATING: 18
 });
 const MIN_MATERIAL = MATERIAL.DIFFUSE;
-const MAX_MATERIAL = MATERIAL.FIRE_PLASMA;
+const MAX_MATERIAL = MATERIAL.DIFFRACTION_GRATING;
+
+const RENDER_DEBUG_VIEW = Object.freeze({
+  BEAUTY: 0,
+  ALBEDO: 1,
+  NORMALS: 2,
+  DEPTH: 3
+});
+
+const RENDER_DEBUG_VIEW_MODES = Object.freeze({
+  beauty: RENDER_DEBUG_VIEW.BEAUTY,
+  albedo: RENDER_DEBUG_VIEW.ALBEDO,
+  normals: RENDER_DEBUG_VIEW.NORMALS,
+  depth: RENDER_DEBUG_VIEW.DEPTH
+});
 
 const ENVIRONMENT = Object.freeze({
   YELLOW_BLUE_CORNELL_BOX: 0,
   RED_GREEN_CORNELL_BOX: 1,
   OPEN_SKY_STUDIO: 2
+});
+
+const PHYSICS_BODY_TYPE = Object.freeze({
+  FIXED: 'fixed',
+  DYNAMIC: 'dynamic'
 });
 
 const RECURSIVE_SPHERE_DIRECTION = Object.freeze({
@@ -249,7 +413,7 @@ const renderColorManagementSource = [
 ].join('');
 
 const renderBloomSource = [
-  `vec2 bloomPixelStep() { return vec2(1.0 / ${CANVAS_SIZE}.0); }`,
+  `vec2 bloomPixelStep() { return vec2(1.0 / ${CANVAS_RENDER_WIDTH}.0, 1.0 / ${CANVAS_RENDER_HEIGHT}.0); }`,
   'vec3 extractBloomColorFromExposed(vec3 exposedColor) {',
   '  float luminance = renderColorLuminance(exposedColor);',
   '  float knee = max(bloomThreshold * 0.25, 0.001);',
@@ -362,8 +526,10 @@ const tracerFragmentSourceHeader = [
   'uniform float glossiness;',
   'uniform float lightIntensity;',
   'uniform float lightSize;',
+  'uniform vec3 lightColor;',
   'uniform float fogDensity;',
   'uniform float skyBrightness;',
+  'uniform float renderDebugViewMode;',
   'uniform vec3 cameraRight;',
   'uniform vec3 cameraUp;',
   'uniform float cameraFocusDistance;',
@@ -558,7 +724,7 @@ const surfaceShaderUtilitySource = [
   '  return value;',
   '}',
   'float shaderRing(vec3 point, float scale) {',
-  '  return abs(sin(length(point.xz) * scale + shaderFbm(point * 3.0) * 5.0));',
+  '  return abs(sin(shaderFbm(point * (scale * 0.15)) * 6.28318 + shaderFbm(point * 3.0) * 5.0));',
   '}',
   'vec3 shaderHeatPalette(float value) {',
   '  vec3 ember = vec3(0.35, 0.03, 0.01);',
@@ -569,6 +735,34 @@ const surfaceShaderUtilitySource = [
   'vec3 shaderStableTangent(vec3 normal) {',
   '  vec3 axis = abs(normal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);',
   '  return normalize(cross(normal, axis));',
+  '}',
+  'float shaderVoronoiEdge(vec3 point) {',
+  '  vec3 baseCell = floor(point);',
+  '  vec3 localPoint = fract(point);',
+  '  float nearestDistance = 8.0;',
+  '  float secondNearestDistance = 8.0;',
+  '  for(int cellZ = 0; cellZ < 3; cellZ++) {',
+  '    for(int cellY = 0; cellY < 3; cellY++) {',
+  '      for(int cellX = 0; cellX < 3; cellX++) {',
+  '        vec3 cellOffset = vec3(float(cellX) - 1.0, float(cellY) - 1.0, float(cellZ) - 1.0);',
+  '        vec3 neighborCell = baseCell + cellOffset;',
+  '        vec3 jitter = vec3(',
+  '          shaderNoise(neighborCell + vec3(7.1, 11.3, 17.7)),',
+  '          shaderNoise(neighborCell + vec3(23.5, 5.9, 31.1)),',
+  '          shaderNoise(neighborCell + vec3(13.7, 29.3, 3.5))',
+  '        );',
+  '        vec3 delta = cellOffset + jitter - localPoint;',
+  '        float distanceSquared = dot(delta, delta);',
+  '        if(distanceSquared < nearestDistance) {',
+  '          secondNearestDistance = nearestDistance;',
+  '          nearestDistance = distanceSquared;',
+  '        } else if(distanceSquared < secondNearestDistance) {',
+  '          secondNearestDistance = distanceSquared;',
+  '        }',
+  '      }',
+  '    }',
+  '  }',
+  '  return sqrt(secondNearestDistance) - sqrt(nearestDistance);',
   '}'
 ].join('');
 
@@ -622,7 +816,7 @@ const causticsSurfaceShaderSource = [
   'vec3 refractedRay = refract(normalizedRay, orientedNormal, isOutsideSurface > 0.5 ? 0.625 : 1.6);',
   'float rimBase = 1.0 - max(dot(-normalizedRay, orientedNormal), 0.0);',
   'float rimLight = rimBase * rimBase * rimBase;',
-  'accumulatedColor += colorMask * vec3(0.25, 0.95, 0.65) * rimLight * lightIntensity;',
+  'accumulatedColor += colorMask * lightColor * vec3(0.25, 0.95, 0.65) * rimLight * lightIntensity;',
   'ray = dot(refractedRay, refractedRay) <= 0.0001 ? reflect(normalizedRay, orientedNormal) : refractedRay;',
   'colorMask *= surfaceColor;',
   `origin = hit + normalize(ray) * ${SHADER_EPSILON};`,
@@ -660,7 +854,7 @@ const volumetricShaftsSurfaceShaderSource = [
   'float shaftAmount = shaftPower4 * shaftPower4;',
   'float densityNoise = shaderFbm(surfaceObjectPoint * 6.0 + vec3(0.0, sampleSeed * 0.01, 0.0));',
   'surfaceColor = mix(vec3(0.20, 0.34, 0.55), vec3(0.60, 0.78, 1.0), densityNoise);',
-  'accumulatedColor += colorMask * surfaceColor * shaftAmount * lightIntensity * 1.8;',
+  'accumulatedColor += colorMask * lightColor * surfaceColor * shaftAmount * lightIntensity * 1.8;',
   'surfaceLightResponse = 0.9;',
   'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);'
 ].join('');
@@ -691,6 +885,65 @@ const firePlasmaSurfaceShaderSource = [
   'accumulatedColor += colorMask * surfaceColor * (0.55 + flame * 2.25);',
   'surfaceLightResponse = 0.45;',
   'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);'
+].join('');
+
+const thinFilmSurfaceShaderSource = [
+  'vec3 thinFilmViewDirection = normalize(-ray);',
+  'float thinFilmGrazing = 1.0 - max(dot(thinFilmViewDirection, normal), 0.0);',
+  'float thinFilmPhase = thinFilmGrazing * 8.0 + sin(dot(hit, vec3(19.0, 7.0, 13.0))) * 0.35;',
+  'vec3 thinFilmRainbow = 0.5 + 0.5 * cos(vec3(0.0, 2.09439, 4.18879) + thinFilmPhase * 6.28318);',
+  'surfaceColor = mix(vec3(0.055, 0.060, 0.070), thinFilmRainbow, 0.86);',
+  'ray = normalize(mix(reflect(ray, normal), cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal), 0.18));',
+  specularReflectionSource,
+  'specularHighlight = pow(max(specularHighlight, 0.0), 24.0) * (1.0 + thinFilmGrazing * 2.2);',
+  'surfaceLightResponse = 0.75 + thinFilmGrazing * 0.65;'
+].join('');
+
+const retroreflectorSurfaceShaderSource = [
+  'vec3 retroReturnRay = -normalize(ray);',
+  'vec3 retroLightDirection = normalize(light - hit);',
+  'float retroAim = max(dot(retroReturnRay, retroLightDirection), 0.0);',
+  'float retroSparkle = pow(retroAim, 8.0);',
+  'surfaceColor = mix(vec3(0.10, 0.08, 0.045), vec3(1.0, 0.88, 0.42), 0.35 + retroSparkle * 0.65);',
+  'accumulatedColor += colorMask * lightColor * vec3(1.0, 0.82, 0.38) * retroSparkle * lightIntensity * 1.4;',
+  'ray = normalize(retroReturnRay + normal * 0.025 + uniformlyRandomVector(sampleSeed + float(bounce) * 19.0) * 0.012);',
+  'surfaceLightResponse = 0.25;',
+  'specularHighlight = retroSparkle * 2.5;'
+].join('');
+
+const velvetSurfaceShaderSource = [
+  'vec3 velvetViewDirection = normalize(-ray);',
+  'float velvetGrazing = 1.0 - abs(dot(velvetViewDirection, normal));',
+  'float velvetSheen = velvetGrazing * velvetGrazing;',
+  'surfaceColor = mix(vec3(0.18, 0.025, 0.075), vec3(0.82, 0.18, 0.36), velvetSheen);',
+  'accumulatedColor += colorMask * vec3(0.90, 0.18, 0.34) * velvetSheen * 0.16;',
+  'surfaceLightResponse = 0.52 + velvetSheen * 1.8;',
+  'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal);'
+].join('');
+
+const voronoiCracksSurfaceShaderSource = [
+  'float crackDistance = shaderVoronoiEdge(surfaceObjectPoint * 7.0);',
+  'float crackLine = 1.0 - smoothstep(0.025, 0.095, crackDistance);',
+  'float cellDust = shaderFbm(surfaceObjectPoint * 11.0);',
+  'vec3 dryMud = mix(vec3(0.22, 0.13, 0.070), vec3(0.68, 0.50, 0.31), cellDust);',
+  'surfaceColor = mix(dryMud, vec3(0.018, 0.014, 0.011), crackLine);',
+  'vec3 crackTangent = shaderStableTangent(normal);',
+  'vec3 crackedNormal = normalize(normal + crackTangent * (crackLine - 0.35) * 0.20);',
+  'surfaceLightResponse = mix(1.05, 0.32, crackLine);',
+  'ray = cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, crackedNormal);'
+].join('');
+
+const diffractionGratingSurfaceShaderSource = [
+  'vec3 diffractionViewDirection = normalize(-ray);',
+  'vec3 diffractionReflectDirection = normalize(reflect(ray, normal));',
+  'float diffractionPhase = dot(diffractionViewDirection, diffractionReflectDirection) * 9.0 + dot(hit, vec3(36.0, 0.0, 12.0));',
+  'float diffractionBand = 0.5 + 0.5 * sin(diffractionPhase * 3.0);',
+  'vec3 diffractionRainbow = 0.5 + 0.5 * cos(vec3(0.0, 2.09439, 4.18879) + diffractionPhase * 6.28318);',
+  'surfaceColor = mix(vec3(0.035, 0.040, 0.050), diffractionRainbow, 0.72 + diffractionBand * 0.22);',
+  'ray = normalize(mix(diffractionReflectDirection, cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal), 0.08));',
+  specularReflectionSource,
+  'specularHighlight = pow(max(specularHighlight, 0.0), 18.0) * (1.0 + diffractionBand * 2.4);',
+  'surfaceLightResponse = 0.65 + diffractionBand * 0.35;'
 ].join('');
 
 const createObjectSurfaceShaderSource = (material) => {
@@ -733,6 +986,21 @@ const createObjectSurfaceShaderSource = (material) => {
   }
   if (normalizedMaterial === MATERIAL.FIRE_PLASMA) {
     return firePlasmaSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.THIN_FILM) {
+    return thinFilmSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.RETROREFLECTOR) {
+    return retroreflectorSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.VELVET) {
+    return velvetSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.VORONOI_CRACKS) {
+    return voronoiCracksSurfaceShaderSource;
+  }
+  if (normalizedMaterial === MATERIAL.DIFFRACTION_GRATING) {
+    return diffractionGratingSurfaceShaderSource;
   }
   return newDiffuseRaySource;
 };
@@ -804,8 +1072,7 @@ const initializeRapierRuntime = (rapierModule) => {
     return Promise.resolve(returnFailure('rapier-init-missing', 'Rapier module does not expose an init function.'));
   }
 
-  const wasmUrl = new URL('./vendor/rapier/rapier_wasm3d_bg.wasm', import.meta.url);
-  return rapierModule.init({ module_or_path: wasmUrl }).then(
+  return rapierModule.init().then(
     () => returnSuccess(rapierModule),
     (initError) => returnFailure('rapier-init-failed', 'Rapier runtime could not be initialized.', readErrorMessage(initError))
   );
@@ -943,6 +1210,46 @@ const parseMaterial = (rawValue) => parseBoundedInteger(
   MAX_MATERIAL
 );
 
+const normalizeRenderDebugViewMode = (debugViewMode) => (
+  Number.isFinite(debugViewMode) &&
+  debugViewMode >= RENDER_DEBUG_VIEW.BEAUTY &&
+  debugViewMode <= RENDER_DEBUG_VIEW.DEPTH
+    ? debugViewMode
+    : RENDER_DEBUG_VIEW.BEAUTY
+);
+
+const parseRenderDebugViewMode = (rawValue) => {
+  if (Object.prototype.hasOwnProperty.call(RENDER_DEBUG_VIEW_MODES, rawValue)) {
+    return returnSuccess(RENDER_DEBUG_VIEW_MODES[rawValue]);
+  }
+  return returnFailure('invalid-debug-view', `Render debug view "${rawValue}" is not available.`);
+};
+
+const toHexByte = (value) => (
+  Math.round(clampNumber(value, 0, 1) * 255)
+    .toString(16)
+    .padStart(2, '0')
+);
+
+const formatLightColorValue = (lightColor) => `#${toHexByte(lightColor[0])}${toHexByte(lightColor[1])}${toHexByte(lightColor[2])}`;
+
+const parseLightColorValue = (rawValue) => {
+  const normalizedValue = String(rawValue || '').trim();
+  const colorMatch = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(normalizedValue);
+  if (!colorMatch) {
+    return returnFailure('invalid-light-color', 'Light color must be a hex color.');
+  }
+
+  const colorHex = colorMatch[1].length === 3
+    ? colorMatch[1].split('').map((hexDigit) => `${hexDigit}${hexDigit}`).join('')
+    : colorMatch[1];
+  return returnSuccess(createVec3(
+    Number.parseInt(colorHex.slice(0, 2), 16) / 255,
+    Number.parseInt(colorHex.slice(2, 4), 16) / 255,
+    Number.parseInt(colorHex.slice(4, 6), 16) / 255
+  ));
+};
+
 const isTransparentMaterial = (material) => (
   material === MATERIAL.GLASS ||
   material === MATERIAL.SPECTRAL_GLASS ||
@@ -959,7 +1266,8 @@ const materialUsesSurfaceShaderUtilities = (material) => {
     normalizedMaterial === MATERIAL.VOLUMETRIC_SHAFTS ||
     normalizedMaterial === MATERIAL.BOKEH ||
     normalizedMaterial === MATERIAL.MOTION_BLUR_STRESS ||
-    normalizedMaterial === MATERIAL.FIRE_PLASMA
+    normalizedMaterial === MATERIAL.FIRE_PLASMA ||
+    normalizedMaterial === MATERIAL.VORONOI_CRACKS
   );
 };
 
@@ -992,6 +1300,17 @@ const parseBoundedNumber = (rawValue, fallbackValue, minValue, maxValue) => {
   return returnSuccess(normalizeBoundedNumber(parsedValue, fallbackValue, minValue, maxValue));
 };
 
+const normalizePhysicsBodyType = (bodyType, fallbackBodyType = PHYSICS_BODY_TYPE.FIXED) => {
+  if (bodyType === PHYSICS_BODY_TYPE.DYNAMIC || bodyType === PHYSICS_BODY_TYPE.FIXED) {
+    return bodyType;
+  }
+  return fallbackBodyType;
+};
+
+const parsePhysicsBodyType = (rawValue, fallbackBodyType) => returnSuccess(
+  normalizePhysicsBodyType(rawValue, fallbackBodyType)
+);
+
 const formatColorAdjustmentValue = (value) => value.toFixed(2);
 
 const formatSignedColorAdjustmentValue = (value) => {
@@ -1002,6 +1321,7 @@ const formatSignedColorAdjustmentValue = (value) => {
 const formatLightIntensityValue = (value) => value.toFixed(2);
 
 const formatCameraEffectValue = (value) => value.toFixed(2);
+const formatCameraFieldOfViewValue = (value) => `${Math.round(value)} deg`;
 
 const formatCompactMetricValue = (value) => {
   if (!Number.isFinite(value) || value <= 0) {
@@ -1335,13 +1655,24 @@ const writeLookAtMat4 = (
   return returnSuccess(undefined);
 };
 
-const writeCameraProjectionMat4 = (outputMatrix) => {
-  outputMatrix[0] = CAMERA_FIELD_SCALE;
+const readCameraFieldScale = (fieldOfViewDegrees) => {
+  const normalizedFieldOfViewDegrees = normalizeBoundedNumber(
+    fieldOfViewDegrees,
+    DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES,
+    MIN_CAMERA_FIELD_OF_VIEW_DEGREES,
+    MAX_CAMERA_FIELD_OF_VIEW_DEGREES
+  );
+  return 1 / Math.tan((normalizedFieldOfViewDegrees * Math.PI / 180) / 2);
+};
+
+const writeCameraProjectionMat4 = (outputMatrix, fieldOfViewDegrees = DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES) => {
+  const cameraFieldScale = readCameraFieldScale(fieldOfViewDegrees);
+  outputMatrix[0] = cameraFieldScale / CANVAS_ASPECT_RATIO;
   outputMatrix[1] = 0;
   outputMatrix[2] = 0;
   outputMatrix[3] = 0;
   outputMatrix[4] = 0;
-  outputMatrix[5] = CAMERA_FIELD_SCALE;
+  outputMatrix[5] = cameraFieldScale;
   outputMatrix[6] = 0;
   outputMatrix[7] = 0;
   outputMatrix[8] = 0;
@@ -1383,8 +1714,8 @@ const createRayJitterValues = () => {
   const jitterValues = new Float32Array(RANDOM_SAMPLE_SEQUENCE_WRAP * RAY_JITTER_COMPONENT_COUNT);
   for (let sequenceIndex = 1; sequenceIndex <= RANDOM_SAMPLE_SEQUENCE_WRAP; sequenceIndex += 1) {
     const valueIndex = (sequenceIndex - 1) * RAY_JITTER_COMPONENT_COUNT;
-    jitterValues[valueIndex] = (readHaltonBase2(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
-    jitterValues[valueIndex + 1] = (readHaltonBase3(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL;
+    jitterValues[valueIndex] = (readHaltonBase2(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL_X;
+    jitterValues[valueIndex + 1] = (readHaltonBase3(sequenceIndex) * 2 - 1) * CANVAS_SIZE_RECIPROCAL_Y;
   }
   return jitterValues;
 };
@@ -1495,7 +1826,7 @@ const displayTemporalAntialiasingSource = [
   '  vec3 maxYCoCg = currentYCoCg;',
   '  vec3 colorSum = currentColor;',
   '  float weightSum = 1.0;',
-  `  vec2 pixelStep = vec2(1.0 / ${CANVAS_SIZE}.0);`,
+  `  vec2 pixelStep = vec2(1.0 / ${CANVAS_RENDER_WIDTH}.0, 1.0 / ${CANVAS_RENDER_HEIGHT}.0);`,
   '  includeNeighborhoodSample(texCoord + vec2(-pixelStep.x, 0.0), 0.75, currentYCoCg, colorSum, weightSum, minYCoCg, maxYCoCg);',
   '  includeNeighborhoodSample(texCoord + vec2(pixelStep.x, 0.0), 0.75, currentYCoCg, colorSum, weightSum, minYCoCg, maxYCoCg);',
   '  includeNeighborhoodSample(texCoord + vec2(0.0, -pixelStep.y), 0.75, currentYCoCg, colorSum, weightSum, minYCoCg, maxYCoCg);',
@@ -1618,17 +1949,25 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     '    float surfaceLightResponse = 1.0;',
     sceneUsesSurfaceShaderUtilities(sceneObjects) ? '    vec3 surfaceObjectPoint;' : '',
     '    vec3 normal;',
+    '    vec3 debugViewRay = ray;',
     `    if(roomDistance < ${SHADER_INFINITY} && t == roomDistance) {`,
     '      hit = roomHit;',
     '      normal = roomNormal;',
     environmentSource,
     newDiffuseRaySource,
     `    } else if(t == ${SHADER_INFINITY}) {`,
+    '      if(renderDebugViewMode > 0.5) break;',
     missSource,
     '      break;',
     '    } else {',
       '      if(false) ;',
     joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getNormalCalculationCode()),
+    '    }',
+    '    if(renderDebugViewMode > 0.5) {',
+    '      if(renderDebugViewMode < 1.5) return clamp(surfaceColor, 0.0, 1.0);',
+    '      if(renderDebugViewMode < 2.5) return normal * 0.5 + 0.5;',
+    '      float debugDepth = clamp((t * length(debugViewRay)) / 6.0, 0.0, 1.0);',
+    '      return vec3(1.0 - debugDepth);',
     '    }',
     '    colorMask *= surfaceColor;',
     '    vec3 toLight = light - hit;',
@@ -1639,7 +1978,7 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
     '      float directLightResponse = surfaceLightResponse * (diffuse + specularHighlight);',
     '      if(directLightResponse > 0.00001) {',
     `        float shadowIntensity = shadow(hit + normal * ${SHADER_EPSILON}, toLight);`,
-    '        accumulatedColor += colorMask * (lightIntensity * shadowIntensity * directLightResponse);',
+    '        accumulatedColor += colorMask * lightColor * (lightIntensity * shadowIntensity * directLightResponse);',
     '      }',
     '    }',
     `    origin = hit + normalize(ray) * ${SHADER_EPSILON};`,
@@ -1652,7 +1991,7 @@ const createCalculateColorShaderSource = (sceneObjects, renderSettings) => {
 const createMainShaderSource = () => [
   'void main() {',
   '  vec3 newLight = light + randomLightOffset(sampleSeed - 53.0);',
-  `  vec3 texture = texture2D(texture, gl_FragCoord.xy / ${CANVAS_SIZE}.0).rgb;`,
+  `  vec3 texture = texture2D(texture, gl_FragCoord.xy / vec2(${CANVAS_RENDER_WIDTH}.0, ${CANVAS_RENDER_HEIGHT}.0)).rgb;`,
   '  vec3 rayOrigin = eye;',
   '  vec3 rayDirection = initialRay;',
   '  applyCameraFocus(rayOrigin, rayDirection);',
@@ -1768,8 +2107,8 @@ const createRenderTexture = (webGlContext, textureType) => {
     webGlContext.TEXTURE_2D,
     0,
     webGlContext.RGBA,
-    CANVAS_SIZE,
-    CANVAS_SIZE,
+    CANVAS_RENDER_WIDTH,
+    CANVAS_RENDER_HEIGHT,
     0,
     webGlContext.RGBA,
     textureType,
@@ -1865,6 +2204,15 @@ const setSamplerUniform = (webGlContext, program, uniformLocationCache, uniformN
   return returnSuccess(undefined);
 };
 
+const ACTIVE_WEBGL_PROGRAMS = new WeakMap();
+
+const useWebGlProgramIfNeeded = (webGlContext, program) => {
+  if (ACTIVE_WEBGL_PROGRAMS.get(webGlContext) !== program) {
+    webGlContext.useProgram(program);
+    ACTIVE_WEBGL_PROGRAMS.set(webGlContext, program);
+  }
+};
+
 const cacheNamedUniformLocations = (webGlContext, program, uniformLocationCache, targetLocations, uniformNames) => {
   for (const uniformName of uniformNames) {
     targetLocations[uniformName] = readUniformLocation(webGlContext, program, uniformLocationCache, uniformName);
@@ -1941,6 +2289,12 @@ const setChangedCachedMat4UniformValue = (webGlContext, uniformLocation, matrixV
 
 class SphereSceneObject {
   constructor(centerPosition, radius, objectId, material = MATERIAL.DIFFUSE) {
+    this.objectId = objectId;
+    this.entityId = String(objectId);
+    this.parentEntityId = null;
+    this.displayName = '';
+    this.isHidden = false;
+    this.isLocked = false;
     this.centerPosition = cloneVec3(centerPosition);
     this.radius = radius;
     this.material = normalizeMaterial(material);
@@ -1955,6 +2309,11 @@ class SphereSceneObject {
     this.boundsMinCorner = createVec3(0, 0, 0);
     this.boundsMaxCorner = createVec3(0, 0, 0);
     this.physicsRigidBody = null;
+    this.isPhysicsEnabled = true;
+    this.physicsBodyType = PHYSICS_BODY_TYPE.DYNAMIC;
+    this.physicsFriction = PHYSICS_SPHERE_FRICTION;
+    this.physicsRestitution = PHYSICS_SPHERE_RESTITUTION;
+    this.collideWithObjects = true;
     this.centerUniformLocation = null;
     this.radiusUniformLocation = null;
     this.previousUniformRadius = Number.NaN;
@@ -1994,6 +2353,17 @@ class SphereSceneObject {
   setMaterial(material) {
     this.material = normalizeMaterial(material);
     return returnSuccess(undefined);
+  }
+
+  cloneForDuplicate(objectId) {
+    const duplicateObject = new SphereSceneObject(this.centerPosition, this.radius, objectId, this.material);
+    duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
+    duplicateObject.isPhysicsEnabled = this.isPhysicsEnabled;
+    duplicateObject.physicsBodyType = this.physicsBodyType;
+    duplicateObject.physicsFriction = this.physicsFriction;
+    duplicateObject.physicsRestitution = this.physicsRestitution;
+    duplicateObject.collideWithObjects = this.collideWithObjects;
+    return duplicateObject;
   }
 
   cacheUniformLocations(webGlContext, program, uniformLocationCache) {
@@ -2082,6 +2452,12 @@ class SphereSceneObject {
 
 class CubeSceneObject {
   constructor(minCorner, maxCorner, objectId, material = MATERIAL.DIFFUSE) {
+    this.objectId = objectId;
+    this.entityId = String(objectId);
+    this.parentEntityId = null;
+    this.displayName = '';
+    this.isHidden = false;
+    this.isLocked = false;
     this.minCorner = cloneVec3(minCorner);
     this.maxCorner = cloneVec3(maxCorner);
     this.material = normalizeMaterial(material);
@@ -2097,7 +2473,14 @@ class CubeSceneObject {
     this.boundsMinCorner = createVec3(0, 0, 0);
     this.boundsMaxCorner = createVec3(0, 0, 0);
     this.centerPosition = createVec3(0, 0, 0);
+    this.centerDeltaPosition = createVec3(0, 0, 0);
     this.halfExtents = createVec3(0, 0, 0);
+    this.physicsRigidBody = null;
+    this.isPhysicsEnabled = true;
+    this.physicsBodyType = PHYSICS_BODY_TYPE.FIXED;
+    this.physicsFriction = PHYSICS_CUBE_FRICTION;
+    this.physicsRestitution = PHYSICS_CUBE_RESTITUTION;
+    this.collideWithObjects = true;
     this.minUniformLocation = null;
     this.maxUniformLocation = null;
     this.areUniformBoundsDirty = true;
@@ -2141,6 +2524,17 @@ class CubeSceneObject {
   setMaterial(material) {
     this.material = normalizeMaterial(material);
     return returnSuccess(undefined);
+  }
+
+  cloneForDuplicate(objectId) {
+    const duplicateObject = new CubeSceneObject(this.minCorner, this.maxCorner, objectId, this.material);
+    duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
+    duplicateObject.isPhysicsEnabled = this.isPhysicsEnabled;
+    duplicateObject.physicsBodyType = this.physicsBodyType;
+    duplicateObject.physicsFriction = this.physicsFriction;
+    duplicateObject.physicsRestitution = this.physicsRestitution;
+    duplicateObject.collideWithObjects = this.collideWithObjects;
+    return duplicateObject;
   }
 
   cacheUniformLocations(webGlContext, program, uniformLocationCache) {
@@ -2191,6 +2585,34 @@ class CubeSceneObject {
     return returnSuccess(undefined);
   }
 
+  setCenterPositionComponents(xPosition, yPosition, zPosition) {
+    const centerPosition = this.getCenterPosition();
+    const deltaPosition = writeVec3(
+      this.centerDeltaPosition,
+      xPosition - centerPosition[0],
+      yPosition - centerPosition[1],
+      zPosition - centerPosition[2]
+    );
+    writeAddVec3(this.minCorner, this.minCorner, deltaPosition);
+    writeAddVec3(this.maxCorner, this.maxCorner, deltaPosition);
+    this.areUniformBoundsDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  attachPhysicsRigidBody(rigidBody) {
+    if (!rigidBody || typeof rigidBody.translation !== 'function') {
+      return returnFailure('invalid-cube-physics-body', 'Cube physics body is invalid.');
+    }
+
+    this.physicsRigidBody = rigidBody;
+    return returnSuccess(undefined);
+  }
+
+  clearPhysicsRigidBody() {
+    this.physicsRigidBody = null;
+    return returnSuccess(undefined);
+  }
+
   getMinCorner() {
     return writeAddVec3(this.boundsMinCorner, this.minCorner, this.temporaryTranslation);
   }
@@ -2229,6 +2651,12 @@ class CubeSceneObject {
 
 class SdfSceneObject {
   constructor(centerPosition, boundsHalfExtents, parameterA, parameterB, objectId, material = MATERIAL.DIFFUSE) {
+    this.objectId = objectId;
+    this.entityId = String(objectId);
+    this.parentEntityId = null;
+    this.displayName = '';
+    this.isHidden = false;
+    this.isLocked = false;
     this.centerPosition = cloneVec3(centerPosition);
     this.boundsHalfExtents = cloneVec3(boundsHalfExtents);
     this.parameterA = cloneVec3(parameterA);
@@ -2325,7 +2753,7 @@ class SdfSceneObject {
     return [
       `else if(t == ${this.intersectionName}) {`,
       `normal = ${this.normalFunctionName}(hit);`,
-      materialUsesSurfaceShaderUtilities(this.material) ? `surfaceObjectPoint = normalize(hit - ${this.centerUniformName}) * ${this.parameterAUniformName}.x;` : '',
+      materialUsesSurfaceShaderUtilities(this.material) ? `surfaceObjectPoint = hit - ${this.centerUniformName};` : '',
       createObjectSurfaceShaderSource(this.material),
       '}'
     ].join('');
@@ -2334,6 +2762,20 @@ class SdfSceneObject {
   setMaterial(material) {
     this.material = normalizeMaterial(material);
     return returnSuccess(undefined);
+  }
+
+  cloneForDuplicate(objectId) {
+    const duplicateObject = new SdfSceneObject(
+      this.centerPosition,
+      this.boundsHalfExtents,
+      this.parameterA,
+      this.parameterB,
+      objectId,
+      this.material
+    );
+    Object.setPrototypeOf(duplicateObject, Object.getPrototypeOf(this));
+    duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
+    return duplicateObject;
   }
 
   cacheUniformLocations(webGlContext, program, uniformLocationCache) {
@@ -2400,6 +2842,12 @@ class SdfSceneObject {
 
   commitTranslation(translationVector) {
     writeAddVec3(this.centerPosition, this.centerPosition, translationVector);
+    this.isUniformCenterDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  setCenterPositionComponents(xPosition, yPosition, zPosition) {
+    writeVec3(this.centerPosition, xPosition, yPosition, zPosition);
     this.isUniformCenterDirty = true;
     return returnSuccess(undefined);
   }
@@ -2688,9 +3136,9 @@ class AreaLightSceneObject extends RoundedBoxSceneObject {
     return [
       `else if(t == ${this.intersectionName}) {`,
       `normal = ${this.normalFunctionName}(hit);`,
-      'surfaceColor = vec3(1.0, 0.82, 0.44);',
+      'surfaceColor = lightColor;',
       'surfaceLightResponse = 0.0;',
-      'accumulatedColor += colorMask * surfaceColor * lightIntensity * 3.2;',
+      'accumulatedColor += colorMask * lightColor * lightIntensity * 3.2;',
       newDiffuseRaySource,
       '}'
     ].join('');
@@ -2699,6 +3147,12 @@ class AreaLightSceneObject extends RoundedBoxSceneObject {
 
 class LightSceneObject {
   constructor(applicationState) {
+    this.objectId = 'light';
+    this.entityId = 'light';
+    this.parentEntityId = null;
+    this.displayName = 'Light';
+    this.isHidden = false;
+    this.isLocked = false;
     this.applicationState = applicationState;
     this.temporaryTranslation = createVec3(0, 0, 0);
     this.uniformLightPosition = createVec3(0, 0, 0);
@@ -2864,6 +3318,42 @@ const createRapierPhysicsWorld = (rapierRuntime) => {
   return returnSuccess(new RapierPhysicsWorld(rapierRuntime, createRapierWorld(rapierRuntime)));
 };
 
+const isPhysicsSupportedSceneObject = (sceneObject) => (
+  sceneObject instanceof SphereSceneObject ||
+  sceneObject instanceof CubeSceneObject
+);
+
+const getDefaultPhysicsBodyType = (sceneObject) => (
+  sceneObject instanceof SphereSceneObject ? PHYSICS_BODY_TYPE.DYNAMIC : PHYSICS_BODY_TYPE.FIXED
+);
+
+const getDefaultPhysicsFriction = (sceneObject) => (
+  sceneObject instanceof SphereSceneObject ? PHYSICS_SPHERE_FRICTION : PHYSICS_CUBE_FRICTION
+);
+
+const getDefaultPhysicsRestitution = (sceneObject) => (
+  sceneObject instanceof SphereSceneObject ? PHYSICS_SPHERE_RESTITUTION : PHYSICS_CUBE_RESTITUTION
+);
+
+const readSceneObjectPhysicsBodyType = (sceneObject) => normalizePhysicsBodyType(
+  sceneObject.physicsBodyType,
+  getDefaultPhysicsBodyType(sceneObject)
+);
+
+const readSceneObjectPhysicsFriction = (sceneObject) => normalizeBoundedNumber(
+  sceneObject.physicsFriction,
+  getDefaultPhysicsFriction(sceneObject),
+  MIN_PHYSICS_SURFACE_COEFFICIENT,
+  MAX_PHYSICS_SURFACE_COEFFICIENT
+);
+
+const readSceneObjectPhysicsRestitution = (sceneObject) => normalizeBoundedNumber(
+  sceneObject.physicsRestitution,
+  getDefaultPhysicsRestitution(sceneObject),
+  MIN_PHYSICS_SURFACE_COEFFICIENT,
+  MAX_PHYSICS_SURFACE_COEFFICIENT
+);
+
 const createRapierCuboidCollider = (rapierRuntime, centerPosition, halfExtents, friction, restitution) => (
   rapierRuntime.ColliderDesc
     .cuboid(halfExtents[0], halfExtents[1], halfExtents[2])
@@ -2872,26 +3362,37 @@ const createRapierCuboidCollider = (rapierRuntime, centerPosition, halfExtents, 
     .setRestitution(restitution)
 );
 
+const createRapierCuboidBodyCollider = (rapierRuntime, halfExtents, friction, restitution) => (
+  rapierRuntime.ColliderDesc
+    .cuboid(halfExtents[0], halfExtents[1], halfExtents[2])
+    .setFriction(friction)
+    .setRestitution(restitution)
+);
+
 class RapierPhysicsWorld {
   constructor(rapierRuntime, world) {
     this.rapierRuntime = rapierRuntime;
     this.world = world;
-    this.dynamicSphereBodies = new Map();
-    this.dynamicSphereObjects = [];
-    this.dynamicSphereRigidBodies = [];
+    this.dynamicPhysicsBodies = new Map();
+    this.dynamicPhysicsObjects = [];
+    this.dynamicPhysicsRigidBodies = [];
     this.physicsAccumulatorSeconds = 0;
     this.sleepCheckCooldownSeconds = 0;
+    this.shouldCheckDynamicPhysicsSleep = true;
+    this.canReadRawRigidBodyTranslation = true;
+    this.bodyTranslationBuffer = createVec3(0, 0, 0);
   }
 
   rebuildScene(sceneObjects, applicationState) {
     this.world = createRapierWorld(this.rapierRuntime);
-    this.dynamicSphereBodies = new Map();
-    this.dynamicSphereObjects = [];
-    this.dynamicSphereRigidBodies = [];
+    this.dynamicPhysicsBodies = new Map();
+    this.dynamicPhysicsObjects = [];
+    this.dynamicPhysicsRigidBodies = [];
     this.physicsAccumulatorSeconds = 0;
     this.sleepCheckCooldownSeconds = 0;
+    this.shouldCheckDynamicPhysicsSleep = true;
 
-    const [, clearError] = this.clearSpherePhysicsBodies(sceneObjects);
+    const [, clearError] = this.clearPhysicsBodies(sceneObjects);
     if (clearError) {
       return returnFailure(clearError.code, clearError.message, clearError.details);
     }
@@ -2902,20 +3403,29 @@ class RapierPhysicsWorld {
     }
 
     for (const sceneObject of sceneObjects) {
+      if (sceneObject.isHidden || !isPhysicsSupportedSceneObject(sceneObject) || sceneObject.isPhysicsEnabled === false) {
+        continue;
+      }
+
+      const bodyType = readSceneObjectPhysicsBodyType(sceneObject);
       if (sceneObject instanceof SphereSceneObject) {
-        const [, sphereError] = this.addDynamicSphere(sceneObject);
+        const [, sphereError] = bodyType === PHYSICS_BODY_TYPE.DYNAMIC
+          ? this.addDynamicSphere(sceneObject)
+          : this.addFixedSphere(sceneObject);
         if (sphereError) {
           return returnFailure(sphereError.code, sphereError.message, sphereError.details);
         }
       } else if (sceneObject instanceof CubeSceneObject) {
-        const [, cubeError] = this.addFixedCube(sceneObject);
+        const [, cubeError] = bodyType === PHYSICS_BODY_TYPE.DYNAMIC
+          ? this.addDynamicCube(sceneObject)
+          : this.addFixedCube(sceneObject);
         if (cubeError) {
           return returnFailure(cubeError.code, cubeError.message, cubeError.details);
         }
       }
     }
 
-    const [, validationError] = this.validateAllSpheresHavePhysicsBodies(sceneObjects);
+    const [, validationError] = this.validateDynamicPhysicsObjectsHaveBodies(sceneObjects);
     if (validationError) {
       return returnFailure(validationError.code, validationError.message, validationError.details);
     }
@@ -2923,9 +3433,9 @@ class RapierPhysicsWorld {
     return returnSuccess(undefined);
   }
 
-  clearSpherePhysicsBodies(sceneObjects) {
+  clearPhysicsBodies(sceneObjects) {
     for (const sceneObject of sceneObjects) {
-      if (!(sceneObject instanceof SphereSceneObject)) {
+      if (!isPhysicsSupportedSceneObject(sceneObject)) {
         continue;
       }
 
@@ -2938,18 +3448,26 @@ class RapierPhysicsWorld {
     return returnSuccess(undefined);
   }
 
-  validateAllSpheresHavePhysicsBodies(sceneObjects) {
+  validateDynamicPhysicsObjectsHaveBodies(sceneObjects) {
     for (const sceneObject of sceneObjects) {
-      if (!(sceneObject instanceof SphereSceneObject)) {
+      if (
+        !isPhysicsSupportedSceneObject(sceneObject) ||
+        sceneObject.isHidden ||
+        sceneObject.isPhysicsEnabled === false ||
+        readSceneObjectPhysicsBodyType(sceneObject) !== PHYSICS_BODY_TYPE.DYNAMIC
+      ) {
         continue;
       }
 
       if (!sceneObject.physicsRigidBody) {
-        return returnFailure('sphere-missing-rapier-body', 'A sphere was not attached to a Rapier rigid body.');
+        return returnFailure('scene-object-missing-rapier-body', 'A dynamic scene item was not attached to a Rapier rigid body.');
       }
 
-      if (this.dynamicSphereBodies.get(sceneObject) !== sceneObject.physicsRigidBody) {
-        return returnFailure('sphere-physics-body-mismatch', 'A sphere has a Rapier body that is not registered with the physics world.');
+      if (this.dynamicPhysicsBodies.get(sceneObject) !== sceneObject.physicsRigidBody) {
+        return returnFailure(
+          'scene-object-physics-body-mismatch',
+          'A dynamic scene item has a Rapier body that is not registered with the physics world.'
+        );
       }
     }
 
@@ -2977,7 +3495,8 @@ class RapierPhysicsWorld {
       .cuboid(halfExtentX, halfExtentY, halfExtentZ)
       .setTranslation(centerX, centerY, centerZ)
       .setFriction(PHYSICS_CUBE_FRICTION)
-      .setRestitution(PHYSICS_CUBE_RESTITUTION);
+      .setRestitution(PHYSICS_CUBE_RESTITUTION)
+      .setCollisionGroups(PHYSICS_COLLISION_MASK_FLOOR);
     this.world.createCollider(colliderDescription);
   }
 
@@ -2986,9 +3505,46 @@ class RapierPhysicsWorld {
       this.rapierRuntime,
       cubeObject.getCenterPosition(),
       cubeObject.getHalfExtents(),
-      PHYSICS_CUBE_FRICTION,
-      PHYSICS_CUBE_RESTITUTION
-    );
+      readSceneObjectPhysicsFriction(cubeObject),
+      readSceneObjectPhysicsRestitution(cubeObject)
+    ).setCollisionGroups(cubeObject.collideWithObjects !== false
+      ? PHYSICS_COLLISION_MASK_OBJECTS
+      : PHYSICS_COLLISION_MASK_GHOST);
+    this.world.createCollider(colliderDescription);
+    return returnSuccess(undefined);
+  }
+
+  addDynamicCube(cubeObject) {
+    const centerPosition = cubeObject.getCenterPosition();
+    const bodyDescription = this.rapierRuntime.RigidBodyDesc
+      .dynamic()
+      .setTranslation(centerPosition[0], centerPosition[1], centerPosition[2])
+      .setCanSleep(true);
+
+    const rigidBody = this.world.createRigidBody(bodyDescription);
+    const colliderDescription = createRapierCuboidBodyCollider(
+      this.rapierRuntime,
+      cubeObject.getHalfExtents(),
+      readSceneObjectPhysicsFriction(cubeObject),
+      readSceneObjectPhysicsRestitution(cubeObject)
+    ).setCollisionGroups(cubeObject.collideWithObjects !== false
+      ? PHYSICS_COLLISION_MASK_OBJECTS
+      : PHYSICS_COLLISION_MASK_GHOST);
+
+    return this.attachDynamicPhysicsBody(cubeObject, rigidBody, colliderDescription);
+  }
+
+  addFixedSphere(sphereObject) {
+    const centerPosition = sphereObject.getTranslatedCenter();
+    const colliderDescription = this.rapierRuntime.ColliderDesc
+      .ball(sphereObject.radius)
+      .setTranslation(centerPosition[0], centerPosition[1], centerPosition[2])
+      .setFriction(readSceneObjectPhysicsFriction(sphereObject))
+      .setRestitution(readSceneObjectPhysicsRestitution(sphereObject))
+      .setCollisionGroups(sphereObject.collideWithObjects !== false
+        ? PHYSICS_COLLISION_MASK_OBJECTS
+        : PHYSICS_COLLISION_MASK_GHOST);
+
     this.world.createCollider(colliderDescription);
     return returnSuccess(undefined);
   }
@@ -3003,23 +3559,31 @@ class RapierPhysicsWorld {
     const rigidBody = this.world.createRigidBody(bodyDescription);
     const colliderDescription = this.rapierRuntime.ColliderDesc
       .ball(sphereObject.radius)
-      .setFriction(PHYSICS_SPHERE_FRICTION)
-      .setRestitution(PHYSICS_SPHERE_RESTITUTION);
+      .setFriction(readSceneObjectPhysicsFriction(sphereObject))
+      .setRestitution(readSceneObjectPhysicsRestitution(sphereObject))
+      .setCollisionGroups(sphereObject.collideWithObjects !== false
+        ? PHYSICS_COLLISION_MASK_OBJECTS
+        : PHYSICS_COLLISION_MASK_GHOST);
 
+    return this.attachDynamicPhysicsBody(sphereObject, rigidBody, colliderDescription);
+  }
+
+  attachDynamicPhysicsBody(sceneObject, rigidBody, colliderDescription) {
     this.world.createCollider(colliderDescription, rigidBody);
-    const [, attachError] = sphereObject.attachPhysicsRigidBody(rigidBody);
+    const [, attachError] = sceneObject.attachPhysicsRigidBody(rigidBody);
     if (attachError) {
       return returnFailure(attachError.code, attachError.message, attachError.details);
     }
 
-    this.dynamicSphereBodies.set(sphereObject, rigidBody);
-    this.dynamicSphereObjects.push(sphereObject);
-    this.dynamicSphereRigidBodies.push(rigidBody);
+    this.dynamicPhysicsBodies.set(sceneObject, rigidBody);
+    this.dynamicPhysicsObjects.push(sceneObject);
+    this.dynamicPhysicsRigidBodies.push(rigidBody);
+    this.shouldCheckDynamicPhysicsSleep = true;
     return returnSuccess(undefined);
   }
 
   step(elapsedSeconds, shouldStepPhysics) {
-    if (!shouldStepPhysics || this.dynamicSphereObjects.length === 0) {
+    if (!shouldStepPhysics || this.dynamicPhysicsObjects.length === 0) {
       return returnSuccess(false);
     }
 
@@ -3028,14 +3592,19 @@ class RapierPhysicsWorld {
       return returnSuccess(false);
     }
 
-    if (!this.hasAwakeDynamicSpheres()) {
+    this.physicsAccumulatorSeconds += Math.min(elapsedSeconds, PHYSICS_MAX_FRAME_SECONDS);
+    if (this.physicsAccumulatorSeconds < PHYSICS_FIXED_TIMESTEP_SECONDS) {
+      return returnSuccess(false);
+    }
+
+    if (this.shouldCheckDynamicPhysicsSleep && !this.hasAwakeDynamicPhysicsObjects()) {
       this.physicsAccumulatorSeconds = 0;
       this.sleepCheckCooldownSeconds = PHYSICS_SLEEP_CHECK_INTERVAL_SECONDS;
       return returnSuccess(false);
     }
 
+    this.shouldCheckDynamicPhysicsSleep = false;
     this.sleepCheckCooldownSeconds = 0;
-    this.physicsAccumulatorSeconds += Math.min(elapsedSeconds, PHYSICS_MAX_FRAME_SECONDS);
     let didStepWorld = false;
 
     while (this.physicsAccumulatorSeconds >= PHYSICS_FIXED_TIMESTEP_SECONDS) {
@@ -3048,11 +3617,27 @@ class RapierPhysicsWorld {
       return returnSuccess(false);
     }
 
-    return this.syncSphereObjectsFromBodies();
+    const [didMovePhysicsObject, syncError] = this.syncPhysicsObjectsFromBodies();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    if (!didMovePhysicsObject) {
+      this.shouldCheckDynamicPhysicsSleep = true;
+      const hasAwakeDynamicPhysicsObjects = this.hasAwakeDynamicPhysicsObjects();
+      if (!hasAwakeDynamicPhysicsObjects) {
+        this.physicsAccumulatorSeconds = 0;
+        this.sleepCheckCooldownSeconds = PHYSICS_SLEEP_CHECK_INTERVAL_SECONDS;
+      } else {
+        this.shouldCheckDynamicPhysicsSleep = false;
+      }
+    }
+
+    return returnSuccess(didMovePhysicsObject);
   }
 
-  hasAwakeDynamicSpheres() {
-    const rigidBodies = this.dynamicSphereRigidBodies;
+  hasAwakeDynamicPhysicsObjects() {
+    const rigidBodies = this.dynamicPhysicsRigidBodies;
     for (let bodyIndex = 0; bodyIndex < rigidBodies.length; bodyIndex += 1) {
       const rigidBody = rigidBodies[bodyIndex];
       if (typeof rigidBody.isSleeping !== 'function' || !rigidBody.isSleeping()) {
@@ -3063,34 +3648,73 @@ class RapierPhysicsWorld {
     return false;
   }
 
-  syncSphereObjectsFromBodies() {
-    let didMoveAnySphere = false;
-    const sphereObjects = this.dynamicSphereObjects;
-    const rigidBodies = this.dynamicSphereRigidBodies;
+  readRigidBodyTranslationInto(rigidBody, outputPosition) {
+    if (
+      this.canReadRawRigidBodyTranslation &&
+      rigidBody &&
+      rigidBody.rawSet &&
+      typeof rigidBody.rawSet.rbTranslation === 'function' &&
+      typeof rigidBody.handle === 'number'
+    ) {
+      const rawTranslation = rigidBody.rawSet.rbTranslation(rigidBody.handle);
+      if (rawTranslation) {
+        writeVec3(outputPosition, rawTranslation.x, rawTranslation.y, rawTranslation.z);
+        if (typeof rawTranslation.free === 'function') {
+          rawTranslation.free();
+        }
+        return true;
+      }
+    } else {
+      this.canReadRawRigidBodyTranslation = false;
+    }
 
-    for (let bodyIndex = 0; bodyIndex < sphereObjects.length; bodyIndex += 1) {
-      const sphereObject = sphereObjects[bodyIndex];
+    if (!rigidBody || typeof rigidBody.translation !== 'function') {
+      return false;
+    }
+
+    const bodyPosition = rigidBody.translation();
+    if (!bodyPosition) {
+      return false;
+    }
+
+    writeVec3(outputPosition, bodyPosition.x, bodyPosition.y, bodyPosition.z);
+    return true;
+  }
+
+  syncPhysicsObjectsFromBodies() {
+    let didMoveAnyObject = false;
+    const physicsObjects = this.dynamicPhysicsObjects;
+    const rigidBodies = this.dynamicPhysicsRigidBodies;
+    const bodyPosition = this.bodyTranslationBuffer;
+
+    for (let bodyIndex = 0; bodyIndex < physicsObjects.length; bodyIndex += 1) {
+      const sceneObject = physicsObjects[bodyIndex];
       const rigidBody = rigidBodies[bodyIndex];
-      const bodyPosition = rigidBody.translation();
-      const currentCenterPosition = sphereObject.centerPosition;
-      const deltaX = Math.abs(bodyPosition.x - currentCenterPosition[0]);
-      const deltaY = Math.abs(bodyPosition.y - currentCenterPosition[1]);
-      const deltaZ = Math.abs(bodyPosition.z - currentCenterPosition[2]);
+      if (!this.readRigidBodyTranslationInto(rigidBody, bodyPosition)) {
+        return returnFailure('scene-object-physics-position-unreadable', 'A dynamic scene item has an unreadable Rapier body position.');
+      }
+
+      const currentCenterPosition = sceneObject instanceof CubeSceneObject
+        ? sceneObject.getCenterPosition()
+        : sceneObject.centerPosition;
+      const deltaX = Math.abs(bodyPosition[0] - currentCenterPosition[0]);
+      const deltaY = Math.abs(bodyPosition[1] - currentCenterPosition[1]);
+      const deltaZ = Math.abs(bodyPosition[2] - currentCenterPosition[2]);
 
       if (
         deltaX > PHYSICS_POSITION_EPSILON ||
         deltaY > PHYSICS_POSITION_EPSILON ||
         deltaZ > PHYSICS_POSITION_EPSILON
       ) {
-        const [, centerError] = sphereObject.setCenterPositionComponents(bodyPosition.x, bodyPosition.y, bodyPosition.z);
+        const [, centerError] = sceneObject.setCenterPositionComponents(bodyPosition[0], bodyPosition[1], bodyPosition[2]);
         if (centerError) {
           return returnFailure(centerError.code, centerError.message, centerError.details);
         }
-        didMoveAnySphere = true;
+        didMoveAnyObject = true;
       }
     }
 
-    return returnSuccess(didMoveAnySphere);
+    return returnSuccess(didMoveAnyObject);
   }
 }
 
@@ -3266,6 +3890,7 @@ const createGpuBenchmarkTimer = (webGlContext) => {
 };
 
 const createBenchmarkSnapshot = () => ({
+  rendererBackend: 'webgl',
   activeRaysPerSecond: 0,
   estimatedRayBandwidthBytesPerSecond: 0,
   activeRaysPerFrame: 0,
@@ -3302,8 +3927,9 @@ const writePausedBenchmarkSnapshot = (benchmarkSnapshot, measurementSource, shou
 
 class RollingBenchmarkWindow {
   constructor(traceSampleBytes) {
-    this.samples = [];
+    this.samples = RollingBenchmarkWindow.createSampleBuffer(BENCHMARK_ROLLING_INITIAL_SAMPLE_CAPACITY);
     this.sampleStartIndex = 0;
+    this.sampleCount = 0;
     this.traceSampleBytes = traceSampleBytes;
     this.traceSampleCount = 0;
     this.frameSampleCount = 0;
@@ -3317,21 +3943,75 @@ class RollingBenchmarkWindow {
     this.previousFrameSnapshotMilliseconds = 0;
   }
 
+  static createReusableSample() {
+    return {
+      kind: 'empty',
+      timestampMilliseconds: 0,
+      activeRaysPerFrame: 0,
+      pathRayBudgetPerFrame: 0,
+      renderedSampleCount: 0,
+      traceMilliseconds: 0,
+      frameMilliseconds: 0,
+      frameCount: 0
+    };
+  }
+
+  static createSampleBuffer(sampleCapacity) {
+    const samples = new Array(sampleCapacity);
+    for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
+      samples[sampleIndex] = RollingBenchmarkWindow.createReusableSample();
+    }
+    return samples;
+  }
+
+  static copySample(targetSample, sourceSample) {
+    targetSample.kind = sourceSample.kind;
+    targetSample.timestampMilliseconds = sourceSample.timestampMilliseconds;
+    targetSample.activeRaysPerFrame = sourceSample.activeRaysPerFrame;
+    targetSample.pathRayBudgetPerFrame = sourceSample.pathRayBudgetPerFrame;
+    targetSample.renderedSampleCount = sourceSample.renderedSampleCount;
+    targetSample.traceMilliseconds = sourceSample.traceMilliseconds;
+    targetSample.frameMilliseconds = sourceSample.frameMilliseconds;
+    targetSample.frameCount = sourceSample.frameCount;
+    return targetSample;
+  }
+
   setTraceSampleBytes(traceSampleBytes) {
     this.traceSampleBytes = traceSampleBytes;
     return returnSuccess(undefined);
   }
 
-  compactSamplesIfNeeded() {
-    if (
-      this.sampleStartIndex < BENCHMARK_ROLLING_COMPACT_THRESHOLD ||
-      this.sampleStartIndex * 2 < this.samples.length
-    ) {
-      return returnSuccess(undefined);
+  getSampleAtOffset(sampleOffset) {
+    return this.samples[(this.sampleStartIndex + sampleOffset) % this.samples.length];
+  }
+
+  getOldestSample() {
+    return this.sampleCount > 0 ? this.samples[this.sampleStartIndex] : null;
+  }
+
+  shouldPruneOldEntries(currentTimeMilliseconds) {
+    const oldestSample = this.getOldestSample();
+    return Boolean(
+      oldestSample &&
+      oldestSample.timestampMilliseconds < currentTimeMilliseconds - BENCHMARK_ROLLING_WINDOW_MILLISECONDS
+    );
+  }
+
+  growSampleBuffer() {
+    const oldSamples = this.samples;
+    const newSamples = RollingBenchmarkWindow.createSampleBuffer(oldSamples.length * 2);
+    let remappedActiveFrameSample = null;
+    for (let sampleOffset = 0; sampleOffset < this.sampleCount; sampleOffset += 1) {
+      const oldSample = this.getSampleAtOffset(sampleOffset);
+      const newSample = RollingBenchmarkWindow.copySample(newSamples[sampleOffset], oldSample);
+      if (oldSample === this.activeFrameSample) {
+        remappedActiveFrameSample = newSample;
+      }
     }
 
-    this.samples = this.samples.slice(this.sampleStartIndex);
+    this.samples = newSamples;
     this.sampleStartIndex = 0;
+    this.activeFrameSample = remappedActiveFrameSample;
     return returnSuccess(undefined);
   }
 
@@ -3356,17 +4036,44 @@ class RollingBenchmarkWindow {
   pruneOldEntries(currentTimeMilliseconds) {
     const cutoffMilliseconds = currentTimeMilliseconds - BENCHMARK_ROLLING_WINDOW_MILLISECONDS;
     while (
-      this.sampleStartIndex < this.samples.length &&
+      this.sampleCount > 0 &&
       this.samples[this.sampleStartIndex].timestampMilliseconds < cutoffMilliseconds
     ) {
       const [, subtractError] = this.subtractSample(this.samples[this.sampleStartIndex]);
       if (subtractError) {
         return returnFailure(subtractError.code, subtractError.message, subtractError.details);
       }
-      this.sampleStartIndex += 1;
+      this.sampleStartIndex = (this.sampleStartIndex + 1) % this.samples.length;
+      this.sampleCount -= 1;
     }
 
-    return this.compactSamplesIfNeeded();
+    return returnSuccess(undefined);
+  }
+
+  pruneOldEntriesIfNeeded(currentTimeMilliseconds) {
+    if (!this.shouldPruneOldEntries(currentTimeMilliseconds)) {
+      return returnSuccess(undefined);
+    }
+
+    return this.pruneOldEntries(currentTimeMilliseconds);
+  }
+
+  acquireSampleSlot(timestampMilliseconds) {
+    const [, pruneError] = this.pruneOldEntriesIfNeeded(timestampMilliseconds);
+    if (pruneError) {
+      return returnFailure(pruneError.code, pruneError.message, pruneError.details);
+    }
+
+    if (this.sampleCount >= this.samples.length) {
+      const [, growError] = this.growSampleBuffer();
+      if (growError) {
+        return returnFailure(growError.code, growError.message, growError.details);
+      }
+    }
+
+    const sample = this.samples[(this.sampleStartIndex + this.sampleCount) % this.samples.length];
+    this.sampleCount += 1;
+    return returnSuccess(sample);
   }
 
   writeSnapshot(benchmarkSnapshot) {
@@ -3401,21 +4108,21 @@ class RollingBenchmarkWindow {
       return returnSuccess(undefined);
     }
 
-    const [, pruneError] = this.pruneOldEntries(timestampMilliseconds);
-    if (pruneError) {
-      return returnFailure(pruneError.code, pruneError.message, pruneError.details);
-    }
-
     const activeRaysPerFrame = ACTIVE_RAYS_PER_SAMPLE * renderedSampleCount;
     const pathRayBudgetPerFrame = activeRaysPerFrame * lightBounceCount;
-    this.samples.push({
-      kind: 'trace',
-      timestampMilliseconds,
-      activeRaysPerFrame,
-      pathRayBudgetPerFrame,
-      renderedSampleCount,
-      traceMilliseconds
-    });
+    const [sample, acquireError] = this.acquireSampleSlot(timestampMilliseconds);
+    if (acquireError) {
+      return returnFailure(acquireError.code, acquireError.message, acquireError.details);
+    }
+
+    sample.kind = 'trace';
+    sample.timestampMilliseconds = timestampMilliseconds;
+    sample.activeRaysPerFrame = activeRaysPerFrame;
+    sample.pathRayBudgetPerFrame = pathRayBudgetPerFrame;
+    sample.renderedSampleCount = renderedSampleCount;
+    sample.traceMilliseconds = traceMilliseconds;
+    sample.frameMilliseconds = 0;
+    sample.frameCount = 0;
     this.traceSampleCount += 1;
     this.totalActiveRays += activeRaysPerFrame;
     this.totalPathRayBudget += pathRayBudgetPerFrame;
@@ -3444,13 +4151,20 @@ class RollingBenchmarkWindow {
       this.frameSampleCount += 1;
       this.totalFrameMilliseconds += frameMilliseconds;
     } else {
-      this.activeFrameSample = {
-        kind: 'frame',
-        timestampMilliseconds,
-        frameMilliseconds,
-        frameCount: 1
-      };
-      this.samples.push(this.activeFrameSample);
+      const [sample, acquireError] = this.acquireSampleSlot(timestampMilliseconds);
+      if (acquireError) {
+        return returnFailure(acquireError.code, acquireError.message, acquireError.details);
+      }
+
+      sample.kind = 'frame';
+      sample.timestampMilliseconds = timestampMilliseconds;
+      sample.activeRaysPerFrame = 0;
+      sample.pathRayBudgetPerFrame = 0;
+      sample.renderedSampleCount = 0;
+      sample.traceMilliseconds = 0;
+      sample.frameMilliseconds = frameMilliseconds;
+      sample.frameCount = 1;
+      this.activeFrameSample = sample;
       this.frameSampleCount += 1;
       this.totalFrameMilliseconds += frameMilliseconds;
     }
@@ -3463,7 +4177,7 @@ class RollingBenchmarkWindow {
     }
 
     this.previousFrameSnapshotMilliseconds = timestampMilliseconds;
-    const [, pruneError] = this.pruneOldEntries(timestampMilliseconds);
+    const [, pruneError] = this.pruneOldEntriesIfNeeded(timestampMilliseconds);
     if (pruneError) {
       return returnFailure(pruneError.code, pruneError.message, pruneError.details);
     }
@@ -3551,6 +4265,7 @@ class PathTracer {
     this.previousCameraRayCenter = createVec3(Number.NaN, Number.NaN, Number.NaN);
     this.previousCameraRayClipX = createVec3(Number.NaN, Number.NaN, Number.NaN);
     this.previousCameraRayClipY = createVec3(Number.NaN, Number.NaN, Number.NaN);
+    this.previousLightColor = createVec3(Number.NaN, Number.NaN, Number.NaN);
     this.sampleUniformValues = Object.create(null);
     this.sampleUniformValues.rayJitterX = 0;
     this.sampleUniformValues.rayJitterY = 0;
@@ -3732,6 +4447,7 @@ class PathTracer {
     writeVec3(this.previousCameraRayCenter, Number.NaN, Number.NaN, Number.NaN);
     writeVec3(this.previousCameraRayClipX, Number.NaN, Number.NaN, Number.NaN);
     writeVec3(this.previousCameraRayClipY, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousLightColor, Number.NaN, Number.NaN, Number.NaN);
     this.sampleCount = 0;
     this.hasDisplayHistory = false;
     this.hasSetTracerSamplerUniforms = false;
@@ -3795,6 +4511,12 @@ class PathTracer {
       this.tracerUniformLocations,
       'lightSize'
     );
+    this.tracerFrameUniformLocations.lightColor = readUniformLocation(
+      this.webGlContext,
+      this.tracerProgram,
+      this.tracerUniformLocations,
+      'lightColor'
+    );
     this.tracerFrameUniformLocations.fogDensity = readUniformLocation(
       this.webGlContext,
       this.tracerProgram,
@@ -3849,6 +4571,12 @@ class PathTracer {
       this.tracerUniformLocations,
       'cameraAperture'
     );
+    this.tracerFrameUniformLocations.renderDebugViewMode = readUniformLocation(
+      this.webGlContext,
+      this.tracerProgram,
+      this.tracerUniformLocations,
+      'renderDebugViewMode'
+    );
     return returnSuccess(undefined);
   }
 
@@ -3862,6 +4590,7 @@ class PathTracer {
     setChangedCachedVec3UniformValue(webGlContext, locations.rayCenter, this.cameraRayCenter, this.previousCameraRayCenter);
     setChangedCachedVec3UniformValue(webGlContext, locations.rayClipX, this.cameraRayClipX, this.previousCameraRayClipX);
     setChangedCachedVec3UniformValue(webGlContext, locations.rayClipY, this.cameraRayClipY, this.previousCameraRayClipY);
+    setChangedCachedVec3UniformValue(webGlContext, locations.lightColor, applicationState.lightColor, this.previousLightColor);
 
     const frameUniformValues = this.tracerFrameScalarUniformValues;
     frameUniformValues.glossiness = applicationState.glossiness;
@@ -3871,6 +4600,7 @@ class PathTracer {
     frameUniformValues.skyBrightness = applicationState.skyBrightness;
     frameUniformValues.cameraFocusDistance = applicationState.cameraFocusDistance;
     frameUniformValues.cameraAperture = applicationState.cameraAperture;
+    frameUniformValues.renderDebugViewMode = normalizeRenderDebugViewMode(applicationState.renderDebugViewMode);
     setChangedCachedScalarUniformValues(
       webGlContext,
       locations,
@@ -4060,7 +4790,7 @@ class PathTracer {
       );
     }
 
-    webGlContext.useProgram(this.tracerProgram);
+    useWebGlProgramIfNeeded(webGlContext, this.tracerProgram);
     if (!this.hasSetTracerSamplerUniforms) {
       const [, accumulationSamplerError] = setSamplerUniform(
         webGlContext,
@@ -4217,8 +4947,8 @@ class PathTracer {
           webGlContext.TEXTURE_2D,
           0,
           webGlContext.RGBA,
-          CANVAS_SIZE,
-          CANVAS_SIZE,
+          CANVAS_RENDER_WIDTH,
+          CANVAS_RENDER_HEIGHT,
           0,
           webGlContext.RGBA,
           this.textureType,
@@ -4232,8 +4962,8 @@ class PathTracer {
           webGlContext.TEXTURE_2D,
           0,
           webGlContext.RGBA,
-          CANVAS_SIZE,
-          CANVAS_SIZE,
+          CANVAS_RENDER_WIDTH,
+          CANVAS_RENDER_HEIGHT,
           0,
           webGlContext.RGBA,
           this.textureType,
@@ -4321,7 +5051,7 @@ class PathTracer {
     const webGlContext = this.webGlContext;
     const writeDisplayTextureIndex = 1 - this.currentDisplayTextureIndex;
 
-    webGlContext.useProgram(this.temporalDisplayProgram);
+    useWebGlProgramIfNeeded(webGlContext, this.temporalDisplayProgram);
     webGlContext.activeTexture(webGlContext.TEXTURE0);
     webGlContext.bindTexture(webGlContext.TEXTURE_2D, this.textures[this.currentTextureIndex]);
 
@@ -4402,7 +5132,7 @@ class PathTracer {
     }
 
     const webGlContext = this.webGlContext;
-    webGlContext.useProgram(this.renderProgram);
+    useWebGlProgramIfNeeded(webGlContext, this.renderProgram);
     webGlContext.activeTexture(webGlContext.TEXTURE0);
     webGlContext.bindTexture(webGlContext.TEXTURE_2D, renderTexture);
     webGlContext.bindBuffer(webGlContext.ARRAY_BUFFER, this.vertexBuffer);
@@ -4558,7 +5288,8 @@ class SelectionRenderer {
   }
 
   setObjects(sceneObjects, renderSettings) {
-    const [, tracerError] = this.pathTracer.setObjects(sceneObjects, renderSettings);
+    const visibleSceneObjects = sceneObjects.filter((sceneObject) => !sceneObject.isHidden);
+    const [, tracerError] = this.pathTracer.setObjects(visibleSceneObjects, renderSettings);
     if (tracerError) {
       return returnFailure(tracerError.code, tracerError.message, tracerError.details);
     }
@@ -4586,18 +5317,24 @@ class SelectionRenderer {
     return returnSuccess(undefined);
   }
 
-  render(applicationState) {
+  render(applicationState, shouldDrawSelectionOutline = true) {
     const [, pathTracerError] = this.pathTracer.render(applicationState);
     if (pathTracerError) {
       return returnFailure(pathTracerError.code, pathTracerError.message, pathTracerError.details);
     }
 
-    if (!this.selectedObject || !this.lineProgram || this.vertexAttribute < 0) {
+    if (
+      !shouldDrawSelectionOutline ||
+      !this.selectedObject ||
+      this.selectedObject.isHidden ||
+      !this.lineProgram ||
+      this.vertexAttribute < 0
+    ) {
       return returnSuccess(undefined);
     }
 
     const webGlContext = this.webGlContext;
-    webGlContext.useProgram(this.lineProgram);
+    useWebGlProgramIfNeeded(webGlContext, this.lineProgram);
     webGlContext.bindTexture(webGlContext.TEXTURE_2D, null);
     webGlContext.bindBuffer(webGlContext.ARRAY_BUFFER, this.vertexBuffer);
     webGlContext.bindBuffer(webGlContext.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
@@ -4633,30 +5370,61 @@ class SelectionRenderer {
   }
 }
 
+const ELEMENT_TEXT_CACHE = new WeakMap();
+
 const writeElementTextIfChanged = (element, nextText) => {
+  if (ELEMENT_TEXT_CACHE.has(element) && ELEMENT_TEXT_CACHE.get(element) === nextText) {
+    return returnSuccess(undefined);
+  }
+
   if (element.textContent !== nextText) {
     element.textContent = nextText;
   }
+  ELEMENT_TEXT_CACHE.set(element, nextText);
   return returnSuccess(undefined);
 };
 
-const formatBenchmarkSourceLabel = (measurementSource) => {
+const formatRendererBackendLabel = (rendererBackend) => (
+  rendererBackend === 'webgpu' ? 'WebGPU' : 'WebGL'
+);
+
+const formatBenchmarkSourceLabel = (measurementSource, rendererBackend = 'webgl') => {
+  const backendLabel = formatRendererBackendLabel(rendererBackend);
   if (measurementSource === 'gpu-timer') {
-    return 'GPU timer';
+    return `${backendLabel} GPU timer`;
   }
   if (measurementSource === 'frame-paused') {
-    return 'Frames paused';
+    return `${backendLabel} frames paused`;
   }
   if (measurementSource === 'rays-paused') {
-    return 'Rays paused';
+    return `${backendLabel} rays paused`;
   }
   if (measurementSource === 'frame-estimate-pending') {
-    return 'Frame estimate';
+    return `${backendLabel} frame estimate`;
   }
   if (measurementSource === 'frame-estimate') {
-    return 'Frame estimate';
+    return `${backendLabel} frame estimate`;
   }
   return 'Warming up';
+};
+
+const SCENE_OBJECT_DISPLAY_NAMES = new Map();
+
+const readSceneObjectDisplayName = (sceneObject) => {
+  const constructorFunction = sceneObject.constructor;
+  if (SCENE_OBJECT_DISPLAY_NAMES.has(constructorFunction)) {
+    return SCENE_OBJECT_DISPLAY_NAMES.get(constructorFunction);
+  }
+  const constructorName = constructorFunction && constructorFunction.name
+    ? constructorFunction.name
+    : 'Scene item';
+  const displayName = constructorName
+    .replace(/SceneObject$/, '')
+    .replace(/Sdf/g, 'SDF')
+    .replace(/Csg/g, 'CSG')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+  SCENE_OBJECT_DISPLAY_NAMES.set(constructorFunction, displayName);
+  return displayName;
 };
 
 class BenchmarkDisplay {
@@ -4665,19 +5433,23 @@ class BenchmarkDisplay {
     raysPerSecondElement,
     rayBandwidthElement,
     perceptualFramesPerSecondElement,
-    raysPerFrameElement,
-    samplesPerFrameElement,
-    frameTimeElement,
-    sourceElement
+    resolutionElement,
+    bouncesElement,
+    gpuRendererElement,
+    sourceElement,
+    applicationState,
+    gpuRendererLabel
   ) {
     this.performanceScoreElement = performanceScoreElement;
     this.raysPerSecondElement = raysPerSecondElement;
     this.rayBandwidthElement = rayBandwidthElement;
     this.perceptualFramesPerSecondElement = perceptualFramesPerSecondElement;
-    this.raysPerFrameElement = raysPerFrameElement;
-    this.samplesPerFrameElement = samplesPerFrameElement;
-    this.frameTimeElement = frameTimeElement;
+    this.resolutionElement = resolutionElement;
+    this.bouncesElement = bouncesElement;
+    this.gpuRendererElement = gpuRendererElement;
     this.sourceElement = sourceElement;
+    this.applicationState = applicationState;
+    this.gpuRendererLabel = gpuRendererLabel;
     this.previousUpdateMilliseconds = 0;
   }
 
@@ -4728,39 +5500,544 @@ class BenchmarkDisplay {
       );
     }
 
-    const [, raysPerFrameError] = writeElementTextIfChanged(
-      this.raysPerFrameElement,
-      formatPausedAwareCompactMetricValue(benchmarkSnapshot.activeRaysPerFrame, shouldShowPausedZero)
+    const [, resolutionError] = writeElementTextIfChanged(
+      this.resolutionElement,
+      CANVAS_RENDER_RESOLUTION_LABEL
     );
-    if (raysPerFrameError) {
-      return returnFailure(raysPerFrameError.code, raysPerFrameError.message, raysPerFrameError.details);
+    if (resolutionError) {
+      return returnFailure(resolutionError.code, resolutionError.message, resolutionError.details);
     }
 
-    const [, samplesPerFrameError] = writeElementTextIfChanged(
-      this.samplesPerFrameElement,
-      formatPausedAwareCompactMetricValue(benchmarkSnapshot.samplesPerFrame, shouldShowPausedZero)
+    const [, bouncesError] = writeElementTextIfChanged(
+      this.bouncesElement,
+      String(this.applicationState.lightBounceCount)
     );
-    if (samplesPerFrameError) {
-      return returnFailure(samplesPerFrameError.code, samplesPerFrameError.message, samplesPerFrameError.details);
+    if (bouncesError) {
+      return returnFailure(bouncesError.code, bouncesError.message, bouncesError.details);
     }
 
-    const [, frameTimeError] = writeElementTextIfChanged(
-      this.frameTimeElement,
-      formatPausedAwareBenchmarkMilliseconds(benchmarkSnapshot.traceMilliseconds, shouldShowPausedZero)
+    const [, gpuRendererError] = writeElementTextIfChanged(
+      this.gpuRendererElement,
+      this.gpuRendererLabel
     );
-    if (frameTimeError) {
-      return returnFailure(frameTimeError.code, frameTimeError.message, frameTimeError.details);
+    if (gpuRendererError) {
+      return returnFailure(gpuRendererError.code, gpuRendererError.message, gpuRendererError.details);
     }
 
+    const sourceLabel = formatBenchmarkSourceLabel(benchmarkSnapshot.measurementSource, benchmarkSnapshot.rendererBackend);
+    const benchmarkScene = this.applicationState.isBenchmarkModeActive
+      ? benchmarkScenes[this.applicationState.activeBenchmarkSceneName]
+      : null;
+    const benchmarkSourceLabel = benchmarkScene
+      ? `${sourceLabel} - ${benchmarkScene.metadata.displayName}`
+      : sourceLabel;
     const [, sourceError] = writeElementTextIfChanged(
       this.sourceElement,
-      formatBenchmarkSourceLabel(benchmarkSnapshot.measurementSource)
+      benchmarkSourceLabel
     );
     if (sourceError) {
       return returnFailure(sourceError.code, sourceError.message, sourceError.details);
     }
 
     return returnSuccess(undefined);
+  }
+}
+
+const formatBenchmarkRunnerSeconds = (milliseconds) => `${(milliseconds / 1000).toFixed(1)}s`;
+
+const formatBenchmarkRunnerScore = (value) => (
+  Number.isFinite(value) ? formatCompactMetricValue(value) : '...'
+);
+
+const readBenchmarkRunnerDurationMilliseconds = (inputElement, fallbackMilliseconds, minSeconds, maxSeconds) => {
+  const fallbackSeconds = fallbackMilliseconds / 1000;
+  const parsedSeconds = Number.parseFloat(inputElement.value);
+  const normalizedSeconds = Number.isFinite(parsedSeconds)
+    ? clampNumber(parsedSeconds, minSeconds, maxSeconds)
+    : fallbackSeconds;
+  inputElement.value = normalizedSeconds.toFixed(normalizedSeconds % 1 === 0 ? 0 : 1);
+  return Math.round(normalizedSeconds * 1000);
+};
+
+const calculateBenchmarkRunnerPercentile = (sortedScores, percentile) => {
+  if (sortedScores.length === 0) {
+    return Number.NaN;
+  }
+  if (sortedScores.length === 1) {
+    return sortedScores[0];
+  }
+  const percentileIndex = clampNumber(percentile, 0, 1) * (sortedScores.length - 1);
+  const lowerIndex = Math.floor(percentileIndex);
+  const upperIndex = Math.ceil(percentileIndex);
+  const upperWeight = percentileIndex - lowerIndex;
+  return sortedScores[lowerIndex] * (1 - upperWeight) + sortedScores[upperIndex] * upperWeight;
+};
+
+const calculateBenchmarkRunnerStats = (scoreSamples) => {
+  const finiteSamples = scoreSamples.filter((score) => Number.isFinite(score));
+  if (finiteSamples.length === 0) {
+    return Object.freeze({
+      sampleCount: 0,
+      minScore: Number.NaN,
+      maxScore: Number.NaN,
+      medianScore: Number.NaN,
+      p5Score: Number.NaN,
+      p95Score: Number.NaN
+    });
+  }
+
+  const sortedScores = finiteSamples.slice().sort((a, b) => a - b);
+  return Object.freeze({
+    sampleCount: sortedScores.length,
+    minScore: sortedScores[0],
+    maxScore: sortedScores[sortedScores.length - 1],
+    medianScore: calculateBenchmarkRunnerPercentile(sortedScores, 0.5),
+    p5Score: calculateBenchmarkRunnerPercentile(sortedScores, 0.05),
+    p95Score: calculateBenchmarkRunnerPercentile(sortedScores, 0.95)
+  });
+};
+
+const createBenchmarkRunnerResult = (sceneName, scoreSamples, durationMilliseconds) => {
+  const benchmarkScene = benchmarkScenes[sceneName];
+  const stats = calculateBenchmarkRunnerStats(scoreSamples);
+  return {
+    sceneKey: sceneName,
+    displayName: benchmarkScene.metadata.displayName,
+    targetBounces: benchmarkScene.metadata.targetBounces,
+    targetRaysPerPixel: benchmarkScene.metadata.targetRaysPerPixel,
+    durationMilliseconds,
+    sampleCount: stats.sampleCount,
+    minScore: Number.isFinite(stats.minScore) ? Math.round(stats.minScore) : null,
+    maxScore: Number.isFinite(stats.maxScore) ? Math.round(stats.maxScore) : null,
+    medianScore: Number.isFinite(stats.medianScore) ? Math.round(stats.medianScore) : null,
+    p5Score: Number.isFinite(stats.p5Score) ? Math.round(stats.p5Score) : null,
+    p95Score: Number.isFinite(stats.p95Score) ? Math.round(stats.p95Score) : null
+  };
+};
+
+const createBenchmarkRunnerTableCell = (documentObject, textValue) => {
+  const tableCell = documentObject.createElement('td');
+  tableCell.textContent = textValue;
+  return tableCell;
+};
+
+const createBenchmarkRunnerTableHeader = (documentObject, textValue) => {
+  const tableHeader = documentObject.createElement('th');
+  tableHeader.textContent = textValue;
+  return tableHeader;
+};
+
+class BenchmarkRunner {
+  constructor(
+    uiController,
+    documentObject,
+    statusElement,
+    summaryElement,
+    warmupInput,
+    measurementInput
+  ) {
+    this.uiController = uiController;
+    this.documentObject = documentObject;
+    this.statusElement = statusElement;
+    this.summaryElement = summaryElement;
+    this.warmupInput = warmupInput;
+    this.measurementInput = measurementInput;
+    this.sceneOrder = Object.freeze(Object.keys(benchmarkScenes));
+    this.isActive = false;
+    this.currentSceneIndex = -1;
+    this.currentScene = null;
+    this.results = [];
+    this.latestPayload = null;
+    this.warmupMilliseconds = BENCHMARK_RUNNER_DEFAULT_WARMUP_MILLISECONDS;
+    this.measurementMilliseconds = BENCHMARK_RUNNER_DEFAULT_MEASUREMENT_MILLISECONDS;
+  }
+
+  writeStatus(statusText) {
+    return writeElementTextIfChanged(this.statusElement, statusText);
+  }
+
+  readWindowDurations() {
+    this.warmupMilliseconds = readBenchmarkRunnerDurationMilliseconds(
+      this.warmupInput,
+      BENCHMARK_RUNNER_DEFAULT_WARMUP_MILLISECONDS,
+      0,
+      60
+    );
+    this.measurementMilliseconds = readBenchmarkRunnerDurationMilliseconds(
+      this.measurementInput,
+      BENCHMARK_RUNNER_DEFAULT_MEASUREMENT_MILLISECONDS,
+      1,
+      120
+    );
+    return returnSuccess(undefined);
+  }
+
+  start(currentTimeMilliseconds) {
+    const [, durationError] = this.readWindowDurations();
+    if (durationError) {
+      return returnFailure(durationError.code, durationError.message, durationError.details);
+    }
+
+    this.isActive = true;
+    this.currentSceneIndex = -1;
+    this.currentScene = null;
+    this.results = [];
+    this.latestPayload = null;
+    const [, statusError] = this.writeStatus(
+      `Running ${this.sceneOrder.length} scenes: ${formatBenchmarkRunnerSeconds(this.warmupMilliseconds)} warm-up, ${formatBenchmarkRunnerSeconds(this.measurementMilliseconds)} measurement.`
+    );
+    if (statusError) {
+      return returnFailure(statusError.code, statusError.message, statusError.details);
+    }
+    return this.startNextScene(currentTimeMilliseconds);
+  }
+
+  stop(statusText = 'Benchmark sequence stopped.') {
+    if (!this.isActive) {
+      return returnSuccess(undefined);
+    }
+    this.isActive = false;
+    this.currentScene = null;
+    return this.writeStatus(statusText);
+  }
+
+  startNextScene(currentTimeMilliseconds) {
+    this.currentSceneIndex += 1;
+    if (this.currentSceneIndex >= this.sceneOrder.length) {
+      return this.completeRun();
+    }
+
+    const sceneName = this.sceneOrder[this.currentSceneIndex];
+    const benchmarkScene = benchmarkScenes[sceneName];
+    const [, sceneError] = this.uiController.loadBenchmarkScene(sceneName);
+    if (sceneError) {
+      this.isActive = false;
+      return returnFailure(sceneError.code, sceneError.message, sceneError.details);
+    }
+
+    this.currentScene = {
+      sceneName,
+      displayName: benchmarkScene.metadata.displayName,
+      phase: 'warmup',
+      phaseStartMilliseconds: currentTimeMilliseconds,
+      lastSampleMilliseconds: 0,
+      scoreSamples: []
+    };
+
+    const [, statusError] = this.writeStatus(
+      `Scene ${this.currentSceneIndex + 1}/${this.sceneOrder.length}: ${benchmarkScene.metadata.displayName} warm-up.`
+    );
+    if (statusError) {
+      return returnFailure(statusError.code, statusError.message, statusError.details);
+    }
+    return this.renderSummary(currentTimeMilliseconds);
+  }
+
+  beginMeasurement(currentTimeMilliseconds) {
+    if (!this.currentScene) {
+      return returnSuccess(undefined);
+    }
+
+    const pathTracer = this.uiController.selectionRenderer.pathTracer;
+    const [, resetError] = pathTracer.resetBenchmark();
+    if (resetError) {
+      this.isActive = false;
+      return returnFailure(resetError.code, resetError.message, resetError.details);
+    }
+
+    this.currentScene.phase = 'measure';
+    this.currentScene.phaseStartMilliseconds = currentTimeMilliseconds;
+    this.currentScene.lastSampleMilliseconds = 0;
+    this.currentScene.scoreSamples = [];
+    return this.writeStatus(
+      `Scene ${this.currentSceneIndex + 1}/${this.sceneOrder.length}: ${this.currentScene.displayName} measuring.`
+    );
+  }
+
+  recordSnapshot(currentTimeMilliseconds, benchmarkSnapshot) {
+    if (
+      !this.currentScene ||
+      this.currentScene.phase !== 'measure' ||
+      currentTimeMilliseconds - this.currentScene.lastSampleMilliseconds < BENCHMARK_RUNNER_SAMPLE_INTERVAL_MILLISECONDS ||
+      benchmarkSnapshot.scoreSampleCount < PERFORMANCE_SCORE_READY_TRACE_SAMPLE_COUNT ||
+      isPausedBenchmarkSource(benchmarkSnapshot.measurementSource)
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    const score = benchmarkSnapshot.performanceScore;
+    if (!Number.isFinite(score)) {
+      return returnSuccess(undefined);
+    }
+
+    this.currentScene.scoreSamples.push(score);
+    this.currentScene.lastSampleMilliseconds = currentTimeMilliseconds;
+    return returnSuccess(undefined);
+  }
+
+  finishCurrentScene(currentTimeMilliseconds) {
+    if (!this.currentScene) {
+      return this.startNextScene(currentTimeMilliseconds);
+    }
+
+    this.results.push(createBenchmarkRunnerResult(
+      this.currentScene.sceneName,
+      this.currentScene.scoreSamples,
+      this.measurementMilliseconds
+    ));
+    this.currentScene = null;
+    return this.startNextScene(currentTimeMilliseconds);
+  }
+
+  advance(currentTimeMilliseconds, benchmarkSnapshot) {
+    if (!this.isActive || !this.currentScene) {
+      return returnSuccess(undefined);
+    }
+
+    const phaseElapsedMilliseconds = currentTimeMilliseconds - this.currentScene.phaseStartMilliseconds;
+    if (this.currentScene.phase === 'warmup' && phaseElapsedMilliseconds >= this.warmupMilliseconds) {
+      const [, measurementError] = this.beginMeasurement(currentTimeMilliseconds);
+      if (measurementError) {
+        return returnFailure(measurementError.code, measurementError.message, measurementError.details);
+      }
+      return this.renderSummary(currentTimeMilliseconds);
+    }
+
+    if (this.currentScene.phase === 'measure') {
+      const [, sampleError] = this.recordSnapshot(currentTimeMilliseconds, benchmarkSnapshot);
+      if (sampleError) {
+        return returnFailure(sampleError.code, sampleError.message, sampleError.details);
+      }
+
+      if (phaseElapsedMilliseconds >= this.measurementMilliseconds) {
+        return this.finishCurrentScene(currentTimeMilliseconds);
+      }
+    }
+
+    return this.renderSummary(currentTimeMilliseconds);
+  }
+
+  readBaseline() {
+    const windowObject = this.documentObject.defaultView;
+    if (!windowObject || !windowObject.localStorage) {
+      return null;
+    }
+    try {
+      const rawValue = windowObject.localStorage.getItem(BENCHMARK_BASELINE_STORAGE_KEY);
+      const parsedValue = rawValue ? JSON.parse(rawValue) : null;
+      return parsedValue && Array.isArray(parsedValue.scenes) ? parsedValue : null;
+    } catch (errorValue) {
+      return null;
+    }
+  }
+
+  applyBaselineComparison() {
+    const baseline = this.readBaseline();
+    if (!baseline) {
+      for (const result of this.results) {
+        result.baselineComparison = null;
+      }
+      return returnSuccess(undefined);
+    }
+
+    for (const result of this.results) {
+      const baselineScene = baseline.scenes.find((sceneResult) => sceneResult.sceneKey === result.sceneKey);
+      if (!baselineScene || !Number.isFinite(baselineScene.medianScore) || !Number.isFinite(result.medianScore)) {
+        result.baselineComparison = null;
+        continue;
+      }
+
+      const changePercent = baselineScene.medianScore > 0
+        ? ((result.medianScore - baselineScene.medianScore) / baselineScene.medianScore) * 100
+        : 0;
+      result.baselineComparison = {
+        baselineMedianScore: baselineScene.medianScore,
+        changePercent,
+        isRegression: changePercent <= -10
+      };
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  createResultsPayload() {
+    const windowObject = this.documentObject.defaultView;
+    const navigatorObject = windowObject ? windowObject.navigator : null;
+    const benchmarkSnapshot = this.uiController.selectionRenderer.pathTracer.benchmarkSnapshot;
+    return {
+      version: 1,
+      date: new Date().toISOString(),
+      gpu: this.uiController.benchmarkDisplay.gpuRendererLabel,
+      rendererBackend: benchmarkSnapshot.rendererBackend,
+      userAgent: navigatorObject ? navigatorObject.userAgent : '',
+      platform: navigatorObject ? navigatorObject.platform : '',
+      canvasResolution: {
+        width: CANVAS_RENDER_WIDTH,
+        height: CANVAS_RENDER_HEIGHT
+      },
+      warmupMilliseconds: this.warmupMilliseconds,
+      measurementMilliseconds: this.measurementMilliseconds,
+      scenes: this.results.map((result) => ({
+        sceneKey: result.sceneKey,
+        displayName: result.displayName,
+        targetBounces: result.targetBounces,
+        targetRaysPerPixel: result.targetRaysPerPixel,
+        sampleCount: result.sampleCount,
+        minScore: result.minScore,
+        maxScore: result.maxScore,
+        medianScore: result.medianScore,
+        p5Score: result.p5Score,
+        p95Score: result.p95Score
+      }))
+    };
+  }
+
+  completeRun() {
+    this.isActive = false;
+    this.currentScene = null;
+    const [, baselineError] = this.applyBaselineComparison();
+    if (baselineError) {
+      return returnFailure(baselineError.code, baselineError.message, baselineError.details);
+    }
+    this.latestPayload = this.createResultsPayload();
+    const [, statusError] = this.writeStatus('Benchmark sequence complete.');
+    if (statusError) {
+      return returnFailure(statusError.code, statusError.message, statusError.details);
+    }
+    return this.renderSummary(performance.now());
+  }
+
+  copyResults() {
+    if (!this.latestPayload) {
+      return returnFailure('missing-benchmark-results', 'Run the benchmark sequence before copying results.');
+    }
+
+    const jsonValue = `${JSON.stringify(this.latestPayload, null, 2)}\n`;
+    const windowObject = this.documentObject.defaultView;
+    if (windowObject && windowObject.navigator && windowObject.navigator.clipboard) {
+      windowObject.navigator.clipboard.writeText(jsonValue)
+        .then(() => this.writeStatus('Benchmark JSON copied.'))
+        .catch(() => this.writeStatus('Clipboard copy failed.'));
+      return returnSuccess(undefined);
+    }
+
+    const textArea = this.documentObject.createElement('textarea');
+    textArea.value = jsonValue;
+    textArea.setAttribute('readonly', 'readonly');
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    this.documentObject.body.appendChild(textArea);
+    textArea.select();
+    const didCopy = this.documentObject.execCommand && this.documentObject.execCommand('copy');
+    this.documentObject.body.removeChild(textArea);
+    if (!didCopy) {
+      return returnFailure('clipboard-unavailable', 'Clipboard copy is not available in this browser.');
+    }
+    return this.writeStatus('Benchmark JSON copied.');
+  }
+
+  saveBaseline() {
+    if (!this.latestPayload) {
+      return returnFailure('missing-benchmark-results', 'Run the benchmark sequence before saving a baseline.');
+    }
+
+    const windowObject = this.documentObject.defaultView;
+    if (!windowObject || !windowObject.localStorage) {
+      return returnFailure('local-storage-unavailable', 'Baseline storage is not available in this browser.');
+    }
+
+    try {
+      windowObject.localStorage.setItem(BENCHMARK_BASELINE_STORAGE_KEY, JSON.stringify(this.latestPayload));
+    } catch (errorValue) {
+      return returnFailure('baseline-save-failed', 'Unable to save benchmark baseline.', readErrorMessage(errorValue));
+    }
+
+    const [, comparisonError] = this.applyBaselineComparison();
+    if (comparisonError) {
+      return returnFailure(comparisonError.code, comparisonError.message, comparisonError.details);
+    }
+    const [, summaryError] = this.renderSummary(performance.now());
+    if (summaryError) {
+      return returnFailure(summaryError.code, summaryError.message, summaryError.details);
+    }
+    return this.writeStatus('Benchmark baseline saved.');
+  }
+
+  renderCurrentSceneCard(currentTimeMilliseconds) {
+    if (!this.currentScene) {
+      return returnSuccess(undefined);
+    }
+
+    const elapsedMilliseconds = currentTimeMilliseconds - this.currentScene.phaseStartMilliseconds;
+    const targetMilliseconds = this.currentScene.phase === 'warmup'
+      ? this.warmupMilliseconds
+      : this.measurementMilliseconds;
+    const currentStats = calculateBenchmarkRunnerStats(this.currentScene.scoreSamples);
+    const currentCard = this.documentObject.createElement('div');
+    currentCard.className = 'benchmark-runner-card';
+    currentCard.textContent = [
+      `${this.currentScene.displayName}: ${this.currentScene.phase === 'warmup' ? 'warming up' : 'measuring'}`,
+      `${formatBenchmarkRunnerSeconds(Math.min(elapsedMilliseconds, targetMilliseconds))} / ${formatBenchmarkRunnerSeconds(targetMilliseconds)}`,
+      `median ${formatBenchmarkRunnerScore(currentStats.medianScore)}`,
+      `P5/P95 ${formatBenchmarkRunnerScore(currentStats.p5Score)} / ${formatBenchmarkRunnerScore(currentStats.p95Score)}`,
+      `min/max ${formatBenchmarkRunnerScore(currentStats.minScore)} / ${formatBenchmarkRunnerScore(currentStats.maxScore)}`
+    ].join(' - ');
+    this.summaryElement.appendChild(currentCard);
+    return returnSuccess(undefined);
+  }
+
+  renderResultsTable() {
+    if (this.results.length === 0) {
+      return returnSuccess(undefined);
+    }
+
+    const tableElement = this.documentObject.createElement('table');
+    tableElement.className = 'benchmark-runner-table';
+    const tableHead = this.documentObject.createElement('thead');
+    const headerRow = this.documentObject.createElement('tr');
+    for (const headerText of ['Scene', 'Median', 'P5/P95', 'Min/Max', 'Samples', 'Baseline']) {
+      headerRow.appendChild(createBenchmarkRunnerTableHeader(this.documentObject, headerText));
+    }
+    tableHead.appendChild(headerRow);
+    tableElement.appendChild(tableHead);
+
+    const tableBody = this.documentObject.createElement('tbody');
+    for (const result of this.results) {
+      const rowElement = this.documentObject.createElement('tr');
+      const baselineComparison = result.baselineComparison;
+      const baselineLabel = baselineComparison
+        ? `${baselineComparison.isRegression ? 'Warning ' : ''}${baselineComparison.changePercent.toFixed(1)}%`
+        : 'No baseline';
+      rowElement.appendChild(createBenchmarkRunnerTableCell(this.documentObject, result.displayName));
+      rowElement.appendChild(createBenchmarkRunnerTableCell(this.documentObject, formatBenchmarkRunnerScore(result.medianScore)));
+      rowElement.appendChild(createBenchmarkRunnerTableCell(
+        this.documentObject,
+        `${formatBenchmarkRunnerScore(result.p5Score)} / ${formatBenchmarkRunnerScore(result.p95Score)}`
+      ));
+      rowElement.appendChild(createBenchmarkRunnerTableCell(
+        this.documentObject,
+        `${formatBenchmarkRunnerScore(result.minScore)} / ${formatBenchmarkRunnerScore(result.maxScore)}`
+      ));
+      rowElement.appendChild(createBenchmarkRunnerTableCell(this.documentObject, String(result.sampleCount)));
+      rowElement.appendChild(createBenchmarkRunnerTableCell(this.documentObject, baselineLabel));
+      tableBody.appendChild(rowElement);
+    }
+    tableElement.appendChild(tableBody);
+    this.summaryElement.appendChild(tableElement);
+    return returnSuccess(undefined);
+  }
+
+  renderSummary(currentTimeMilliseconds) {
+    while (this.summaryElement.firstChild) {
+      this.summaryElement.removeChild(this.summaryElement.firstChild);
+    }
+
+    const [, cardError] = this.renderCurrentSceneCard(currentTimeMilliseconds);
+    if (cardError) {
+      return returnFailure(cardError.code, cardError.message, cardError.details);
+    }
+
+    return this.renderResultsTable();
   }
 }
 
@@ -4771,14 +6048,10 @@ const formatSceneObjectDisplayName = (sceneObject, lightObject) => {
   if (sceneObject === lightObject) {
     return 'Light';
   }
-  const constructorName = sceneObject.constructor && sceneObject.constructor.name
-    ? sceneObject.constructor.name
-    : 'Scene item';
-  return constructorName
-    .replace(/SceneObject$/, '')
-    .replace(/Sdf/g, 'SDF')
-    .replace(/Csg/g, 'CSG')
-    .replace(/([a-z])([A-Z])/g, '$1 $2');
+  if (sceneObject.displayName) {
+    return sceneObject.displayName;
+  }
+  return readSceneObjectDisplayName(sceneObject);
 };
 
 class UserInterfaceController {
@@ -4787,6 +6060,7 @@ class UserInterfaceController {
     physicsWorld,
     applicationState,
     canvasElement,
+    appShellElement,
     cameraPlaybackButton,
     framePauseButton,
     convergencePauseButton,
@@ -4798,9 +6072,11 @@ class UserInterfaceController {
     glossinessInput,
     lightBounceInput,
     lightBounceValueElement,
+    lightIntensityInput,
     lightIntensityValueElement,
     lightSizeInput,
     lightSizeValueElement,
+    lightColorInput,
     fogDensityInput,
     fogDensityValueElement,
     skyBrightnessInput,
@@ -4821,6 +6097,8 @@ class UserInterfaceController {
     colorSaturationValueElement,
     colorGammaInput,
     colorGammaValueElement,
+    cameraFieldOfViewInput,
+    cameraFieldOfViewValueElement,
     cameraFocusDistanceInput,
     cameraFocusDistanceValueElement,
     cameraApertureInput,
@@ -4837,15 +6115,26 @@ class UserInterfaceController {
     sceneTreeListElement,
     sceneTreeCountElement,
     resolutionPresetSelect,
-    customResolutionInput,
+    renderScaleInput,
+    renderScaleValueElement,
+    renderScaleResolutionElement,
+    customRenderWidthInput,
+    customRenderHeightInput,
+    uiCanvasResolutionElement,
     exportStatusElement,
     fullscreenCanvasButton,
-    benchmarkDisplay
+    fullscreenPanelsButton,
+    benchmarkDisplay,
+    benchmarkRunnerStatusElement,
+    benchmarkRunnerSummaryElement,
+    benchmarkRunnerWarmupInput,
+    benchmarkRunnerMeasurementInput
   ) {
     this.selectionRenderer = selectionRenderer;
     this.physicsWorld = physicsWorld;
     this.applicationState = applicationState;
     this.canvasElement = canvasElement;
+    this.appShellElement = appShellElement;
     this.cameraPlaybackButton = cameraPlaybackButton;
     this.framePauseButton = framePauseButton;
     this.convergencePauseButton = convergencePauseButton;
@@ -4857,9 +6146,11 @@ class UserInterfaceController {
     this.glossinessInput = glossinessInput;
     this.lightBounceInput = lightBounceInput;
     this.lightBounceValueElement = lightBounceValueElement;
+    this.lightIntensityInput = lightIntensityInput;
     this.lightIntensityValueElement = lightIntensityValueElement;
     this.lightSizeInput = lightSizeInput;
     this.lightSizeValueElement = lightSizeValueElement;
+    this.lightColorInput = lightColorInput;
     this.fogDensityInput = fogDensityInput;
     this.fogDensityValueElement = fogDensityValueElement;
     this.skyBrightnessInput = skyBrightnessInput;
@@ -4880,6 +6171,8 @@ class UserInterfaceController {
     this.colorSaturationValueElement = colorSaturationValueElement;
     this.colorGammaInput = colorGammaInput;
     this.colorGammaValueElement = colorGammaValueElement;
+    this.cameraFieldOfViewInput = cameraFieldOfViewInput;
+    this.cameraFieldOfViewValueElement = cameraFieldOfViewValueElement;
     this.cameraFocusDistanceInput = cameraFocusDistanceInput;
     this.cameraFocusDistanceValueElement = cameraFocusDistanceValueElement;
     this.cameraApertureInput = cameraApertureInput;
@@ -4896,11 +6189,28 @@ class UserInterfaceController {
     this.sceneTreeListElement = sceneTreeListElement;
     this.sceneTreeCountElement = sceneTreeCountElement;
     this.resolutionPresetSelect = resolutionPresetSelect;
-    this.customResolutionInput = customResolutionInput;
+    this.renderScaleInput = renderScaleInput;
+    this.renderScaleValueElement = renderScaleValueElement;
+    this.renderScaleResolutionElement = renderScaleResolutionElement;
+    this.customRenderWidthInput = customRenderWidthInput;
+    this.customRenderHeightInput = customRenderHeightInput;
+    this.uiCanvasResolutionElement = uiCanvasResolutionElement;
     this.exportStatusElement = exportStatusElement;
     this.fullscreenCanvasButton = fullscreenCanvasButton;
+    this.fullscreenPanelsButton = fullscreenPanelsButton;
     this.benchmarkDisplay = benchmarkDisplay;
+    this.benchmarkRunner = new BenchmarkRunner(
+      this,
+      canvasElement.ownerDocument,
+      benchmarkRunnerStatusElement,
+      benchmarkRunnerSummaryElement,
+      benchmarkRunnerWarmupInput,
+      benchmarkRunnerMeasurementInput
+    );
+    this.shouldShowPanelsInFullscreen = false;
+    this.actionToggleButtonCache = new Map();
     this.sceneObjects = [];
+    this.sceneTreeButtons = [];
     this.lightObject = new LightSceneObject(applicationState);
     this.isMovingSelection = false;
     this.isGlossinessVisible = null;
@@ -4912,7 +6222,7 @@ class UserInterfaceController {
     this.pointerTranslation = createVec3(0, 0, 0);
     this.modelviewMatrix = createIdentityMat4();
     this.projectionMatrix = createIdentityMat4();
-    writeCameraProjectionMat4(this.projectionMatrix);
+    writeCameraProjectionMat4(this.projectionMatrix, applicationState.cameraFieldOfViewDegrees);
     this.modelviewProjectionMatrix = createIdentityMat4();
     this.inverseModelviewProjectionMatrix = createIdentityMat4();
     this.cameraXAxis = createVec3(1, 0, 0);
@@ -4921,9 +6231,11 @@ class UserInterfaceController {
     this.previousCameraAngleX = Number.NaN;
     this.previousCameraAngleY = Number.NaN;
     this.previousCameraDistance = Number.NaN;
+    this.previousCameraFieldOfViewDegrees = Number.NaN;
   }
 
   setSceneObjects(sceneObjects) {
+    this.lightObject.isLocked = this.applicationState.isBenchmarkModeActive;
     this.sceneObjects = [this.lightObject, ...sceneObjects];
     if (!this.sceneObjects.includes(this.selectionRenderer.selectedObject)) {
       this.selectionRenderer.selectedObject = null;
@@ -4960,12 +6272,12 @@ class UserInterfaceController {
     }
 
     const shouldStepPhysics = !this.isMovingSelection;
-    const [didMoveSphere, physicsError] = this.physicsWorld.step(elapsedSeconds, shouldStepPhysics);
+    const [didMovePhysicsObject, physicsError] = this.physicsWorld.step(elapsedSeconds, shouldStepPhysics);
     if (physicsError) {
       return returnFailure(physicsError.code, physicsError.message, physicsError.details);
     }
 
-    if (!didMoveSphere) {
+    if (!didMovePhysicsObject) {
       return returnSuccess(undefined);
     }
 
@@ -4982,16 +6294,20 @@ class UserInterfaceController {
     const cameraAngleX = this.applicationState.cameraAngleX;
     const cameraAngleY = this.applicationState.cameraAngleY;
     const cameraDistance = this.applicationState.cameraDistance;
+    const cameraFieldOfViewDegrees = this.applicationState.cameraFieldOfViewDegrees;
     const didCameraChange = (
       this.previousCameraAngleX !== cameraAngleX ||
       this.previousCameraAngleY !== cameraAngleY ||
-      this.previousCameraDistance !== cameraDistance
+      this.previousCameraDistance !== cameraDistance ||
+      this.previousCameraFieldOfViewDegrees !== cameraFieldOfViewDegrees
     );
 
     if (didCameraChange) {
       this.previousCameraAngleX = cameraAngleX;
       this.previousCameraAngleY = cameraAngleY;
       this.previousCameraDistance = cameraDistance;
+      this.previousCameraFieldOfViewDegrees = cameraFieldOfViewDegrees;
+      writeCameraProjectionMat4(this.projectionMatrix, cameraFieldOfViewDegrees);
 
       const sinCameraAngleX = Math.sin(cameraAngleX);
       const cosCameraAngleX = Math.cos(cameraAngleX);
@@ -5059,31 +6375,166 @@ class UserInterfaceController {
   }
 
   syncSelectedItemReadout() {
+    const selectedObject = this.selectionRenderer.selectedObject;
+    const displayName = formatSceneObjectDisplayName(selectedObject, this.lightObject);
     const [, readoutError] = writeElementTextIfChanged(
       this.selectedItemNameElement,
-      formatSceneObjectDisplayName(this.selectionRenderer.selectedObject, this.lightObject)
+      displayName
     );
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
+
+    const [, sectionError] = syncObjectInspectorSection(
+      this.canvasElement.ownerDocument,
+      selectedObject,
+      displayName
+    );
+    if (sectionError) {
+      return returnFailure(sectionError.code, sectionError.message, sectionError.details);
+    }
+
+    this.syncOptionalSelectionControls(selectedObject);
     return this.syncSceneTree();
+  }
+
+  syncOptionalSelectionControls(selectedObject) {
+    const documentObject = this.canvasElement.ownerDocument;
+    const nameInput = readOptionalElement(documentObject, 'selected-item-name-input');
+    if (nameInput instanceof HTMLInputElement) {
+      nameInput.value = selectedObject && selectedObject !== this.lightObject
+        ? formatSceneObjectDisplayName(selectedObject, this.lightObject)
+        : '';
+      nameInput.disabled = !selectedObject || selectedObject === this.lightObject;
+    }
+
+    const position = this.readSelectedObjectPosition(selectedObject);
+    for (const axisName of ['x', 'y', 'z']) {
+      const positionInput = readOptionalElement(documentObject, `selected-position-${axisName}`);
+      if (!(positionInput instanceof HTMLInputElement)) {
+        continue;
+      }
+      const axisIndex = axisName === 'x' ? 0 : (axisName === 'y' ? 1 : 2);
+      positionInput.value = position ? position[axisIndex].toFixed(2) : '';
+      positionInput.disabled = !position || Boolean(selectedObject && selectedObject.isLocked);
+    }
+
+    const hideButton = readOptionalElement(documentObject, 'selection-hidden-toggle');
+    if (hideButton instanceof HTMLButtonElement) {
+      hideButton.textContent = selectedObject && selectedObject.isHidden ? 'Show' : 'Hide';
+      hideButton.setAttribute('aria-pressed', selectedObject && selectedObject.isHidden ? 'true' : 'false');
+      hideButton.disabled = !selectedObject || selectedObject === this.lightObject || selectedObject.isLocked;
+    }
+
+    const lockButton = readOptionalElement(documentObject, 'selection-lock-toggle');
+    if (lockButton instanceof HTMLButtonElement) {
+      lockButton.textContent = selectedObject && selectedObject.isLocked ? 'Unlock' : 'Lock';
+      lockButton.setAttribute('aria-pressed', selectedObject && selectedObject.isLocked ? 'true' : 'false');
+      lockButton.disabled = !selectedObject || selectedObject === this.lightObject || this.applicationState.isBenchmarkModeActive;
+    }
+
+    this.syncSelectedPhysicsControls(selectedObject);
+  }
+
+  syncSelectedPhysicsControls(selectedObject) {
+    const documentObject = this.canvasElement.ownerDocument;
+    const isSupported = isPhysicsSupportedSceneObject(selectedObject);
+    const isLocked = Boolean(selectedObject && selectedObject.isLocked);
+    const isEnabled = isSupported ? selectedObject.isPhysicsEnabled !== false : false;
+    const areDetailsDisabled = !isSupported || isLocked || !isEnabled;
+
+    const physicsEnabledInput = readOptionalElement(documentObject, 'selected-physics-enabled');
+    if (physicsEnabledInput instanceof HTMLInputElement) {
+      physicsEnabledInput.checked = isEnabled;
+      physicsEnabledInput.disabled = !isSupported || isLocked;
+    }
+
+    const physicsBodyTypeSelect = readOptionalElement(documentObject, 'selected-physics-body-type');
+    if (physicsBodyTypeSelect instanceof HTMLSelectElement) {
+      physicsBodyTypeSelect.value = isSupported
+        ? readSceneObjectPhysicsBodyType(selectedObject)
+        : PHYSICS_BODY_TYPE.FIXED;
+      physicsBodyTypeSelect.disabled = areDetailsDisabled;
+    }
+
+    const physicsFriction = isSupported ? readSceneObjectPhysicsFriction(selectedObject) : 0;
+    const physicsFrictionInput = readOptionalElement(documentObject, 'selected-physics-friction');
+    if (physicsFrictionInput instanceof HTMLInputElement) {
+      physicsFrictionInput.value = physicsFriction.toFixed(2);
+      physicsFrictionInput.disabled = areDetailsDisabled;
+    }
+    const physicsFrictionValueElement = readOptionalElement(documentObject, 'selected-physics-friction-value');
+    if (physicsFrictionValueElement instanceof HTMLElement) {
+      physicsFrictionValueElement.textContent = physicsFriction.toFixed(2);
+    }
+
+    const physicsRestitution = isSupported ? readSceneObjectPhysicsRestitution(selectedObject) : 0;
+    const physicsRestitutionInput = readOptionalElement(documentObject, 'selected-physics-restitution');
+    if (physicsRestitutionInput instanceof HTMLInputElement) {
+      physicsRestitutionInput.value = physicsRestitution.toFixed(2);
+      physicsRestitutionInput.disabled = areDetailsDisabled;
+    }
+    const physicsRestitutionValueElement = readOptionalElement(documentObject, 'selected-physics-restitution-value');
+    if (physicsRestitutionValueElement instanceof HTMLElement) {
+      physicsRestitutionValueElement.textContent = physicsRestitution.toFixed(2);
+    }
+
+    const physicsCollideWithObjectsInput = readOptionalElement(documentObject, 'selected-physics-collide-with-objects');
+    if (physicsCollideWithObjectsInput instanceof HTMLInputElement) {
+      physicsCollideWithObjectsInput.checked = isSupported ? selectedObject.collideWithObjects !== false : true;
+      physicsCollideWithObjectsInput.disabled = areDetailsDisabled;
+    }
+  }
+
+  readSelectedObjectPosition(selectedObject) {
+    if (!selectedObject) {
+      return null;
+    }
+    if (selectedObject === this.lightObject) {
+      return this.applicationState.lightPosition;
+    }
+    if (selectedObject instanceof CubeSceneObject) {
+      return selectedObject.getCenterPosition();
+    }
+    if (selectedObject.centerPosition) {
+      return selectedObject.centerPosition;
+    }
+    return null;
   }
 
   syncSceneTree() {
     const documentObject = this.sceneTreeListElement.ownerDocument;
-    this.sceneTreeListElement.textContent = '';
     const selectedObject = this.selectionRenderer.selectedObject;
     for (let sceneObjectIndex = 0; sceneObjectIndex < this.sceneObjects.length; sceneObjectIndex += 1) {
       const sceneObject = this.sceneObjects[sceneObjectIndex];
-      const itemButton = documentObject.createElement('button');
-      itemButton.type = 'button';
+      let itemButton = this.sceneTreeButtons[sceneObjectIndex];
+      if (!(itemButton instanceof HTMLButtonElement)) {
+        itemButton = documentObject.createElement('button');
+        itemButton.type = 'button';
+        itemButton.setAttribute('role', 'option');
+        this.sceneTreeButtons[sceneObjectIndex] = itemButton;
+        this.sceneTreeListElement.appendChild(itemButton);
+      }
       itemButton.dataset.sceneObjectIndex = String(sceneObjectIndex);
-      itemButton.setAttribute('role', 'option');
       itemButton.setAttribute('aria-selected', sceneObject === selectedObject ? 'true' : 'false');
       itemButton.setAttribute('aria-pressed', sceneObject === selectedObject ? 'true' : 'false');
       const sceneItemName = formatSceneObjectDisplayName(sceneObject, this.lightObject);
-      itemButton.textContent = sceneObject === this.lightObject ? sceneItemName : `${sceneItemName} #${sceneObjectIndex}`;
-      this.sceneTreeListElement.appendChild(itemButton);
+      const sceneItemStatus = [
+        sceneObject.isHidden ? 'hidden' : '',
+        sceneObject.isLocked ? 'locked' : ''
+      ].filter(Boolean).join(', ');
+      const sceneItemLabel = sceneObject === this.lightObject ? sceneItemName : `${sceneItemName} #${sceneObjectIndex}`;
+      const nextItemText = sceneItemStatus ? `${sceneItemLabel} (${sceneItemStatus})` : sceneItemLabel;
+      if (itemButton.textContent !== nextItemText) {
+        itemButton.textContent = nextItemText;
+      }
+    }
+
+    while (this.sceneTreeButtons.length > this.sceneObjects.length) {
+      const staleButton = this.sceneTreeButtons.pop();
+      if (staleButton && staleButton.parentNode === this.sceneTreeListElement) {
+        this.sceneTreeListElement.removeChild(staleButton);
+      }
     }
 
     return writeElementTextIfChanged(
@@ -5116,7 +6567,140 @@ class UserInterfaceController {
     return this.syncSelectedItemReadout();
   }
 
+  readLightPositionInputs() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const xInput = readOptionalElement(documentObject, 'light-position-x');
+    const yInput = readOptionalElement(documentObject, 'light-position-y');
+    const zInput = readOptionalElement(documentObject, 'light-position-z');
+    if (!(xInput instanceof HTMLInputElement) || !(yInput instanceof HTMLInputElement) || !(zInput instanceof HTMLInputElement)) {
+      return returnFailure('missing-light-position-inputs', 'Light position inputs are not available.');
+    }
+
+    return returnSuccess(Object.freeze({
+      xInput,
+      yInput,
+      zInput
+    }));
+  }
+
+  syncLightPositionControlsFromState() {
+    const [positionInputs, positionInputsError] = this.readLightPositionInputs();
+    if (positionInputsError) {
+      return returnFailure(positionInputsError.code, positionInputsError.message, positionInputsError.details);
+    }
+
+    positionInputs.xInput.value = this.applicationState.lightPosition[0].toFixed(2);
+    positionInputs.yInput.value = this.applicationState.lightPosition[1].toFixed(2);
+    positionInputs.zInput.value = this.applicationState.lightPosition[2].toFixed(2);
+    return returnSuccess(undefined);
+  }
+
+  updateLightPositionFromInputs() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncLightPositionControlsFromState();
+    }
+
+    const [positionInputs, positionInputsError] = this.readLightPositionInputs();
+    if (positionInputsError) {
+      return returnFailure(positionInputsError.code, positionInputsError.message, positionInputsError.details);
+    }
+
+    const [xPosition, xError] = parseBoundedNumber(positionInputs.xInput.value, 0, -1, 1);
+    if (xError) {
+      return returnFailure(xError.code, xError.message, xError.details);
+    }
+    const [yPosition, yError] = parseBoundedNumber(positionInputs.yInput.value, 0, -1, 1);
+    if (yError) {
+      return returnFailure(yError.code, yError.message, yError.details);
+    }
+    const [zPosition, zError] = parseBoundedNumber(positionInputs.zInput.value, 0, -1, 1);
+    if (zError) {
+      return returnFailure(zError.code, zError.message, zError.details);
+    }
+
+    const nextLightPosition = clampLightPosition(createVec3(xPosition, yPosition, zPosition), this.applicationState.lightSize);
+    if (
+      this.applicationState.lightPosition[0] === nextLightPosition[0] &&
+      this.applicationState.lightPosition[1] === nextLightPosition[1] &&
+      this.applicationState.lightPosition[2] === nextLightPosition[2]
+    ) {
+      return this.syncLightPositionControlsFromState();
+    }
+
+    writeVec3(
+      this.applicationState.lightPosition,
+      nextLightPosition[0],
+      nextLightPosition[1],
+      nextLightPosition[2]
+    );
+
+    const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+    if (uniformDirtyError) {
+      return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+    }
+
+    const [, lightPositionSyncError] = this.syncLightPositionControlsFromState();
+    if (lightPositionSyncError) {
+      return returnFailure(lightPositionSyncError.code, lightPositionSyncError.message, lightPositionSyncError.details);
+    }
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples(false);
+  }
+
+  syncLightColorControlFromState() {
+    this.lightColorInput.value = formatLightColorValue(this.applicationState.lightColor);
+    return returnSuccess(undefined);
+  }
+
+  updateLightColorFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncLightColorControlFromState();
+    }
+
+    const [nextLightColor, lightColorError] = parseLightColorValue(this.lightColorInput.value);
+    if (lightColorError) {
+      return returnFailure(lightColorError.code, lightColorError.message, lightColorError.details);
+    }
+
+    if (
+      this.applicationState.lightColor[0] === nextLightColor[0] &&
+      this.applicationState.lightColor[1] === nextLightColor[1] &&
+      this.applicationState.lightColor[2] === nextLightColor[2]
+    ) {
+      return this.syncLightColorControlFromState();
+    }
+
+    writeVec3(this.applicationState.lightColor, nextLightColor[0], nextLightColor[1], nextLightColor[2]);
+    const [, colorSyncError] = this.syncLightColorControlFromState();
+    if (colorSyncError) {
+      return returnFailure(colorSyncError.code, colorSyncError.message, colorSyncError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples(false);
+  }
+
+  commitSceneEdit(statusText) {
+    const documentObject = this.canvasElement.ownerDocument;
+    const [, loadingError] = updateLoadingStatus(documentObject, statusText);
+    if (loadingError) {
+      return returnFailure(loadingError.code, loadingError.message, loadingError.details);
+    }
+
+    const [, syncError] = this.syncSceneObjectsToRendererAndPhysics();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    return queueLoadingOverlayDismiss(documentObject);
+  }
+
   addSphere() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return returnSuccess(undefined);
+    }
+
     const sphereObject = new SphereSceneObject(
       createVec3(0, 0, 0),
       0.25,
@@ -5129,10 +6713,14 @@ class UserInterfaceController {
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
-    return this.syncSceneObjectsToRendererAndPhysics();
+    return this.commitSceneEdit('Adding sphere and compiling shaders...');
   }
 
   addCube() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return returnSuccess(undefined);
+    }
+
     const cubeObject = new CubeSceneObject(
       createVec3(-0.25, -0.25, -0.25),
       createVec3(0.25, 0.25, 0.25),
@@ -5145,10 +6733,14 @@ class UserInterfaceController {
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
-    return this.syncSceneObjectsToRendererAndPhysics();
+    return this.commitSceneEdit('Adding cube and compiling shaders...');
   }
 
   addPrimitive(primitiveFactory) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return returnSuccess(undefined);
+    }
+
     const sceneObject = primitiveFactory(this.applicationState);
     this.sceneObjects.push(sceneObject);
     this.selectionRenderer.selectedObject = sceneObject;
@@ -5156,12 +6748,12 @@ class UserInterfaceController {
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
-    return this.syncSceneObjectsToRendererAndPhysics();
+    return this.commitSceneEdit('Adding item and compiling shaders...');
   }
 
   deleteSelection() {
     const selectedObject = this.selectionRenderer.selectedObject;
-    if (!selectedObject || selectedObject === this.lightObject) {
+    if (!selectedObject || selectedObject === this.lightObject || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
 
@@ -5175,7 +6767,204 @@ class UserInterfaceController {
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
-    return this.syncSceneObjectsToRendererAndPhysics();
+    return this.commitSceneEdit('Building scene...');
+  }
+
+  duplicateSelection() {
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (
+      !selectedObject ||
+      selectedObject === this.lightObject ||
+      selectedObject.isLocked ||
+      typeof selectedObject.cloneForDuplicate !== 'function'
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    const duplicateObject = selectedObject.cloneForDuplicate(allocateSceneObjectId(this.applicationState));
+    const [, offsetError] = duplicateObject.commitTranslation(createVec3(0.16, 0.08, 0.16));
+    if (offsetError) {
+      return returnFailure(offsetError.code, offsetError.message, offsetError.details);
+    }
+    this.sceneObjects.push(duplicateObject);
+    this.selectionRenderer.selectedObject = duplicateObject;
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.commitSceneEdit('Duplicating item and compiling shaders...');
+  }
+
+  renameSelection() {
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (!selectedObject || selectedObject === this.lightObject || selectedObject.isLocked) {
+      return returnSuccess(undefined);
+    }
+
+    const nameInput = readOptionalElement(this.canvasElement.ownerDocument, 'selected-item-name-input');
+    if (!(nameInput instanceof HTMLInputElement)) {
+      return returnFailure('missing-name-input', 'Selected item name input is not available.');
+    }
+
+    selectedObject.displayName = nameInput.value.trim();
+    return this.syncSelectedItemReadout();
+  }
+
+  toggleSelectionHidden() {
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (!selectedObject || selectedObject === this.lightObject || selectedObject.isLocked) {
+      return returnSuccess(undefined);
+    }
+
+    selectedObject.isHidden = !selectedObject.isHidden;
+    return this.commitSceneEdit(selectedObject.isHidden ? 'Hiding item...' : 'Showing item...');
+  }
+
+  toggleSelectionLocked() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return returnSuccess(undefined);
+    }
+
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (!selectedObject || selectedObject === this.lightObject) {
+      return returnSuccess(undefined);
+    }
+
+    selectedObject.isLocked = !selectedObject.isLocked;
+    return this.syncSelectedItemReadout();
+  }
+
+  updateSelectionTransformFromInputs() {
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (!selectedObject || selectedObject.isLocked) {
+      return returnSuccess(undefined);
+    }
+
+    const documentObject = this.canvasElement.ownerDocument;
+    const xInput = readOptionalElement(documentObject, 'selected-position-x');
+    const yInput = readOptionalElement(documentObject, 'selected-position-y');
+    const zInput = readOptionalElement(documentObject, 'selected-position-z');
+    if (!(xInput instanceof HTMLInputElement) || !(yInput instanceof HTMLInputElement) || !(zInput instanceof HTMLInputElement)) {
+      return returnFailure('missing-transform-inputs', 'Selected item transform inputs are not available.');
+    }
+
+    const [xPosition, xError] = parseBoundedNumber(xInput.value, 0, -2, 2);
+    if (xError) {
+      return returnFailure(xError.code, xError.message, xError.details);
+    }
+    const [yPosition, yError] = parseBoundedNumber(yInput.value, 0, -2, 2);
+    if (yError) {
+      return returnFailure(yError.code, yError.message, yError.details);
+    }
+    const [zPosition, zError] = parseBoundedNumber(zInput.value, 0, -2, 2);
+    if (zError) {
+      return returnFailure(zError.code, zError.message, zError.details);
+    }
+
+    if (selectedObject === this.lightObject) {
+      const nextLightPosition = clampLightPosition(createVec3(xPosition, yPosition, zPosition), this.applicationState.lightSize);
+      writeVec3(this.applicationState.lightPosition, nextLightPosition[0], nextLightPosition[1], nextLightPosition[2]);
+    } else if (typeof selectedObject.setCenterPositionComponents === 'function') {
+      const [, positionError] = selectedObject.setCenterPositionComponents(xPosition, yPosition, zPosition);
+      if (positionError) {
+        return returnFailure(positionError.code, positionError.message, positionError.details);
+      }
+    }
+
+    const [, physicsError] = this.physicsWorld.rebuildScene(this.sceneObjects, this.applicationState);
+    if (physicsError) {
+      return returnFailure(physicsError.code, physicsError.message, physicsError.details);
+    }
+    const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
+    if (uniformDirtyError) {
+      return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
+    }
+    const [, lightPositionSyncError] = this.syncLightPositionControlsFromState();
+    if (lightPositionSyncError) {
+      return returnFailure(lightPositionSyncError.code, lightPositionSyncError.message, lightPositionSyncError.details);
+    }
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples(false);
+  }
+
+  updateSelectedPhysicsFromControls() {
+    const selectedObject = this.selectionRenderer.selectedObject;
+    if (!isPhysicsSupportedSceneObject(selectedObject) || selectedObject.isLocked) {
+      return returnSuccess(undefined);
+    }
+
+    const documentObject = this.canvasElement.ownerDocument;
+    const physicsEnabledInput = readOptionalElement(documentObject, 'selected-physics-enabled');
+    const physicsBodyTypeSelect = readOptionalElement(documentObject, 'selected-physics-body-type');
+    const physicsFrictionInput = readOptionalElement(documentObject, 'selected-physics-friction');
+    const physicsRestitutionInput = readOptionalElement(documentObject, 'selected-physics-restitution');
+    if (
+      !(physicsEnabledInput instanceof HTMLInputElement) ||
+      !(physicsBodyTypeSelect instanceof HTMLSelectElement) ||
+      !(physicsFrictionInput instanceof HTMLInputElement) ||
+      !(physicsRestitutionInput instanceof HTMLInputElement)
+    ) {
+      return returnFailure('missing-physics-controls', 'Selected item physics controls are not available.');
+    }
+
+    const [nextBodyType, bodyTypeError] = parsePhysicsBodyType(
+      physicsBodyTypeSelect.value,
+      getDefaultPhysicsBodyType(selectedObject)
+    );
+    if (bodyTypeError) {
+      return returnFailure(bodyTypeError.code, bodyTypeError.message, bodyTypeError.details);
+    }
+    const [nextFriction, frictionError] = parseBoundedNumber(
+      physicsFrictionInput.value,
+      getDefaultPhysicsFriction(selectedObject),
+      MIN_PHYSICS_SURFACE_COEFFICIENT,
+      MAX_PHYSICS_SURFACE_COEFFICIENT
+    );
+    if (frictionError) {
+      return returnFailure(frictionError.code, frictionError.message, frictionError.details);
+    }
+    const [nextRestitution, restitutionError] = parseBoundedNumber(
+      physicsRestitutionInput.value,
+      getDefaultPhysicsRestitution(selectedObject),
+      MIN_PHYSICS_SURFACE_COEFFICIENT,
+      MAX_PHYSICS_SURFACE_COEFFICIENT
+    );
+    if (restitutionError) {
+      return returnFailure(restitutionError.code, restitutionError.message, restitutionError.details);
+    }
+
+    const nextIsEnabled = physicsEnabledInput.checked;
+    const previousIsEnabled = selectedObject.isPhysicsEnabled !== false;
+    const previousBodyType = readSceneObjectPhysicsBodyType(selectedObject);
+    const previousFriction = readSceneObjectPhysicsFriction(selectedObject);
+    const previousRestitution = readSceneObjectPhysicsRestitution(selectedObject);
+    const physicsCollideWithObjectsInput = readOptionalElement(documentObject, 'selected-physics-collide-with-objects');
+    const nextCollideWithObjects = physicsCollideWithObjectsInput instanceof HTMLInputElement
+      ? physicsCollideWithObjectsInput.checked
+      : selectedObject.collideWithObjects !== false;
+    const previousCollideWithObjects = selectedObject.collideWithObjects !== false;
+    selectedObject.isPhysicsEnabled = nextIsEnabled;
+    selectedObject.physicsBodyType = nextBodyType;
+    selectedObject.physicsFriction = nextFriction;
+    selectedObject.physicsRestitution = nextRestitution;
+    selectedObject.collideWithObjects = nextCollideWithObjects;
+
+    this.syncSelectedPhysicsControls(selectedObject);
+
+    if (
+      previousIsEnabled === nextIsEnabled &&
+      previousBodyType === nextBodyType &&
+      previousFriction === nextFriction &&
+      previousRestitution === nextRestitution &&
+      previousCollideWithObjects === nextCollideWithObjects
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    return this.physicsWorld.rebuildScene(this.sceneObjects, this.applicationState);
   }
 
   updateMaterialFromSelect() {
@@ -5200,7 +6989,12 @@ class UserInterfaceController {
 
     this.applicationState.material = nextMaterial;
     const selectedObject = this.selectionRenderer.selectedObject;
-    if (!selectedObject || selectedObject === this.lightObject || typeof selectedObject.setMaterial !== 'function') {
+    if (
+      !selectedObject ||
+      selectedObject === this.lightObject ||
+      selectedObject.isLocked ||
+      typeof selectedObject.setMaterial !== 'function'
+    ) {
       return returnSuccess(undefined);
     }
 
@@ -5231,6 +7025,11 @@ class UserInterfaceController {
   }
 
   updateEnvironmentFromSelect() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      this.environmentSelect.value = String(this.applicationState.environment);
+      return returnSuccess(undefined);
+    }
+
     const nextEnvironment = Number.parseInt(this.environmentSelect.value, 10);
     if (Number.isNaN(nextEnvironment)) {
       return returnFailure('invalid-environment', 'Selected environment is invalid.');
@@ -5260,6 +7059,14 @@ class UserInterfaceController {
   }
 
   updateLightBounceCountFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncIntegerControlFromState(
+        this.lightBounceInput,
+        this.lightBounceValueElement,
+        this.applicationState.lightBounceCount
+      );
+    }
+
     const [nextLightBounceCount, parseError] = parseBoundedInteger(
       this.lightBounceInput.value,
       DEFAULT_LIGHT_BOUNCE_COUNT,
@@ -5286,8 +7093,44 @@ class UserInterfaceController {
   }
 
   syncLightIntensityValue() {
+    this.lightIntensityInput.value = this.applicationState.lightIntensity.toFixed(2);
     this.lightIntensityValueElement.textContent = formatLightIntensityValue(this.applicationState.lightIntensity);
     return returnSuccess(undefined);
+  }
+
+  updateLightIntensityFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncLightIntensityValue();
+    }
+
+    const [nextLightIntensity, parseError] = parseBoundedNumber(
+      this.lightIntensityInput.value,
+      DEFAULT_LIGHT_INTENSITY,
+      MIN_LIGHT_INTENSITY,
+      MAX_LIGHT_INTENSITY
+    );
+    if (parseError) {
+      return returnFailure(parseError.code, parseError.message, parseError.details);
+    }
+
+    this.applicationState.isLightIntensityCycling = false;
+    const [, cycleButtonError] = updateLightIntensityCycleButton(
+      this.lightCycleButton,
+      this.applicationState.isLightIntensityCycling
+    );
+    if (cycleButtonError) {
+      return returnFailure(cycleButtonError.code, cycleButtonError.message, cycleButtonError.details);
+    }
+
+    this.lightIntensityInput.value = nextLightIntensity.toFixed(2);
+    this.lightIntensityValueElement.textContent = formatLightIntensityValue(nextLightIntensity);
+
+    if (this.applicationState.lightIntensity === nextLightIntensity) {
+      return returnSuccess(undefined);
+    }
+
+    this.applicationState.lightIntensity = nextLightIntensity;
+    return this.selectionRenderer.pathTracer.clearSamples();
   }
 
   updatePathTracingNumberControlFromInput(inputElement, valueElement, stateKey, fallbackValue, minValue, maxValue) {
@@ -5312,6 +7155,14 @@ class UserInterfaceController {
       if (uniformDirtyError) {
         return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
       }
+      const [, lightPositionSyncError] = this.syncLightPositionControlsFromState();
+      if (lightPositionSyncError) {
+        return returnFailure(lightPositionSyncError.code, lightPositionSyncError.message, lightPositionSyncError.details);
+      }
+      const [, readoutError] = this.syncSelectedItemReadout();
+      if (readoutError) {
+        return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+      }
     }
 
     const isFogEnabled = stateKey === 'fogDensity' && nextValue > 0.0001;
@@ -5327,6 +7178,15 @@ class UserInterfaceController {
   }
 
   updateDisplayNumberControlFromInput(inputElement, valueElement, stateKey, fallbackValue, minValue, maxValue) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncNumberControlFromState(
+        inputElement,
+        valueElement,
+        this.applicationState[stateKey],
+        formatColorAdjustmentValue
+      );
+    }
+
     const [nextValue, parseError] = parseBoundedNumber(inputElement.value, fallbackValue, minValue, maxValue);
     if (parseError) {
       return returnFailure(parseError.code, parseError.message, parseError.details);
@@ -5348,6 +7208,15 @@ class UserInterfaceController {
   }
 
   updateLightSizeFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncNumberControlFromState(
+        this.lightSizeInput,
+        this.lightSizeValueElement,
+        this.applicationState.lightSize,
+        formatColorAdjustmentValue
+      );
+    }
+
     return this.updatePathTracingNumberControlFromInput(
       this.lightSizeInput,
       this.lightSizeValueElement,
@@ -5359,6 +7228,15 @@ class UserInterfaceController {
   }
 
   updateFogDensityFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncNumberControlFromState(
+        this.fogDensityInput,
+        this.fogDensityValueElement,
+        this.applicationState.fogDensity,
+        formatColorAdjustmentValue
+      );
+    }
+
     return this.updatePathTracingNumberControlFromInput(
       this.fogDensityInput,
       this.fogDensityValueElement,
@@ -5370,6 +7248,15 @@ class UserInterfaceController {
   }
 
   updateSkyBrightnessFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncNumberControlFromState(
+        this.skyBrightnessInput,
+        this.skyBrightnessValueElement,
+        this.applicationState.skyBrightness,
+        formatColorAdjustmentValue
+      );
+    }
+
     return this.updatePathTracingNumberControlFromInput(
       this.skyBrightnessInput,
       this.skyBrightnessValueElement,
@@ -5381,6 +7268,15 @@ class UserInterfaceController {
   }
 
   updateDenoiserStrengthFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncNumberControlFromState(
+        this.denoiserStrengthInput,
+        this.denoiserStrengthValueElement,
+        this.applicationState.denoiserStrength,
+        formatColorAdjustmentValue
+      );
+    }
+
     return this.updateDisplayNumberControlFromInput(
       this.denoiserStrengthInput,
       this.denoiserStrengthValueElement,
@@ -5425,6 +7321,15 @@ class UserInterfaceController {
   }
 
   toggleLightIntensityCycle(toggleButton) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      this.applicationState.isLightIntensityCycling = false;
+      const [, benchmarkButtonError] = updateLightIntensityCycleButton(toggleButton, false);
+      if (benchmarkButtonError) {
+        return returnFailure(benchmarkButtonError.code, benchmarkButtonError.message, benchmarkButtonError.details);
+      }
+      return this.syncLightIntensityValue();
+    }
+
     this.applicationState.isLightIntensityCycling = !this.applicationState.isLightIntensityCycling;
     const [, buttonError] = updateLightIntensityCycleButton(
       toggleButton,
@@ -5474,6 +7379,14 @@ class UserInterfaceController {
   }
 
   updateRaysPerPixelFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncIntegerControlFromState(
+        this.raysPerPixelInput,
+        this.raysPerPixelValueElement,
+        this.applicationState.raysPerPixel
+      );
+    }
+
     const [nextRaysPerPixel, parseError] = parseBoundedInteger(
       this.raysPerPixelInput.value,
       DEFAULT_RAYS_PER_PIXEL,
@@ -5496,6 +7409,14 @@ class UserInterfaceController {
   }
 
   updateTemporalBlendFramesFromInput() {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncIntegerControlFromState(
+        this.temporalBlendFramesInput,
+        this.temporalBlendFramesValueElement,
+        this.applicationState.temporalBlendFrames
+      );
+    }
+
     const [nextTemporalBlendFrames, parseError] = parseBoundedInteger(
       this.temporalBlendFramesInput.value,
       DEFAULT_TEMPORAL_BLEND_FRAMES,
@@ -5517,14 +7438,31 @@ class UserInterfaceController {
     return this.selectionRenderer.pathTracer.clearDisplayHistory();
   }
 
-  updateCameraEffectControlFromInput(inputElement, valueElement, stateKey, fallbackValue, minValue, maxValue) {
+  updateCameraEffectControlFromInput(
+    inputElement,
+    valueElement,
+    stateKey,
+    fallbackValue,
+    minValue,
+    maxValue,
+    formatValue = formatCameraEffectValue
+  ) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncNumberControlFromState(
+        inputElement,
+        valueElement,
+        this.applicationState[stateKey],
+        formatValue
+      );
+    }
+
     const [nextValue, parseError] = parseBoundedNumber(inputElement.value, fallbackValue, minValue, maxValue);
     if (parseError) {
       return returnFailure(parseError.code, parseError.message, parseError.details);
     }
 
     inputElement.value = nextValue.toFixed(2);
-    valueElement.textContent = formatCameraEffectValue(nextValue);
+    valueElement.textContent = formatValue(nextValue);
 
     if (this.applicationState[stateKey] === nextValue) {
       return returnSuccess(undefined);
@@ -5532,6 +7470,18 @@ class UserInterfaceController {
 
     this.applicationState[stateKey] = nextValue;
     return this.selectionRenderer.pathTracer.clearSamples();
+  }
+
+  updateCameraFieldOfViewFromInput() {
+    return this.updateCameraEffectControlFromInput(
+      this.cameraFieldOfViewInput,
+      this.cameraFieldOfViewValueElement,
+      'cameraFieldOfViewDegrees',
+      DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES,
+      MIN_CAMERA_FIELD_OF_VIEW_DEGREES,
+      MAX_CAMERA_FIELD_OF_VIEW_DEGREES,
+      formatCameraFieldOfViewValue
+    );
   }
 
   updateCameraFocusDistanceFromInput() {
@@ -5569,6 +7519,7 @@ class UserInterfaceController {
 
   updateCameraEffectsFromInputs() {
     const updateActions = [
+      () => this.updateCameraFieldOfViewFromInput(),
       () => this.updateCameraFocusDistanceFromInput(),
       () => this.updateCameraApertureFromInput(),
       () => this.updateMotionBlurFromInput()
@@ -5582,6 +7533,147 @@ class UserInterfaceController {
     }
 
     return returnSuccess(undefined);
+  }
+
+  saveCameraShot(slotIndex) {
+    if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= this.applicationState.cameraShots.length) {
+      return returnFailure('invalid-camera-shot', 'Camera shot slot is not available.');
+    }
+
+    this.applicationState.cameraShots[slotIndex] = Object.freeze({
+      cameraAngleX: this.applicationState.cameraAngleX,
+      cameraAngleY: this.applicationState.cameraAngleY,
+      cameraDistance: this.applicationState.cameraDistance,
+      cameraFieldOfViewDegrees: this.applicationState.cameraFieldOfViewDegrees,
+      cameraFocusDistance: this.applicationState.cameraFocusDistance,
+      cameraAperture: this.applicationState.cameraAperture,
+      motionBlurStrength: this.applicationState.motionBlurStrength
+    });
+    return returnSuccess(undefined);
+  }
+
+  loadCameraShot(slotIndex) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncAllControlsFromState();
+    }
+
+    if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= this.applicationState.cameraShots.length) {
+      return returnFailure('invalid-camera-shot', 'Camera shot slot is not available.');
+    }
+
+    const cameraShot = this.applicationState.cameraShots[slotIndex];
+    if (!cameraShot) {
+      return returnSuccess(undefined);
+    }
+
+    this.applicationState.cameraAngleX = cameraShot.cameraAngleX;
+    this.applicationState.cameraAngleY = cameraShot.cameraAngleY;
+    this.applicationState.cameraDistance = cameraShot.cameraDistance;
+    this.applicationState.cameraFieldOfViewDegrees = cameraShot.cameraFieldOfViewDegrees;
+    this.applicationState.cameraFocusDistance = cameraShot.cameraFocusDistance;
+    this.applicationState.cameraAperture = cameraShot.cameraAperture;
+    this.applicationState.motionBlurStrength = cameraShot.motionBlurStrength;
+    const [, syncError] = this.syncAllControlsFromState();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples();
+  }
+
+  applyQualityPreset(presetName) {
+    const qualityPreset = QUALITY_PRESETS[presetName];
+    if (!qualityPreset) {
+      return returnFailure('invalid-quality-preset', 'Quality preset is not available.');
+    }
+
+    this.lightBounceInput.value = String(qualityPreset.lightBounceCount);
+    this.raysPerPixelInput.value = String(qualityPreset.raysPerPixel);
+    this.temporalBlendFramesInput.value = String(qualityPreset.temporalBlendFrames);
+    this.denoiserStrengthInput.value = qualityPreset.denoiserStrength.toFixed(2);
+
+    const updateActions = [
+      () => this.updateLightBounceCountFromInput(),
+      () => this.updateRaysPerPixelFromInput(),
+      () => this.updateTemporalBlendFramesFromInput(),
+      () => this.updateDenoiserStrengthFromInput()
+    ];
+
+    for (const updateAction of updateActions) {
+      const [, updateError] = updateAction();
+      if (updateError) {
+        return returnFailure(updateError.code, updateError.message, updateError.details);
+      }
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  loadBenchmarkScene(benchmarkSceneName) {
+    const benchmarkScene = benchmarkScenes[benchmarkSceneName];
+    if (!benchmarkScene) {
+      return returnFailure('invalid-benchmark-scene', 'Benchmark scene is not available.');
+    }
+
+    const [, cancelError] = this.cancelActivePointerInteraction();
+    if (cancelError) {
+      return returnFailure(cancelError.code, cancelError.message, cancelError.details);
+    }
+
+    const [, settingsError] = applyBenchmarkSceneSettingsToState(
+      this.applicationState,
+      benchmarkScene.metadata,
+      benchmarkSceneName
+    );
+    if (settingsError) {
+      return returnFailure(settingsError.code, settingsError.message, settingsError.details);
+    }
+
+    const [sceneObjects, sceneError] = benchmarkScene.factory(this.applicationState);
+    if (sceneError) {
+      return returnFailure(sceneError.code, sceneError.message, sceneError.details);
+    }
+
+    const [, sceneSetError] = this.setSceneObjects(lockBenchmarkSceneObjects(sceneObjects));
+    if (sceneSetError) {
+      return returnFailure(sceneSetError.code, sceneSetError.message, sceneSetError.details);
+    }
+
+    const [, syncError] = this.syncAllControlsFromState();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    const [, benchmarkError] = this.selectionRenderer.pathTracer.resetBenchmark();
+    if (benchmarkError) {
+      return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
+    }
+
+    const [, frameScheduleError] = scheduleAnimationFrame(this.applicationState);
+    if (frameScheduleError) {
+      return returnFailure(frameScheduleError.code, frameScheduleError.message, frameScheduleError.details);
+    }
+
+    return this.selectionRenderer.pathTracer.clearSamples();
+  }
+
+  startBenchmarkRunner() {
+    return this.benchmarkRunner.start(performance.now());
+  }
+
+  stopBenchmarkRunner() {
+    return this.benchmarkRunner.stop();
+  }
+
+  advanceBenchmarkRunner(currentTimeMilliseconds, benchmarkSnapshot) {
+    return this.benchmarkRunner.advance(currentTimeMilliseconds, benchmarkSnapshot);
+  }
+
+  copyBenchmarkResults() {
+    return this.benchmarkRunner.copyResults();
+  }
+
+  saveBenchmarkBaseline() {
+    return this.benchmarkRunner.saveBaseline();
   }
 
   syncFocusPickMode() {
@@ -5624,8 +7716,8 @@ class UserInterfaceController {
     writeEyeRayVector(
       rayDirection,
       this.inverseModelviewProjectionMatrix,
-      (xPosition / HALF_CANVAS_SIZE) - 1,
-      1 - (yPosition / HALF_CANVAS_SIZE),
+      (xPosition / CANVAS_RENDER_WIDTH) * 2 - 1,
+      1 - (yPosition / CANVAS_RENDER_HEIGHT) * 2,
       originPosition
     );
     let closestDistance = MAX_INTERSECTION_DISTANCE;
@@ -5669,6 +7761,15 @@ class UserInterfaceController {
     maxValue,
     formatValue
   ) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      return this.syncColorCorrectionControlFromState(
+        inputElement,
+        valueElement,
+        this.applicationState[stateKey],
+        formatValue
+      );
+    }
+
     const [nextValue, parseError] = parseBoundedNumber(inputElement.value, fallbackValue, minValue, maxValue);
     if (parseError) {
       return returnFailure(parseError.code, parseError.message, parseError.details);
@@ -5681,8 +7782,14 @@ class UserInterfaceController {
   }
 
   syncColorCorrectionControlFromState(inputElement, valueElement, value, formatValue) {
-    inputElement.value = value.toFixed(2);
-    valueElement.textContent = formatValue(value);
+    const nextInputValue = value.toFixed(2);
+    if (inputElement.value !== nextInputValue) {
+      inputElement.value = nextInputValue;
+    }
+    const [, textError] = writeElementTextIfChanged(valueElement, formatValue(value));
+    if (textError) {
+      return returnFailure(textError.code, textError.message, textError.details);
+    }
     return returnSuccess(undefined);
   }
 
@@ -5816,19 +7923,23 @@ class UserInterfaceController {
   }
 
   applyResolutionFromControls() {
-    const sourceValue = this.resolutionPresetSelect.value === 'custom'
-      ? this.customResolutionInput.value
-      : this.resolutionPresetSelect.value;
-    const nextCanvasSize = normalizeCanvasSize(sourceValue);
-    this.customResolutionInput.value = String(nextCanvasSize);
-    if (CANVAS_SIZE_PRESETS.includes(nextCanvasSize)) {
-      this.resolutionPresetSelect.value = String(nextCanvasSize);
-    } else {
-      this.resolutionPresetSelect.value = 'custom';
+    const [nextRenderResolution, renderResolutionError] = this.readRenderResolutionFromControls();
+    if (renderResolutionError) {
+      return returnFailure(renderResolutionError.code, renderResolutionError.message, renderResolutionError.details);
     }
 
-    if (nextCanvasSize === CANVAS_SIZE) {
-      return writeElementTextIfChanged(this.exportStatusElement, `${CANVAS_SIZE} x ${CANVAS_SIZE} square`);
+    const nextRenderScale = this.readRenderScaleFromInput();
+    const [, syncError] = this.syncResolutionControlValues(
+      nextRenderResolution.width,
+      nextRenderResolution.height,
+      nextRenderScale
+    );
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    if (nextRenderResolution.width === CANVAS_RENDER_WIDTH && nextRenderResolution.height === CANVAS_RENDER_HEIGHT) {
+      return writeElementTextIfChanged(this.exportStatusElement, `${CANVAS_RENDER_RESOLUTION_LABEL} render target`);
     }
 
     const windowObject = this.canvasElement.ownerDocument.defaultView;
@@ -5837,10 +7948,109 @@ class UserInterfaceController {
     }
 
     const nextUrl = new windowObject.URL(windowObject.location.href);
-    nextUrl.searchParams.set('resolution', String(nextCanvasSize));
-    writeElementTextIfChanged(this.exportStatusElement, `Reloading at ${nextCanvasSize} x ${nextCanvasSize}...`);
+    nextUrl.searchParams.delete('resolution');
+    nextUrl.searchParams.set('renderWidth', String(nextRenderResolution.width));
+    nextUrl.searchParams.set('renderHeight', String(nextRenderResolution.height));
+    nextUrl.searchParams.set('renderScale', nextRenderScale.toFixed(2));
+    writeElementTextIfChanged(
+      this.exportStatusElement,
+      `Reloading at ${formatRenderResolution(nextRenderResolution.width, nextRenderResolution.height)}...`
+    );
     windowObject.location.href = nextUrl.href;
     return returnSuccess(undefined);
+  }
+
+  readCanvasDisplaySize() {
+    const canvasBounds = this.canvasElement.getBoundingClientRect();
+    const displayWidth = canvasBounds.width > 0 ? canvasBounds.width : this.canvasElement.clientWidth;
+    const displayHeight = canvasBounds.height > 0 ? canvasBounds.height : this.canvasElement.clientHeight;
+    return {
+      width: displayWidth > 0 ? displayWidth : CANVAS_RENDER_WIDTH,
+      height: displayHeight > 0 ? displayHeight : CANVAS_RENDER_HEIGHT
+    };
+  }
+
+  readRenderScaleFromInput() {
+    return normalizeRenderScale(this.renderScaleInput.value);
+  }
+
+  readRenderResolutionFromControls() {
+    if (this.resolutionPresetSelect.value !== 'custom') {
+      const presetSize = normalizeCanvasSize(this.resolutionPresetSelect.value);
+      return returnSuccess({ width: presetSize, height: presetSize });
+    }
+
+    return returnSuccess({
+      width: normalizeCustomCanvasDimension(this.customRenderWidthInput.value, CANVAS_RENDER_WIDTH),
+      height: normalizeCustomCanvasDimension(this.customRenderHeightInput.value, CANVAS_RENDER_HEIGHT)
+    });
+  }
+
+  readScaledRenderResolution(renderScale) {
+    return deriveRenderResolutionForScale(renderScale, this.readCanvasDisplaySize());
+  }
+
+  syncResolutionControlValues(renderWidth, renderHeight, renderScale) {
+    const nextRenderScale = normalizeRenderScale(renderScale);
+    const nextRenderScaleValue = nextRenderScale.toFixed(2);
+    if (this.renderScaleInput.value !== nextRenderScaleValue) {
+      this.renderScaleInput.value = nextRenderScaleValue;
+    }
+    this.customRenderWidthInput.value = String(renderWidth);
+    this.customRenderHeightInput.value = String(renderHeight);
+    this.resolutionPresetSelect.value = renderWidth === renderHeight && CANVAS_SIZE_PRESETS.includes(renderWidth)
+      ? String(renderWidth)
+      : 'custom';
+
+    const renderResolutionLabel = formatRenderResolution(renderWidth, renderHeight);
+    const displaySize = this.readCanvasDisplaySize();
+    const displayResolutionLabel = formatRenderResolution(Math.round(displaySize.width), Math.round(displaySize.height));
+
+    const [, scaleValueError] = writeElementTextIfChanged(
+      this.renderScaleValueElement,
+      formatRenderScaleValue(nextRenderScale)
+    );
+    if (scaleValueError) {
+      return returnFailure(scaleValueError.code, scaleValueError.message, scaleValueError.details);
+    }
+
+    const [, scaleResolutionError] = writeElementTextIfChanged(
+      this.renderScaleResolutionElement,
+      `${renderResolutionLabel} render target`
+    );
+    if (scaleResolutionError) {
+      return returnFailure(scaleResolutionError.code, scaleResolutionError.message, scaleResolutionError.details);
+    }
+
+    const [, canvasResolutionError] = writeElementTextIfChanged(
+      this.uiCanvasResolutionElement,
+      `Canvas fit: ${displayResolutionLabel} CSS px`
+    );
+    if (canvasResolutionError) {
+      return returnFailure(canvasResolutionError.code, canvasResolutionError.message, canvasResolutionError.details);
+    }
+
+    return writeElementTextIfChanged(this.exportStatusElement, `${renderResolutionLabel} render target`);
+  }
+
+  updateRenderScalePreviewFromInput() {
+    const renderScale = this.readRenderScaleFromInput();
+    const renderResolution = this.readScaledRenderResolution(renderScale);
+    this.resolutionPresetSelect.value = 'custom';
+    return this.syncResolutionControlValues(renderResolution.width, renderResolution.height, renderScale);
+  }
+
+  updateCustomRenderResolutionPreview() {
+    const renderWidth = normalizeCustomCanvasDimension(this.customRenderWidthInput.value, CANVAS_RENDER_WIDTH);
+    const renderHeight = normalizeCustomCanvasDimension(this.customRenderHeightInput.value, CANVAS_RENDER_HEIGHT);
+    const renderScale = estimateRenderScaleForResolution(renderWidth, renderHeight, this.readCanvasDisplaySize());
+    return this.syncResolutionControlValues(renderWidth, renderHeight, renderScale);
+  }
+
+  applyResolutionPreset(renderSize) {
+    const nextCanvasSize = normalizeCanvasSize(renderSize);
+    const renderScale = estimateRenderScaleForResolution(nextCanvasSize, nextCanvasSize, this.readCanvasDisplaySize());
+    return this.syncResolutionControlValues(nextCanvasSize, nextCanvasSize, renderScale);
   }
 
   saveCanvasBitmap() {
@@ -5851,6 +8061,11 @@ class UserInterfaceController {
     }
 
     writeElementTextIfChanged(this.exportStatusElement, 'Saving PNG...');
+    const [, cleanRenderError] = this.selectionRenderer.render(this.applicationState, false);
+    if (cleanRenderError) {
+      return returnFailure(cleanRenderError.code, cleanRenderError.message, cleanRenderError.details);
+    }
+
     this.canvasElement.toBlob((blob) => {
       if (!blob) {
         writeElementTextIfChanged(this.exportStatusElement, 'PNG export failed.');
@@ -5859,30 +8074,125 @@ class UserInterfaceController {
       const downloadLink = documentObject.createElement('a');
       const objectUrl = windowObject.URL.createObjectURL(blob);
       downloadLink.href = objectUrl;
-      downloadLink.download = `pathtracer-${CANVAS_SIZE}x${CANVAS_SIZE}.png`;
+      downloadLink.download = `pathtracer-${CANVAS_RENDER_WIDTH}x${CANVAS_RENDER_HEIGHT}.png`;
       documentObject.body.appendChild(downloadLink);
       downloadLink.click();
       downloadLink.remove();
       windowObject.URL.revokeObjectURL(objectUrl);
-      writeElementTextIfChanged(this.exportStatusElement, `Saved ${CANVAS_SIZE} x ${CANVAS_SIZE} PNG`);
+      const [, outlineRestoreError] = this.selectionRenderer.render(this.applicationState, true);
+      if (outlineRestoreError) {
+        writeElementTextIfChanged(this.exportStatusElement, 'Saved PNG; selection redraw failed.');
+        return;
+      }
+      writeElementTextIfChanged(this.exportStatusElement, `Saved ${CANVAS_RENDER_RESOLUTION_LABEL} PNG`);
     }, 'image/png');
 
     return returnSuccess(undefined);
   }
 
+  getActionToggleButtons(actionName) {
+    const cachedToggleButtons = this.actionToggleButtonCache.get(actionName);
+    if (cachedToggleButtons) {
+      return cachedToggleButtons;
+    }
+
+    const toggleButtons = [];
+    const documentObject = this.canvasElement.ownerDocument;
+    for (const toggleButton of documentObject.querySelectorAll(`button[data-action="${actionName}"]`)) {
+      if (toggleButton instanceof HTMLButtonElement) {
+        toggleButtons.push(toggleButton);
+      }
+    }
+    this.actionToggleButtonCache.set(actionName, toggleButtons);
+    return toggleButtons;
+  }
+
   syncFullscreenCanvasButton() {
     const documentObject = this.canvasElement.ownerDocument;
-    const isCanvasFullscreen = documentObject.fullscreenElement === this.canvasElement;
-    this.fullscreenCanvasButton.setAttribute('aria-pressed', isCanvasFullscreen ? 'true' : 'false');
+    const fullscreenElement = documentObject.fullscreenElement;
+    const isManagedFullscreen = fullscreenElement === this.canvasElement || fullscreenElement === this.appShellElement;
+    const buttonLabel = isManagedFullscreen ? 'Exit Fullscreen' : 'Fullscreen';
+    const ariaLabel = isManagedFullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
+    const fullscreenButtons = this.getActionToggleButtons('toggle-canvas-fullscreen');
+
+    for (const fullscreenButton of fullscreenButtons) {
+      fullscreenButton.setAttribute('aria-pressed', isManagedFullscreen ? 'true' : 'false');
+      fullscreenButton.setAttribute('aria-label', ariaLabel);
+      fullscreenButton.title = buttonLabel;
+      if (fullscreenButton.classList.contains('menu-quick-action')) {
+        fullscreenButton.dataset.tooltip = buttonLabel;
+        continue;
+      }
+
+      const labelElement = fullscreenButton.querySelector('[data-fullscreen-label]');
+      if (labelElement) {
+        labelElement.textContent = buttonLabel;
+      } else {
+        fullscreenButton.textContent = buttonLabel;
+      }
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  syncFullscreenPanelsButton() {
+    const stateLabel = this.shouldShowPanelsInFullscreen ? 'On' : 'Off';
+    const tooltipLabel = this.shouldShowPanelsInFullscreen
+      ? 'Panels show in fullscreen'
+      : 'Canvas-only fullscreen';
+    const fullscreenPanelButtons = this.getActionToggleButtons('toggle-fullscreen-panels');
+
+    for (const fullscreenPanelButton of fullscreenPanelButtons) {
+      fullscreenPanelButton.setAttribute('aria-pressed', this.shouldShowPanelsInFullscreen ? 'true' : 'false');
+      fullscreenPanelButton.setAttribute('aria-label', tooltipLabel);
+      fullscreenPanelButton.title = tooltipLabel;
+      if (fullscreenPanelButton.classList.contains('menu-quick-action')) {
+        fullscreenPanelButton.dataset.tooltip = tooltipLabel;
+        continue;
+      }
+
+      const shortcutElement = fullscreenPanelButton.querySelector('.menu-shortcut');
+      if (shortcutElement) {
+        shortcutElement.textContent = stateLabel;
+      }
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  showBenchmarkForPanelFullscreen() {
+    const benchmarkElement = this.canvasElement.ownerDocument.getElementById('benchmark');
+    if (benchmarkElement instanceof HTMLElement) {
+      benchmarkElement.hidden = false;
+      benchmarkElement.classList.remove('is-collapsed');
+    }
+    return returnSuccess(undefined);
+  }
+
+  toggleFullscreenPanels() {
+    this.shouldShowPanelsInFullscreen = !this.shouldShowPanelsInFullscreen;
+    const [, syncError] = this.syncFullscreenPanelsButton();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    const documentObject = this.canvasElement.ownerDocument;
+    if (documentObject.fullscreenElement === this.canvasElement || documentObject.fullscreenElement === this.appShellElement) {
+      return writeElementTextIfChanged(
+        this.exportStatusElement,
+        'Exit and re-enter fullscreen to apply panel mode.'
+      );
+    }
+
     return writeElementTextIfChanged(
-      this.fullscreenCanvasButton,
-      isCanvasFullscreen ? 'Exit Fullscreen' : 'Fullscreen'
+      this.exportStatusElement,
+      this.shouldShowPanelsInFullscreen ? 'Fullscreen panels on.' : 'Canvas-only fullscreen.'
     );
   }
 
   toggleCanvasFullscreen() {
     const documentObject = this.canvasElement.ownerDocument;
-    if (documentObject.fullscreenElement === this.canvasElement) {
+    if (documentObject.fullscreenElement === this.canvasElement || documentObject.fullscreenElement === this.appShellElement) {
       if (typeof documentObject.exitFullscreen !== 'function') {
         return returnFailure('fullscreen-unavailable', 'Fullscreen exit is not available in this browser.');
       }
@@ -5899,11 +8209,19 @@ class UserInterfaceController {
     if (documentObject.fullscreenElement) {
       return returnFailure('fullscreen-active', 'Another element is already fullscreen.');
     }
-    if (typeof this.canvasElement.requestFullscreen !== 'function') {
-      return returnFailure('fullscreen-unavailable', 'Canvas fullscreen is not available in this browser.');
+    const fullscreenTargetElement = this.shouldShowPanelsInFullscreen ? this.appShellElement : this.canvasElement;
+    if (typeof fullscreenTargetElement.requestFullscreen !== 'function') {
+      return returnFailure('fullscreen-unavailable', 'Fullscreen is not available in this browser.');
     }
 
-    const fullscreenRequest = this.canvasElement.requestFullscreen();
+    if (this.shouldShowPanelsInFullscreen) {
+      const [, benchmarkError] = this.showBenchmarkForPanelFullscreen();
+      if (benchmarkError) {
+        return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
+      }
+    }
+
+    const fullscreenRequest = fullscreenTargetElement.requestFullscreen();
     if (fullscreenRequest && typeof fullscreenRequest.catch === 'function') {
       fullscreenRequest.catch(() => {
         writeElementTextIfChanged(this.exportStatusElement, 'Fullscreen failed.');
@@ -5913,22 +8231,31 @@ class UserInterfaceController {
   }
 
   syncIntegerControlFromState(inputElement, valueElement, value) {
-    inputElement.value = String(value);
-    valueElement.textContent = String(value);
+    const nextValue = String(value);
+    if (inputElement.value !== nextValue) {
+      inputElement.value = nextValue;
+    }
+    const [, textError] = writeElementTextIfChanged(valueElement, nextValue);
+    if (textError) {
+      return returnFailure(textError.code, textError.message, textError.details);
+    }
     return returnSuccess(undefined);
   }
 
   syncNumberControlFromState(inputElement, valueElement, value, formatValue) {
-    inputElement.value = value.toFixed(2);
-    valueElement.textContent = formatValue(value);
+    const nextInputValue = value.toFixed(2);
+    if (inputElement.value !== nextInputValue) {
+      inputElement.value = nextInputValue;
+    }
+    const [, textError] = writeElementTextIfChanged(valueElement, formatValue(value));
+    if (textError) {
+      return returnFailure(textError.code, textError.message, textError.details);
+    }
     return returnSuccess(undefined);
   }
 
   syncResolutionControlsFromState() {
-    const presetValue = CANVAS_SIZE_PRESETS.includes(CANVAS_SIZE) ? String(CANVAS_SIZE) : 'custom';
-    this.resolutionPresetSelect.value = presetValue;
-    this.customResolutionInput.value = String(CANVAS_SIZE);
-    return writeElementTextIfChanged(this.exportStatusElement, `${CANVAS_SIZE} x ${CANVAS_SIZE} square`);
+    return this.syncResolutionControlValues(CANVAS_RENDER_WIDTH, CANVAS_RENDER_HEIGHT, CANVAS_RENDER_SCALE);
   }
 
   syncAllControlsFromState() {
@@ -5947,6 +8274,8 @@ class UserInterfaceController {
         state.lightSize,
         formatColorAdjustmentValue
       ),
+      () => this.syncLightPositionControlsFromState(),
+      () => this.syncLightColorControlFromState(),
       () => this.syncNumberControlFromState(
         this.fogDensityInput,
         this.fogDensityValueElement,
@@ -5970,6 +8299,12 @@ class UserInterfaceController {
         this.denoiserStrengthValueElement,
         state.denoiserStrength,
         formatColorAdjustmentValue
+      ),
+      () => this.syncNumberControlFromState(
+        this.cameraFieldOfViewInput,
+        this.cameraFieldOfViewValueElement,
+        state.cameraFieldOfViewDegrees,
+        formatCameraFieldOfViewValue
       ),
       () => this.syncNumberControlFromState(
         this.cameraFocusDistanceInput,
@@ -6039,18 +8374,23 @@ class UserInterfaceController {
       ),
       () => this.syncLightIntensityValue(),
       () => updateCameraAutoRotationButton(this.cameraPlaybackButton, state.isCameraAutoRotating),
+      () => this.syncActionToggleButtons('toggle-camera-playback', state.isCameraAutoRotating),
       () => updateFramePauseButton(this.framePauseButton, state.isFramePaused),
+      () => this.syncActionToggleButtons('toggle-frame-pause', state.isFramePaused),
       () => updateConvergencePauseButton(
         this.convergencePauseButton,
         state.isConvergencePauseEnabled,
         state.isConvergencePaused,
         state.convergenceSampleCount
       ),
+      () => this.syncActionToggleButtons('toggle-convergence-pause', state.isConvergencePauseEnabled),
       () => updateLightIntensityCycleButton(this.lightCycleButton, state.isLightIntensityCycling),
       () => this.syncFocusPickMode(),
+      () => this.syncRenderDebugViewButtons(),
       () => this.syncSelectedItemReadout(),
       () => this.syncResolutionControlsFromState(),
-      () => this.syncFullscreenCanvasButton()
+      () => this.syncFullscreenCanvasButton(),
+      () => this.syncFullscreenPanelsButton()
     ];
 
     for (const syncAction of syncActions) {
@@ -6070,6 +8410,7 @@ class UserInterfaceController {
     state.cameraDistance = INITIAL_CAMERA_DISTANCE;
     writeVec3(state.eyePosition, 0, 0, 0);
     writeVec3(state.lightPosition, 0.4, 0.5, -0.6);
+    writeVec3(state.lightColor, 1, 1, 1);
     state.nextObjectId = 0;
     state.material = MATERIAL.DIFFUSE;
     state.glossiness = 0.6;
@@ -6088,6 +8429,7 @@ class UserInterfaceController {
     state.colorContrast = DEFAULT_COLOR_CONTRAST;
     state.colorSaturation = DEFAULT_COLOR_SATURATION;
     state.colorGamma = DEFAULT_COLOR_GAMMA;
+    state.cameraFieldOfViewDegrees = DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES;
     state.cameraFocusDistance = DEFAULT_CAMERA_FOCUS_DISTANCE;
     state.cameraAperture = DEFAULT_CAMERA_APERTURE;
     state.motionBlurStrength = DEFAULT_MOTION_BLUR_STRENGTH;
@@ -6095,6 +8437,7 @@ class UserInterfaceController {
     state.bloomStrength = DEFAULT_BLOOM_STRENGTH;
     state.bloomThreshold = DEFAULT_BLOOM_THRESHOLD;
     state.glareStrength = DEFAULT_GLARE_STRENGTH;
+    state.renderDebugViewMode = RENDER_DEBUG_VIEW.BEAUTY;
     state.isRotatingCamera = false;
     state.isPickingFocus = false;
     state.isPointerDown = false;
@@ -6103,6 +8446,9 @@ class UserInterfaceController {
     state.convergenceSampleCount = CONVERGED_SAMPLE_COUNT;
     state.isCameraAutoRotating = true;
     state.cameraAutoRotationSpeed = CAMERA_AUTO_ROTATION_SPEED;
+    state.cameraShots = [null, null, null];
+    state.isBenchmarkModeActive = false;
+    state.activeBenchmarkSceneName = null;
     state.previousPointerX = 0;
     state.previousPointerY = 0;
     return returnSuccess(undefined);
@@ -6129,6 +8475,7 @@ class UserInterfaceController {
     this.previousCameraAngleX = Number.NaN;
     this.previousCameraAngleY = Number.NaN;
     this.previousCameraDistance = Number.NaN;
+    this.previousCameraFieldOfViewDegrees = Number.NaN;
 
     const [, syncError] = this.syncAllControlsFromState();
     if (syncError) {
@@ -6150,14 +8497,42 @@ class UserInterfaceController {
       return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
     }
 
-    return this.selectionRenderer.pathTracer.clearSamples();
+    const [, clearError] = this.selectionRenderer.pathTracer.clearSamples();
+    if (clearError) {
+      return returnFailure(clearError.code, clearError.message, clearError.details);
+    }
+
+    const [, benchmarkPanelError] = this.showBenchmarkForPanelFullscreen();
+    if (benchmarkPanelError) {
+      return returnFailure(benchmarkPanelError.code, benchmarkPanelError.message, benchmarkPanelError.details);
+    }
+
+    return scheduleAnimationFrame(this.applicationState);
   }
 
   toggleCameraAutoRotation(toggleButton) {
+    if (this.applicationState.isBenchmarkModeActive) {
+      this.applicationState.isCameraAutoRotating = true;
+      this.applicationState.cameraAutoRotationSpeed = BENCHMARK_CAMERA_AUTO_ROTATION_SPEED;
+      const [, benchmarkButtonError] = updateCameraAutoRotationButton(toggleButton, true);
+      if (benchmarkButtonError) {
+        return returnFailure(benchmarkButtonError.code, benchmarkButtonError.message, benchmarkButtonError.details);
+      }
+      const [, benchmarkToggleError] = this.syncActionToggleButtons('toggle-camera-playback', true);
+      if (benchmarkToggleError) {
+        return returnFailure(benchmarkToggleError.code, benchmarkToggleError.message, benchmarkToggleError.details);
+      }
+      return this.selectionRenderer.pathTracer.clearSamples();
+    }
+
     this.applicationState.isCameraAutoRotating = !this.applicationState.isCameraAutoRotating;
     const [, buttonError] = updateCameraAutoRotationButton(toggleButton, this.applicationState.isCameraAutoRotating);
     if (buttonError) {
       return returnFailure(buttonError.code, buttonError.message, buttonError.details);
+    }
+    const [, toggleError] = this.syncActionToggleButtons('toggle-camera-playback', this.applicationState.isCameraAutoRotating);
+    if (toggleError) {
+      return returnFailure(toggleError.code, toggleError.message, toggleError.details);
     }
     return this.selectionRenderer.pathTracer.clearSamples();
   }
@@ -6171,11 +8546,59 @@ class UserInterfaceController {
     return this.benchmarkDisplay.update(performance.now(), pathTracer.benchmarkSnapshot, true);
   }
 
+  syncActionToggleButtons(actionName, isPressed) {
+    const toggleButtons = this.getActionToggleButtons(actionName);
+    const ariaPressedValue = isPressed ? 'true' : 'false';
+    for (const toggleButton of toggleButtons) {
+      if (toggleButton.getAttribute('aria-pressed') !== ariaPressedValue) {
+        toggleButton.setAttribute('aria-pressed', ariaPressedValue);
+      }
+    }
+    return returnSuccess(undefined);
+  }
+
+  syncRenderDebugViewButtons() {
+    const documentObject = this.canvasElement.ownerDocument;
+    for (const debugViewButton of documentObject.querySelectorAll('button[data-debug-view]')) {
+      const [debugViewMode, debugViewError] = parseRenderDebugViewMode(debugViewButton.dataset.debugView);
+      if (debugViewError) {
+        continue;
+      }
+      debugViewButton.setAttribute(
+        'aria-pressed',
+        debugViewMode === normalizeRenderDebugViewMode(this.applicationState.renderDebugViewMode) ? 'true' : 'false'
+      );
+    }
+    return returnSuccess(undefined);
+  }
+
+  setRenderDebugView(rawDebugViewMode) {
+    const [debugViewMode, debugViewError] = parseRenderDebugViewMode(rawDebugViewMode);
+    if (debugViewError) {
+      return returnFailure(debugViewError.code, debugViewError.message, debugViewError.details);
+    }
+
+    if (this.applicationState.renderDebugViewMode === debugViewMode) {
+      return this.syncRenderDebugViewButtons();
+    }
+
+    this.applicationState.renderDebugViewMode = debugViewMode;
+    const [, syncError] = this.syncRenderDebugViewButtons();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples();
+  }
+
   toggleFramePause(toggleButton) {
     this.applicationState.isFramePaused = !this.applicationState.isFramePaused;
     const [, buttonError] = updateFramePauseButton(toggleButton, this.applicationState.isFramePaused);
     if (buttonError) {
       return returnFailure(buttonError.code, buttonError.message, buttonError.details);
+    }
+    const [, syncToggleError] = this.syncActionToggleButtons('toggle-frame-pause', this.applicationState.isFramePaused);
+    if (syncToggleError) {
+      return returnFailure(syncToggleError.code, syncToggleError.message, syncToggleError.details);
     }
 
     if (this.applicationState.isFramePaused) {
@@ -6206,6 +8629,13 @@ class UserInterfaceController {
     if (buttonError) {
       return returnFailure(buttonError.code, buttonError.message, buttonError.details);
     }
+    const [, syncToggleError] = this.syncActionToggleButtons(
+      'toggle-convergence-pause',
+      this.applicationState.isConvergencePauseEnabled
+    );
+    if (syncToggleError) {
+      return returnFailure(syncToggleError.code, syncToggleError.message, syncToggleError.details);
+    }
     if (this.applicationState.isFramePaused) {
       return this.refreshPausedBenchmarkDisplay('frame-paused', true);
     }
@@ -6224,7 +8654,7 @@ class UserInterfaceController {
     }
 
     const selectedObject = this.selectionRenderer.selectedObject;
-    if (selectedObject) {
+    if (selectedObject && !selectedObject.isHidden && !selectedObject.isLocked) {
       const [, resetError] = selectedObject.setTemporaryTranslation(ORIGIN_VECTOR);
       if (resetError) {
         this.isMovingSelection = false;
@@ -6246,8 +8676,8 @@ class UserInterfaceController {
     writeEyeRayVector(
       rayDirection,
       this.inverseModelviewProjectionMatrix,
-      (xPosition / HALF_CANVAS_SIZE) - 1,
-      1 - (yPosition / HALF_CANVAS_SIZE),
+      (xPosition / CANVAS_RENDER_WIDTH) * 2 - 1,
+      1 - (yPosition / CANVAS_RENDER_HEIGHT) * 2,
       originPosition
     );
 
@@ -6271,6 +8701,9 @@ class UserInterfaceController {
     let closestObject = null;
 
     for (const sceneObject of this.sceneObjects) {
+      if (sceneObject.isHidden || sceneObject.isLocked) {
+        continue;
+      }
       const [objectDistance, objectDistanceError] = sceneObject.intersectRay(originPosition, rayDirection);
       if (objectDistanceError) {
         return returnFailure(objectDistanceError.code, objectDistanceError.message, objectDistanceError.details);
@@ -6295,7 +8728,7 @@ class UserInterfaceController {
   }
 
   handleCanvasMove(xPosition, yPosition) {
-    if (!this.isMovingSelection || !this.selectionRenderer.selectedObject) {
+    if (!this.isMovingSelection || !this.selectionRenderer.selectedObject || this.selectionRenderer.selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
 
@@ -6323,7 +8756,7 @@ class UserInterfaceController {
   }
 
   handleCanvasRelease(xPosition, yPosition) {
-    if (!this.isMovingSelection || !this.selectionRenderer.selectedObject) {
+    if (!this.isMovingSelection || !this.selectionRenderer.selectedObject || this.selectionRenderer.selectedObject.isLocked) {
       this.isMovingSelection = false;
       return returnSuccess(undefined);
     }
@@ -6373,6 +8806,10 @@ class UserInterfaceController {
     }
 
     this.isMovingSelection = false;
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
     return returnSuccess(undefined);
   }
 
@@ -6382,8 +8819,8 @@ class UserInterfaceController {
     writeEyeRayVector(
       rayDirection,
       this.inverseModelviewProjectionMatrix,
-      (xPosition / HALF_CANVAS_SIZE) - 1,
-      1 - (yPosition / HALF_CANVAS_SIZE),
+      (xPosition / CANVAS_RENDER_WIDTH) * 2 - 1,
+      1 - (yPosition / CANVAS_RENDER_HEIGHT) * 2,
       originPosition
     );
     const denominator = dotVec3(this.movementNormal, rayDirection);
@@ -6428,6 +8865,7 @@ const createApplicationState = () => ({
   cameraDistance: INITIAL_CAMERA_DISTANCE,
   eyePosition: createVec3(0, 0, 0),
   lightPosition: createVec3(0.4, 0.5, -0.6),
+  lightColor: createVec3(1, 1, 1),
   nextObjectId: 0,
   material: MATERIAL.DIFFUSE,
   glossiness: 0.6,
@@ -6446,6 +8884,7 @@ const createApplicationState = () => ({
   colorContrast: DEFAULT_COLOR_CONTRAST,
   colorSaturation: DEFAULT_COLOR_SATURATION,
   colorGamma: DEFAULT_COLOR_GAMMA,
+  cameraFieldOfViewDegrees: DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES,
   cameraFocusDistance: DEFAULT_CAMERA_FOCUS_DISTANCE,
   cameraAperture: DEFAULT_CAMERA_APERTURE,
   motionBlurStrength: DEFAULT_MOTION_BLUR_STRENGTH,
@@ -6453,6 +8892,7 @@ const createApplicationState = () => ({
   bloomStrength: DEFAULT_BLOOM_STRENGTH,
   bloomThreshold: DEFAULT_BLOOM_THRESHOLD,
   glareStrength: DEFAULT_GLARE_STRENGTH,
+  renderDebugViewMode: RENDER_DEBUG_VIEW.BEAUTY,
   isRotatingCamera: false,
   isPickingFocus: false,
   isPointerDown: false,
@@ -6463,8 +8903,12 @@ const createApplicationState = () => ({
   convergenceSampleCount: CONVERGED_SAMPLE_COUNT,
   isCameraAutoRotating: true,
   cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
+  cameraShots: [null, null, null],
+  isBenchmarkModeActive: false,
+  activeBenchmarkSceneName: null,
   previousPointerX: 0,
   previousPointerY: 0,
+  isInitialFrameReady: false,
   animationFrameId: 0,
   animationFrameCallback: null
 });
@@ -7068,6 +9512,573 @@ const createAreaLightShowcaseSceneObjects = (applicationState) => returnSuccess(
   createPlaneObject(applicationState, 0.00, -0.98, 0.35, 0.60, 0.24, MATERIAL.PROCEDURAL)
 ]);
 
+const setSceneObjectDisplayName = (sceneObject, displayName) => {
+  sceneObject.displayName = displayName;
+  return sceneObject;
+};
+
+const createBenchmarkShaderGauntletSceneObjects = (applicationState) => {
+  const materialGrid = [
+    [MATERIAL.GGX_PBR, 'GGX PBR'],
+    [MATERIAL.SPECTRAL_GLASS, 'Spectral Glass'],
+    [MATERIAL.SUBSURFACE, 'Subsurface'],
+    [MATERIAL.CAUSTICS, 'Caustics'],
+    [MATERIAL.PROCEDURAL, 'Procedural'],
+    [MATERIAL.SDF_FRACTAL, 'SDF Fractal Material'],
+    [MATERIAL.VOLUMETRIC_SHAFTS, 'Volumetric Shafts'],
+    [MATERIAL.BOKEH, 'Bokeh'],
+    [MATERIAL.MOTION_BLUR_STRESS, 'Motion Blur Stress'],
+    [MATERIAL.FIRE_PLASMA, 'Fire Plasma'],
+    [MATERIAL.GLASS, 'Glass'],
+    [MATERIAL.MIRROR, 'Mirror']
+  ];
+  const sceneObjects = [
+    setSceneObjectDisplayName(
+      createPlaneObject(applicationState, 0, -0.985, -0.03, 0.92, 0.82, MATERIAL.DIFFUSE),
+      'Shader Gauntlet Floor'
+    )
+  ];
+  const columnPositions = [-0.63, -0.21, 0.21, 0.63];
+  const rowPositions = [-0.54, -0.12, 0.30];
+
+  for (let materialIndex = 0; materialIndex < materialGrid.length; materialIndex += 1) {
+    const columnIndex = materialIndex % columnPositions.length;
+    const rowIndex = Math.floor(materialIndex / columnPositions.length);
+    const [material, displayName] = materialGrid[materialIndex];
+    sceneObjects.push(setSceneObjectDisplayName(
+      createSphereObject(
+        applicationState,
+        columnPositions[columnIndex],
+        -0.875,
+        rowPositions[rowIndex],
+        0.105,
+        material
+      ),
+      displayName
+    ));
+  }
+
+  return returnSuccess(sceneObjects);
+};
+
+const createBenchmarkPhysicsChaosSceneObjects = (applicationState) => {
+  const sceneObjects = [
+    setSceneObjectDisplayName(
+      createCubeObject(applicationState, -0.78, -0.98, -0.78, 0.78, -0.90, 0.78, MATERIAL.DIFFUSE),
+      'Physics Bowl Floor'
+    ),
+    setSceneObjectDisplayName(
+      createCubeObject(applicationState, -0.90, -0.98, -0.74, -0.78, -0.32, 0.74, MATERIAL.DIFFUSE),
+      'Physics Bowl Left Wall'
+    ),
+    setSceneObjectDisplayName(
+      createCubeObject(applicationState, 0.78, -0.98, -0.74, 0.90, -0.32, 0.74, MATERIAL.DIFFUSE),
+      'Physics Bowl Right Wall'
+    ),
+    setSceneObjectDisplayName(
+      createCubeObject(applicationState, -0.74, -0.98, -0.90, 0.74, -0.32, -0.78, MATERIAL.DIFFUSE),
+      'Physics Bowl Back Wall'
+    ),
+    setSceneObjectDisplayName(
+      createCubeObject(applicationState, -0.74, -0.98, 0.78, 0.74, -0.32, 0.90, MATERIAL.DIFFUSE),
+      'Physics Bowl Front Wall'
+    )
+  ];
+
+  for (let sphereIndex = 0; sphereIndex < 20; sphereIndex += 1) {
+    const columnIndex = sphereIndex % 5;
+    const rowIndex = Math.floor(sphereIndex / 5);
+    const xPosition = -0.44 + columnIndex * 0.22 + (rowIndex % 2) * 0.04;
+    const yPosition = 0.38 + rowIndex * 0.13;
+    const zPosition = -0.36 + rowIndex * 0.22;
+    const sphereObject = createSphereObject(
+      applicationState,
+      xPosition,
+      yPosition,
+      zPosition,
+      0.062,
+      sphereIndex % 2 === 0 ? MATERIAL.MIRROR : MATERIAL.GLASS
+    );
+    sphereObject.physicsFriction = 0.08;
+    sphereObject.physicsRestitution = 0.92;
+    sceneObjects.push(setSceneObjectDisplayName(
+      sphereObject,
+      `Chaos Sphere ${sphereIndex + 1}`
+    ));
+  }
+
+  return returnSuccess(sceneObjects);
+};
+
+const createBenchmarkSdfComplexitySceneObjects = (applicationState) => returnSuccess([
+  setSceneObjectDisplayName(
+    createPlaneObject(applicationState, 0, -0.985, 0.02, 0.92, 0.72, MATERIAL.DIFFUSE),
+    'SDF Complexity Floor'
+  ),
+  setSceneObjectDisplayName(
+    createMandelbulbObject(applicationState, -0.57, -0.66, -0.14, 0.24, MATERIAL.PROCEDURAL),
+    'Procedural Mandelbulb'
+  ),
+  setSceneObjectDisplayName(
+    createSdfFractalObject(applicationState, -0.18, -0.66, 0.20, 0.24, MATERIAL.SDF_FRACTAL),
+    'SDF Fractal'
+  ),
+  setSceneObjectDisplayName(
+    createMetaballsObject(applicationState, 0.22, -0.67, -0.18, 0.20, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Metaballs Cluster'
+  ),
+  setSceneObjectDisplayName(
+    createCsgObject(applicationState, 0.60, -0.66, 0.16, 0.25, MATERIAL.GGX_PBR),
+    'CSG Shape'
+  )
+]);
+
+const createBenchmarkCausticPoolSceneObjects = (applicationState) => returnSuccess([
+  setSceneObjectDisplayName(
+    createAreaLightObject(
+      applicationState,
+      applicationState.lightPosition[0],
+      applicationState.lightPosition[1],
+      applicationState.lightPosition[2],
+      0.16,
+      0.014,
+      0.12
+    ),
+    'Benchmark Area Light'
+  ),
+  setSceneObjectDisplayName(
+    createPlaneObject(applicationState, 0, -0.965, 0.08, 0.86, 0.68, MATERIAL.DIFFUSE),
+    'Caustic Pool Floor'
+  ),
+  setSceneObjectDisplayName(
+    createEllipsoidObject(applicationState, 0, -0.36, -0.10, 0.32, 0.32, 0.32, MATERIAL.GLASS),
+    'Suspended Glass Sphere'
+  ),
+  setSceneObjectDisplayName(
+    createEllipsoidObject(applicationState, -0.46, -0.48, 0.12, 0.16, 0.16, 0.16, MATERIAL.SPECTRAL_GLASS),
+    'Left Spectral Glass Sphere'
+  ),
+  setSceneObjectDisplayName(
+    createEllipsoidObject(applicationState, 0.46, -0.48, 0.12, 0.16, 0.16, 0.16, MATERIAL.SPECTRAL_GLASS),
+    'Right Spectral Glass Sphere'
+  )
+]);
+
+const createBenchmarkMotionBlurStressSceneObjects = (applicationState) => {
+  const sceneObjects = [
+    setSceneObjectDisplayName(
+      createPlaneObject(applicationState, 0, -0.985, 0, 0.88, 0.88, MATERIAL.DIFFUSE),
+      'Motion Blur Floor'
+    ),
+    setSceneObjectDisplayName(
+      createSphereObject(applicationState, 0, -0.82, 0, 0.16, MATERIAL.BOKEH),
+      'Center Bokeh Sphere'
+    )
+  ];
+  const cubeHalfExtent = 0.105;
+
+  for (let cubeIndex = 0; cubeIndex < 8; cubeIndex += 1) {
+    const angle = cubeIndex * Math.PI * 0.25;
+    const xPosition = Math.cos(angle) * 0.56;
+    const zPosition = Math.sin(angle) * 0.56;
+    sceneObjects.push(setSceneObjectDisplayName(
+      createCubeObject(
+        applicationState,
+        xPosition - cubeHalfExtent,
+        -0.81,
+        zPosition - cubeHalfExtent,
+        xPosition + cubeHalfExtent,
+        -0.57,
+        zPosition + cubeHalfExtent,
+        MATERIAL.MOTION_BLUR_STRESS
+      ),
+      `Motion Cube ${cubeIndex + 1}`
+    ));
+  }
+
+  return returnSuccess(sceneObjects);
+};
+
+const createBenchmarkVolumetricFogSceneObjects = (applicationState) => returnSuccess([
+  setSceneObjectDisplayName(
+    createPlaneObject(applicationState, 0, -0.985, 0, 0.92, 0.92, MATERIAL.DIFFUSE),
+    'Volumetric Fog Floor'
+  ),
+  setSceneObjectDisplayName(
+    createCylinderObject(applicationState, -0.62, -0.55, -0.48, 0.08, 0.42, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Column 1'
+  ),
+  setSceneObjectDisplayName(
+    createCylinderObject(applicationState, -0.22, -0.52, -0.56, 0.07, 0.45, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Column 2'
+  ),
+  setSceneObjectDisplayName(
+    createCylinderObject(applicationState, 0.20, -0.57, -0.42, 0.09, 0.38, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Column 3'
+  ),
+  setSceneObjectDisplayName(
+    createCylinderObject(applicationState, 0.58, -0.50, -0.50, 0.075, 0.46, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Column 4'
+  ),
+  setSceneObjectDisplayName(
+    createSphereObject(applicationState, -0.48, -0.80, 0.12, 0.15, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Sphere 1'
+  ),
+  setSceneObjectDisplayName(
+    createSphereObject(applicationState, -0.12, -0.76, 0.36, 0.18, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Sphere 2'
+  ),
+  setSceneObjectDisplayName(
+    createSphereObject(applicationState, 0.28, -0.82, 0.18, 0.14, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Sphere 3'
+  ),
+  setSceneObjectDisplayName(
+    createSphereObject(applicationState, 0.62, -0.78, 0.48, 0.16, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Sphere 4'
+  ),
+  setSceneObjectDisplayName(
+    createTorusObject(applicationState, 0.02, -0.78, -0.02, 0.22, 0.055, MATERIAL.VOLUMETRIC_SHAFTS),
+    'Fog Torus'
+  )
+]);
+
+const lockBenchmarkSceneObjects = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    sceneObject.isLocked = true;
+  }
+  return sceneObjects;
+};
+
+const createBenchmarkStandardSceneObjects = (applicationState) => returnSuccess(lockBenchmarkSceneObjects([
+  setSceneObjectDisplayName(
+    createAreaLightObject(
+      applicationState,
+      applicationState.lightPosition[0],
+      applicationState.lightPosition[1],
+      applicationState.lightPosition[2],
+      0.24,
+      0.018,
+      0.20
+    ),
+    'Benchmark Area Light'
+  ),
+  setSceneObjectDisplayName(
+    createCubeObject(applicationState, -0.86, -0.98, -0.78, 0.86, -0.92, 0.78, MATERIAL.DIFFUSE),
+    'Benchmark Plinth'
+  ),
+  setSceneObjectDisplayName(
+    createCubeObject(applicationState, -0.74, -0.92, -0.58, -0.50, -0.50, -0.34, MATERIAL.MIRROR),
+    'Mirror Block'
+  ),
+  setSceneObjectDisplayName(
+    createRoundedBoxObject(applicationState, -0.28, -0.76, -0.38, 0.18, 0.16, 0.18, 0.04, MATERIAL.GGX_PBR),
+    'PBR Rounded Box'
+  ),
+  setSceneObjectDisplayName(
+    createEllipsoidObject(applicationState, 0.18, -0.74, -0.30, 0.18, 0.24, 0.14, MATERIAL.GLASS),
+    'Glass Ellipsoid'
+  ),
+  setSceneObjectDisplayName(
+    createTorusObject(applicationState, 0.58, -0.76, -0.34, 0.16, 0.045, MATERIAL.PROCEDURAL),
+    'Procedural Torus'
+  ),
+  setSceneObjectDisplayName(
+    createFrustumObject(applicationState, -0.46, -0.78, 0.28, 0.18, 0.08, 0.28, MATERIAL.SUBSURFACE),
+    'Subsurface Frustum'
+  ),
+  setSceneObjectDisplayName(
+    createCsgObject(applicationState, 0.04, -0.72, 0.30, 0.23, MATERIAL.CAUSTICS),
+    'Caustic CSG'
+  ),
+  setSceneObjectDisplayName(
+    createMandelbulbObject(applicationState, 0.52, -0.74, 0.28, 0.22, MATERIAL.SDF_FRACTAL),
+    'Fractal Stress'
+  )
+]));
+
+const benchmarkSceneRegistry = Object.freeze({
+  defaultBenchmarkScene: DEFAULT_BENCHMARK_SCENE_NAME,
+  scenes: Object.freeze({
+  standard: Object.freeze({
+    factory: createBenchmarkStandardSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Standard Benchmark',
+      targetBounces: 6,
+      targetRaysPerPixel: 12,
+      targetTemporalBlendFrames: DEFAULT_TEMPORAL_BLEND_FRAMES,
+      targetDenoiserStrength: DEFAULT_DENOISER_STRENGTH,
+      description: 'Static mixed-material scene for repeatable WebGL path tracing comparisons.',
+      cameraDistance: 2.55,
+      cameraAngleX: 0.14,
+      cameraAngleY: -0.38,
+      cameraAutoRotationSpeed: BENCHMARK_CAMERA_AUTO_ROTATION_SPEED,
+      lightIntensity: 0.58,
+      lightSize: 0.12,
+      lightPosition: Object.freeze([0.36, 0.58, -0.62])
+    })
+  }),
+  benchmarkShaderGauntlet: Object.freeze({
+    factory: createBenchmarkShaderGauntletSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Shader Gauntlet',
+      targetBounces: 8,
+      targetRaysPerPixel: 16,
+      description: 'A 3x4 material grid covering the most expensive current shader branches.',
+      cameraDistance: 2.85,
+      cameraAngleX: -0.08,
+      cameraAngleY: 0.35,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
+      lightIntensity: 0.62,
+      lightSize: 0.12,
+      lightPosition: Object.freeze([0.18, 0.64, -0.55])
+    })
+  }),
+  benchmarkPhysicsChaos: Object.freeze({
+    factory: createBenchmarkPhysicsChaosSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Physics Chaos',
+      targetBounces: 6,
+      targetRaysPerPixel: 8,
+      description: 'A fixed bowl with 20 mirror/glass spheres for transform invalidation and reflection load.',
+      cameraDistance: 2.9,
+      cameraAngleX: -0.12,
+      cameraAngleY: 0.10,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
+      lightIntensity: 0.70,
+      lightSize: 0.16,
+      lightPosition: Object.freeze([0.42, 0.64, -0.48])
+    })
+  }),
+  benchmarkSdfComplexity: Object.freeze({
+    factory: createBenchmarkSdfComplexitySceneObjects,
+    metadata: Object.freeze({
+      displayName: 'SDF Complexity',
+      targetBounces: 5,
+      targetRaysPerPixel: 12,
+      description: 'Mandelbulb, fractal, metaballs, and CSG primitives with expensive materials.',
+      cameraDistance: 2.75,
+      cameraAngleX: -0.10,
+      cameraAngleY: 0.28,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
+      lightIntensity: 0.58,
+      lightSize: 0.11,
+      lightPosition: Object.freeze([0.32, 0.58, -0.62])
+    })
+  }),
+  benchmarkCausticPool: Object.freeze({
+    factory: createBenchmarkCausticPoolSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Caustic Pool',
+      targetBounces: 10,
+      targetRaysPerPixel: 24,
+      description: 'Suspended glass and spectral-glass shapes over a diffuse receiver with a compact area light.',
+      cameraDistance: 2.6,
+      cameraAngleX: -0.06,
+      cameraAngleY: 0.42,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
+      lightIntensity: 0.92,
+      lightSize: 0.04,
+      lightPosition: Object.freeze([-0.24, 0.66, -0.44]),
+      cameraFocusDistance: 2.25,
+      cameraAperture: 0.02
+    })
+  }),
+  benchmarkMotionBlurStress: Object.freeze({
+    factory: createBenchmarkMotionBlurStressSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Motion Blur Stress',
+      targetBounces: 4,
+      targetRaysPerPixel: 32,
+      description: 'A ring of motion-blur material cubes with a central bokeh material sphere.',
+      cameraDistance: 2.95,
+      cameraAngleX: -0.08,
+      cameraAngleY: 0.20,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
+      lightIntensity: 0.60,
+      lightSize: 0.14,
+      lightPosition: Object.freeze([0.38, 0.60, -0.48]),
+      cameraFocusDistance: 2.5,
+      cameraAperture: 0.12,
+      motionBlurStrength: 0.65
+    })
+  }),
+  benchmarkVolumetricFog: Object.freeze({
+    factory: createBenchmarkVolumetricFogSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Volumetric Fog Flythrough',
+      targetBounces: 6,
+      targetRaysPerPixel: 10,
+      description: 'Fog, volumetric material spheres, and tall columns for volume-heavy rays.',
+      cameraDistance: 3.05,
+      cameraAngleX: -0.09,
+      cameraAngleY: 0.30,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.5,
+      environment: ENVIRONMENT.OPEN_SKY_STUDIO,
+      fogDensity: 0.8,
+      skyBrightness: 2.0,
+      lightIntensity: 0.68,
+      lightSize: 0.18,
+      lightPosition: Object.freeze([0.30, 0.62, -0.52])
+    })
+  })
+  })
+});
+
+const benchmarkScenes = benchmarkSceneRegistry.scenes;
+const defaultBenchmarkScene = benchmarkSceneRegistry.defaultBenchmarkScene;
+
+const resolveBenchmarkSceneName = (benchmarkSceneName) => (
+  benchmarkSceneName === 'default' ? defaultBenchmarkScene : benchmarkSceneName
+);
+
+const applyBenchmarkSceneSettingsToState = (applicationState, benchmarkSceneMetadata, benchmarkSceneName) => {
+  applicationState.isBenchmarkModeActive = true;
+  applicationState.activeBenchmarkSceneName = benchmarkSceneName;
+  applicationState.isLightIntensityCycling = false;
+  applicationState.lightIntensityCycleDirection = 1;
+  applicationState.isRotatingCamera = false;
+  applicationState.isFramePaused = false;
+  applicationState.didResumeFromFramePause = true;
+  applicationState.isConvergencePauseEnabled = false;
+  applicationState.isConvergencePaused = false;
+  applicationState.lightBounceCount = normalizeBoundedInteger(
+    benchmarkSceneMetadata.targetBounces,
+    DEFAULT_LIGHT_BOUNCE_COUNT,
+    MIN_LIGHT_BOUNCE_COUNT,
+    MAX_LIGHT_BOUNCE_COUNT
+  );
+  applicationState.raysPerPixel = normalizeBoundedInteger(
+    benchmarkSceneMetadata.targetRaysPerPixel,
+    DEFAULT_RAYS_PER_PIXEL,
+    MIN_RAYS_PER_PIXEL,
+    MAX_RAYS_PER_PIXEL
+  );
+  applicationState.temporalBlendFrames = normalizeBoundedInteger(
+    benchmarkSceneMetadata.targetTemporalBlendFrames,
+    DEFAULT_TEMPORAL_BLEND_FRAMES,
+    MIN_TEMPORAL_BLEND_FRAMES,
+    MAX_TEMPORAL_BLEND_FRAMES
+  );
+  applicationState.denoiserStrength = normalizeBoundedNumber(
+    benchmarkSceneMetadata.targetDenoiserStrength,
+    DEFAULT_DENOISER_STRENGTH,
+    MIN_DENOISER_STRENGTH,
+    MAX_DENOISER_STRENGTH
+  );
+  applicationState.isCameraAutoRotating = true;
+  applicationState.cameraAutoRotationSpeed = normalizeBoundedNumber(
+    benchmarkSceneMetadata.cameraAutoRotationSpeed,
+    CAMERA_AUTO_ROTATION_SPEED,
+    0,
+    CAMERA_AUTO_ROTATION_SPEED
+  );
+  applicationState.cameraDistance = normalizeBoundedNumber(
+    benchmarkSceneMetadata.cameraDistance,
+    INITIAL_CAMERA_DISTANCE,
+    1.5,
+    4
+  );
+  applicationState.cameraAngleX = normalizeBoundedNumber(benchmarkSceneMetadata.cameraAngleX, 0, -0.8, 0.8);
+  applicationState.cameraAngleY = normalizeBoundedNumber(
+    benchmarkSceneMetadata.cameraAngleY,
+    0,
+    -Math.PI,
+    Math.PI
+  );
+  applicationState.lightIntensity = normalizeBoundedNumber(
+    benchmarkSceneMetadata.lightIntensity,
+    DEFAULT_LIGHT_INTENSITY,
+    MIN_LIGHT_INTENSITY,
+    MAX_LIGHT_INTENSITY
+  );
+  applicationState.lightSize = normalizeBoundedNumber(
+    benchmarkSceneMetadata.lightSize,
+    DEFAULT_LIGHT_SIZE,
+    MIN_LIGHT_SIZE,
+    MAX_LIGHT_SIZE
+  );
+  applicationState.environment = Number.isFinite(benchmarkSceneMetadata.environment)
+    ? benchmarkSceneMetadata.environment
+    : ENVIRONMENT.YELLOW_BLUE_CORNELL_BOX;
+  applicationState.fogDensity = normalizeBoundedNumber(
+    benchmarkSceneMetadata.fogDensity,
+    DEFAULT_FOG_DENSITY,
+    MIN_FOG_DENSITY,
+    MAX_FOG_DENSITY
+  );
+  applicationState.skyBrightness = normalizeBoundedNumber(
+    benchmarkSceneMetadata.skyBrightness,
+    DEFAULT_SKY_BRIGHTNESS,
+    MIN_SKY_BRIGHTNESS,
+    MAX_SKY_BRIGHTNESS
+  );
+  applicationState.cameraFocusDistance = normalizeBoundedNumber(
+    benchmarkSceneMetadata.cameraFocusDistance,
+    DEFAULT_CAMERA_FOCUS_DISTANCE,
+    MIN_CAMERA_FOCUS_DISTANCE,
+    MAX_CAMERA_FOCUS_DISTANCE
+  );
+  applicationState.cameraAperture = normalizeBoundedNumber(
+    benchmarkSceneMetadata.cameraAperture,
+    DEFAULT_CAMERA_APERTURE,
+    MIN_CAMERA_APERTURE,
+    MAX_CAMERA_APERTURE
+  );
+  applicationState.motionBlurStrength = normalizeBoundedNumber(
+    benchmarkSceneMetadata.motionBlurStrength,
+    DEFAULT_MOTION_BLUR_STRENGTH,
+    MIN_MOTION_BLUR_STRENGTH,
+    MAX_MOTION_BLUR_STRENGTH
+  );
+  applicationState.cameraFieldOfViewDegrees = normalizeBoundedNumber(
+    benchmarkSceneMetadata.cameraFieldOfViewDegrees,
+    DEFAULT_CAMERA_FIELD_OF_VIEW_DEGREES,
+    MIN_CAMERA_FIELD_OF_VIEW_DEGREES,
+    MAX_CAMERA_FIELD_OF_VIEW_DEGREES
+  );
+  applicationState.isLightIntensityCycling = false;
+  applicationState.lightIntensityCycleDirection = 1;
+  applicationState.colorExposure = DEFAULT_COLOR_EXPOSURE;
+  applicationState.colorBrightness = DEFAULT_COLOR_BRIGHTNESS;
+  applicationState.colorContrast = DEFAULT_COLOR_CONTRAST;
+  applicationState.colorSaturation = DEFAULT_COLOR_SATURATION;
+  applicationState.colorGamma = DEFAULT_COLOR_GAMMA;
+  applicationState.bloomStrength = DEFAULT_BLOOM_STRENGTH;
+  applicationState.bloomThreshold = DEFAULT_BLOOM_THRESHOLD;
+  applicationState.glareStrength = DEFAULT_GLARE_STRENGTH;
+  applicationState.isFramePaused = false;
+  applicationState.didResumeFromFramePause = true;
+  applicationState.isConvergencePauseEnabled = false;
+  applicationState.isConvergencePaused = false;
+  applicationState.isRotatingCamera = false;
+  applicationState.isPickingFocus = false;
+  applicationState.renderDebugViewMode = RENDER_DEBUG_VIEW.BEAUTY;
+
+  if (Array.isArray(benchmarkSceneMetadata.lightPosition)) {
+    const lightPosition = clampLightPosition(
+      createVec3(
+        benchmarkSceneMetadata.lightPosition[0],
+        benchmarkSceneMetadata.lightPosition[1],
+        benchmarkSceneMetadata.lightPosition[2]
+      ),
+      applicationState.lightSize
+    );
+    writeVec3(applicationState.lightPosition, lightPosition[0], lightPosition[1], lightPosition[2]);
+  }
+  if (Array.isArray(benchmarkSceneMetadata.lightColor)) {
+    writeVec3(
+      applicationState.lightColor,
+      normalizeBoundedNumber(benchmarkSceneMetadata.lightColor[0], 1, 0, 1),
+      normalizeBoundedNumber(benchmarkSceneMetadata.lightColor[1], 1, 0, 1),
+      normalizeBoundedNumber(benchmarkSceneMetadata.lightColor[2], 1, 0, 1)
+    );
+  } else {
+    writeVec3(applicationState.lightColor, 1, 1, 1);
+  }
+
+  return returnSuccess(undefined);
+};
+
 const scenePresetFactories = Object.freeze({
   sphereColumn: createSphereColumnSceneObjects,
   spherePyramid: createSpherePyramidSceneObjects,
@@ -7095,7 +10106,39 @@ const readInitialPresetName = (documentObject) => {
   return scenePresetFactories[presetName] ? presetName : 'sphereColumn';
 };
 
+const readInitialBenchmarkSceneName = (documentObject) => {
+  const windowObject = documentObject.defaultView;
+  if (!windowObject || !windowObject.location || !windowObject.URLSearchParams) {
+    return '';
+  }
+
+  const urlParameters = new windowObject.URLSearchParams(windowObject.location.search);
+  if (!urlParameters.has('bench')) {
+    return '';
+  }
+  const benchmarkSceneName = resolveBenchmarkSceneName(urlParameters.get('bench') || 'default');
+  return benchmarkScenes[benchmarkSceneName] ? benchmarkSceneName : '';
+};
+
 const createInitialSceneObjects = (applicationState, documentObject) => {
+  const benchmarkSceneName = readInitialBenchmarkSceneName(documentObject);
+  if (benchmarkSceneName) {
+    const benchmarkScene = benchmarkScenes[benchmarkSceneName];
+    const [, settingsError] = applyBenchmarkSceneSettingsToState(
+      applicationState,
+      benchmarkScene.metadata,
+      benchmarkSceneName
+    );
+    if (settingsError) {
+      return returnFailure(settingsError.code, settingsError.message, settingsError.details);
+    }
+    const [sceneObjects, sceneError] = benchmarkScene.factory(applicationState);
+    if (sceneError) {
+      return returnFailure(sceneError.code, sceneError.message, sceneError.details);
+    }
+    return returnSuccess(lockBenchmarkSceneObjects(sceneObjects));
+  }
+
   const presetName = readInitialPresetName(documentObject);
   return scenePresetFactories[presetName](applicationState);
 };
@@ -7161,8 +10204,11 @@ const readRequiredCanvas = (documentObject, elementId) => {
 
 const applyCanvasSizeToDocument = (documentObject, canvasElement) => {
   documentObject.documentElement.style.setProperty('--canvas-render-size', `${CANVAS_SIZE}px`);
-  canvasElement.width = CANVAS_SIZE;
-  canvasElement.height = CANVAS_SIZE;
+  documentObject.documentElement.style.setProperty('--canvas-render-width', `${CANVAS_RENDER_WIDTH}px`);
+  documentObject.documentElement.style.setProperty('--canvas-render-height', `${CANVAS_RENDER_HEIGHT}px`);
+  documentObject.documentElement.style.setProperty('--canvas-aspect-ratio', String(CANVAS_ASPECT_RATIO));
+  canvasElement.width = CANVAS_RENDER_WIDTH;
+  canvasElement.height = CANVAS_RENDER_HEIGHT;
   return returnSuccess(undefined);
 };
 
@@ -7180,7 +10226,7 @@ const createWebGlContext = (canvasElement) => {
   }
 
   webGlContext.disable(webGlContext.DITHER);
-  webGlContext.viewport(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+  webGlContext.viewport(0, 0, CANVAS_RENDER_WIDTH, CANVAS_RENDER_HEIGHT);
 
   return returnSuccess(webGlContext);
 };
@@ -7254,6 +10300,77 @@ const updateGpuStatus = (documentObject, webGlContext) => {
   return returnSuccess(gpuInfo);
 };
 
+const updateRendererBackendStatus = (documentObject) => {
+  const backendSelectElement = readOptionalElement(documentObject, 'renderer-backend');
+  const backendStatusElement = readOptionalElement(documentObject, 'renderer-backend-status');
+  const windowObject = documentObject.defaultView;
+  const hasWebGpuSupport = Boolean(windowObject && windowObject.navigator && windowObject.navigator.gpu);
+
+  if (backendSelectElement instanceof HTMLSelectElement) {
+    backendSelectElement.value = 'webgl';
+    const webGpuOptionElement = backendSelectElement.querySelector('option[value="webgpu"]');
+    if (webGpuOptionElement instanceof HTMLOptionElement) {
+      webGpuOptionElement.disabled = true;
+      webGpuOptionElement.textContent = hasWebGpuSupport
+        ? 'WebGPU detected - planned'
+        : 'WebGPU unavailable';
+    }
+  }
+
+  if (backendStatusElement) {
+    backendStatusElement.textContent = hasWebGpuSupport
+      ? 'WebGL active. WebGPU is detected but this build has no WebGPU renderer yet.'
+      : 'WebGL active. WebGPU is not available in this browser.';
+  }
+
+  return returnSuccess(Object.freeze({
+    activeBackend: 'webgl',
+    hasWebGpuSupport
+  }));
+};
+
+const updateLoadingStatus = (documentObject, statusText) => {
+  const overlayElement = readOptionalElement(documentObject, 'loading-overlay');
+  const statusElement = readOptionalElement(documentObject, 'loading-status');
+  if (statusElement) {
+    statusElement.textContent = statusText;
+  }
+  if (overlayElement instanceof HTMLElement) {
+    overlayElement.hidden = false;
+    overlayElement.classList.remove('is-hidden');
+  }
+  return returnSuccess(undefined);
+};
+
+const hideLoadingOverlay = (documentObject) => {
+  const overlayElement = readOptionalElement(documentObject, 'loading-overlay');
+  if (!(overlayElement instanceof HTMLElement)) {
+    return returnSuccess(undefined);
+  }
+
+  overlayElement.classList.add('is-hidden');
+  const windowObject = documentObject.defaultView;
+  if (windowObject) {
+    windowObject.setTimeout(() => {
+      overlayElement.hidden = true;
+    }, 180);
+  } else {
+    overlayElement.hidden = true;
+  }
+  return returnSuccess(undefined);
+};
+
+const queueLoadingOverlayDismiss = (documentObject) => {
+  const windowObject = documentObject.defaultView;
+  if (!windowObject) {
+    return hideLoadingOverlay(documentObject);
+  }
+  windowObject.requestAnimationFrame(() => {
+    hideLoadingOverlay(documentObject);
+  });
+  return returnSuccess(undefined);
+};
+
 const displayError = (errorElement, errorValue) => {
   errorElement.style.zIndex = '1';
   errorElement.textContent = errorValue.details
@@ -7277,9 +10394,9 @@ const readCanvasPointerPosition = (canvasElement, event) => {
 
 const isPointerInsideCanvas = (pointerPosition) => (
   pointerPosition.x >= 0 &&
-  pointerPosition.x < CANVAS_SIZE &&
+  pointerPosition.x < CANVAS_RENDER_WIDTH &&
   pointerPosition.y >= 0 &&
-  pointerPosition.y < CANVAS_SIZE
+  pointerPosition.y < CANVAS_RENDER_HEIGHT
 );
 
 const isTextInputFocused = (documentObject) => {
@@ -7343,6 +10460,12 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
       if (focusPickError) {
         displayError(errorElement, focusPickError);
       }
+      event.preventDefault();
+      return returnSuccess(undefined);
+    }
+
+    if (applicationState.isBenchmarkModeActive) {
+      applicationState.isPointerDown = false;
       event.preventDefault();
       return returnSuccess(undefined);
     }
@@ -7457,6 +10580,7 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
     const isSystemShortcut = event.ctrlKey || event.metaKey;
     if (isSystemShortcut && !event.altKey && !event.shiftKey) {
       const panelShortcutSelectors = Object.freeze({
+        KeyN: 'button[data-action="reset-all"]',
         Digit1: 'button[data-panel-target="scene-panel"]',
         Digit2: 'button[data-panel-target="object-panel"]',
         Digit3: 'button[data-panel-target="render-panel"]',
@@ -7475,7 +10599,11 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
 
     if (!isSystemShortcut && !event.altKey && !event.shiftKey) {
       const commandShortcutSelectors = Object.freeze({
+        Digit1: 'button[data-quality-preset="draft"]',
+        Digit2: 'button[data-quality-preset="preview"]',
+        Digit3: 'button[data-quality-preset="final"]',
         KeyB: 'button[data-window-target="benchmark"]',
+        KeyC: '#camera-playback',
         KeyF: '#canvas-fullscreen',
         KeyI: 'button[data-window-target="controls"]',
         KeyK: '#convergence-pause',
@@ -7537,6 +10665,12 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
       return returnSuccess(undefined);
     }
 
+    if (applicationState.isBenchmarkModeActive) {
+      applicationState.isPointerDown = false;
+      event.preventDefault();
+      return returnSuccess(undefined);
+    }
+
     applicationState.isRotatingCamera = true;
     event.preventDefault();
     return returnSuccess(undefined);
@@ -7581,14 +10715,118 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
   return returnSuccess(undefined);
 };
 
+const INSPECTOR_SECTION_STORAGE_PREFIX = 'inspector-section-';
+
+const readInspectorSectionElement = (panelElement) => {
+  const sectionElement = panelElement.closest('[data-inspector-section]');
+  return sectionElement instanceof HTMLDetailsElement ? sectionElement : null;
+};
+
+const syncPanelButtonPressedStates = (documentObject) => {
+  for (const menuButton of documentObject.querySelectorAll('button[data-panel-target]')) {
+    const panelElement = documentObject.getElementById(menuButton.dataset.panelTarget);
+    const sectionElement = panelElement ? readInspectorSectionElement(panelElement) : null;
+    const isPressed = sectionElement ? sectionElement.open : Boolean(panelElement && !panelElement.hidden);
+    menuButton.setAttribute('aria-pressed', isPressed ? 'true' : 'false');
+  }
+  return returnSuccess(undefined);
+};
+
+const writeInspectorSectionState = (documentObject, sectionElement) => {
+  const sectionKey = sectionElement.dataset.inspectorSection;
+  const windowObject = documentObject.defaultView;
+  if (!sectionKey || !windowObject || !windowObject.localStorage) {
+    return returnSuccess(undefined);
+  }
+  try {
+    windowObject.localStorage.setItem(
+      `${INSPECTOR_SECTION_STORAGE_PREFIX}${sectionKey}`,
+      sectionElement.open ? 'true' : 'false'
+    );
+  } catch {
+    return returnSuccess(undefined);
+  }
+  return returnSuccess(undefined);
+};
+
+const attachInspectorAccordionHandlers = (documentObject, controlsElement) => {
+  const sectionElements = Array.from(controlsElement.querySelectorAll('details[data-inspector-section]'));
+  const windowObject = documentObject.defaultView;
+  for (const sectionElement of sectionElements) {
+    const sectionKey = sectionElement.dataset.inspectorSection;
+    if (sectionKey && sectionKey !== 'object' && windowObject && windowObject.localStorage) {
+      try {
+        const storedValue = windowObject.localStorage.getItem(`${INSPECTOR_SECTION_STORAGE_PREFIX}${sectionKey}`);
+        if (storedValue === 'true' || storedValue === 'false') {
+          sectionElement.open = storedValue === 'true';
+        }
+      } catch {
+        // Ignore storage failures; the accordion still works without persistence.
+      }
+    }
+
+    sectionElement.addEventListener('toggle', () => {
+      writeInspectorSectionState(documentObject, sectionElement);
+      syncPanelButtonPressedStates(documentObject);
+    });
+  }
+  return syncPanelButtonPressedStates(documentObject);
+};
+
+const syncObjectInspectorSection = (documentObject, selectedObject, displayName) => {
+  const sectionElement = documentObject.querySelector('details[data-inspector-section="object"]');
+  if (!(sectionElement instanceof HTMLDetailsElement)) {
+    return returnSuccess(undefined);
+  }
+  const labelElement = sectionElement.querySelector('[data-inspector-section-label]');
+  if (labelElement) {
+    const [, labelError] = writeElementTextIfChanged(
+      labelElement,
+      selectedObject ? displayName : 'Nothing selected'
+    );
+    if (labelError) {
+      return returnFailure(labelError.code, labelError.message, labelError.details);
+    }
+  }
+  sectionElement.open = Boolean(selectedObject);
+  return syncPanelButtonPressedStates(documentObject);
+};
+
+const switchControlPanel = (documentObject, controlsElement, targetPanelId) => {
+  const panelElements = Array.from(documentObject.querySelectorAll('[data-control-panel]'));
+  if (panelElements.length === 0) {
+    return returnFailure('missing-panel-navigation', 'Panel navigation controls are missing.');
+  }
+  const targetPanelElement = documentObject.getElementById(targetPanelId);
+  if (!targetPanelElement || !targetPanelElement.matches('[data-control-panel]')) {
+    return returnFailure('missing-control-panel', `Control panel "${targetPanelId}" is not available.`);
+  }
+
+  for (const panelElement of panelElements) {
+    panelElement.hidden = false;
+  }
+  const sectionElement = readInspectorSectionElement(targetPanelElement);
+  if (sectionElement) {
+    sectionElement.open = true;
+  }
+  const [, pressedError] = syncPanelButtonPressedStates(documentObject);
+  if (pressedError) {
+    return returnFailure(pressedError.code, pressedError.message, pressedError.details);
+  }
+  const scrollContainer = controlsElement.querySelector('.floating-window-body') || controlsElement;
+  if (sectionElement && sectionElement.offsetTop > 0) {
+    scrollContainer.scrollTop = Math.max(0, sectionElement.offsetTop - scrollContainer.offsetTop - 8);
+  }
+  return returnSuccess(undefined);
+};
+
 const attachPanelMenuHandlers = (documentObject, controlsElement) => {
   const [menuElement, menuError] = readRequiredElement(documentObject, 'app-menu');
   if (menuError) {
     return returnFailure(menuError.code, menuError.message, menuError.details);
   }
-  const panelElements = Array.from(documentObject.querySelectorAll('[data-control-panel]'));
-  const menuButtons = Array.from(menuElement.querySelectorAll('button[data-panel-target]'));
-  if (panelElements.length === 0 || menuButtons.length === 0) {
+
+  if (!menuElement.querySelector('button[data-panel-target]')) {
     return returnFailure('missing-panel-navigation', 'Panel navigation controls are missing.');
   }
 
@@ -7603,15 +10841,7 @@ const attachPanelMenuHandlers = (documentObject, controlsElement) => {
       return returnSuccess(undefined);
     }
 
-    for (const panelElement of panelElements) {
-      panelElement.hidden = panelElement.id !== targetPanelId;
-    }
-    for (const menuButton of menuButtons) {
-      menuButton.setAttribute('aria-pressed', menuButton.dataset.panelTarget === targetPanelId ? 'true' : 'false');
-    }
-    const scrollContainer = controlsElement.querySelector('.floating-window-body') || controlsElement;
-    scrollContainer.scrollTop = 0;
-    return returnSuccess(undefined);
+    return switchControlPanel(documentObject, controlsElement, targetPanelId);
   });
 
   return returnSuccess(undefined);
@@ -7930,11 +11160,59 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     }
 
     const sceneObjectIndex = targetButton.dataset.sceneObjectIndex;
+    const targetPanelId = targetButton.dataset.panelTarget;
     const actionName = targetButton.dataset.action;
     const presetName = targetButton.dataset.preset;
+    const benchmarkSceneName = targetButton.dataset.benchmarkScene;
+    const qualityPresetName = targetButton.dataset.qualityPreset;
+    const resolutionPresetSize = targetButton.dataset.resolutionPreset;
+    const debugViewModeName = targetButton.dataset.debugView;
+    const cameraShotSaveSlot = targetButton.dataset.cameraShotSave;
+    const cameraShotLoadSlot = targetButton.dataset.cameraShotLoad;
 
     if (sceneObjectIndex !== undefined) {
       return runAndDisplayError(errorElement, () => uiController.selectSceneObjectByIndex(sceneObjectIndex));
+    }
+    if (qualityPresetName) {
+      return runAndDisplayError(errorElement, () => uiController.applyQualityPreset(qualityPresetName));
+    }
+    if (resolutionPresetSize) {
+      return runAndDisplayError(errorElement, () => {
+        const [, presetError] = uiController.applyResolutionPreset(resolutionPresetSize);
+        if (presetError) {
+          return returnFailure(presetError.code, presetError.message, presetError.details);
+        }
+        return uiController.applyResolutionFromControls();
+      });
+    }
+    if (debugViewModeName !== undefined) {
+      return runAndDisplayError(errorElement, () => uiController.setRenderDebugView(debugViewModeName));
+    }
+    if (cameraShotSaveSlot !== undefined) {
+      return runAndDisplayError(
+        errorElement,
+        () => uiController.saveCameraShot(Number.parseInt(cameraShotSaveSlot, 10))
+      );
+    }
+    if (cameraShotLoadSlot !== undefined) {
+      return runAndDisplayError(
+        errorElement,
+        () => uiController.loadCameraShot(Number.parseInt(cameraShotLoadSlot, 10))
+      );
+    }
+    if (targetPanelId) {
+      const controlsElement = controlRootElement.ownerDocument.getElementById('controls');
+      if (!controlsElement) {
+        return displayError(errorElement, Object.freeze({
+          code: 'missing-controls-panel',
+          message: 'Inspector controls are not available.',
+          details: null
+        }));
+      }
+      return runAndDisplayError(
+        errorElement,
+        () => switchControlPanel(controlRootElement.ownerDocument, controlsElement, targetPanelId)
+      );
     }
 
     if (actionName === 'select-light') {
@@ -7942,6 +11220,18 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     }
     if (actionName === 'delete-selection') {
       return runAndDisplayError(errorElement, () => uiController.deleteSelection());
+    }
+    if (actionName === 'duplicate-selection') {
+      return runAndDisplayError(errorElement, () => uiController.duplicateSelection());
+    }
+    if (actionName === 'rename-selection') {
+      return runAndDisplayError(errorElement, () => uiController.renameSelection());
+    }
+    if (actionName === 'toggle-selection-hidden') {
+      return runAndDisplayError(errorElement, () => uiController.toggleSelectionHidden());
+    }
+    if (actionName === 'toggle-selection-locked') {
+      return runAndDisplayError(errorElement, () => uiController.toggleSelectionLocked());
     }
     if (actionName === 'add-sphere') {
       return runAndDisplayError(errorElement, () => uiController.addSphere());
@@ -7988,6 +11278,21 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     if (actionName === 'toggle-canvas-fullscreen') {
       return runAndDisplayError(errorElement, () => uiController.toggleCanvasFullscreen());
     }
+    if (actionName === 'toggle-fullscreen-panels') {
+      return runAndDisplayError(errorElement, () => uiController.toggleFullscreenPanels());
+    }
+    if (actionName === 'run-benchmark-sequence') {
+      return runAndDisplayError(errorElement, () => uiController.startBenchmarkRunner());
+    }
+    if (actionName === 'stop-benchmark-sequence') {
+      return runAndDisplayError(errorElement, () => uiController.stopBenchmarkRunner());
+    }
+    if (actionName === 'copy-benchmark-results') {
+      return runAndDisplayError(errorElement, () => uiController.copyBenchmarkResults());
+    }
+    if (actionName === 'save-benchmark-baseline') {
+      return runAndDisplayError(errorElement, () => uiController.saveBenchmarkBaseline());
+    }
     if (actionName === 'reset-all') {
       return runAndDisplayError(errorElement, () => uiController.resetAllToDefaults());
     }
@@ -8006,10 +11311,60 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
         return displayError(errorElement, presetError);
       }
 
+      uiController.applicationState.isBenchmarkModeActive = false;
+      uiController.applicationState.activeBenchmarkSceneName = null;
+      const [, stopRunnerError] = uiController.stopBenchmarkRunner();
+      if (stopRunnerError) {
+        return displayError(errorElement, stopRunnerError);
+      }
+      const documentObject = controlRootElement.ownerDocument;
+      const [, loadingError] = updateLoadingStatus(documentObject, 'Loading scene and compiling shaders...');
+      if (loadingError) {
+        return displayError(errorElement, loadingError);
+      }
+
       const [, sceneError] = uiController.setSceneObjects(sceneObjects);
       if (sceneError) {
         return displayError(errorElement, sceneError);
       }
+      return runAndDisplayError(errorElement, () => queueLoadingOverlayDismiss(documentObject));
+    }
+
+    if (benchmarkSceneName) {
+      const resolvedBenchmarkSceneName = resolveBenchmarkSceneName(benchmarkSceneName);
+      const benchmarkScene = benchmarkScenes[resolvedBenchmarkSceneName];
+      if (!benchmarkScene) {
+        return displayError(errorElement, Object.freeze({
+          code: 'unknown-benchmark-scene',
+          message: `Benchmark scene "${resolvedBenchmarkSceneName}" is not available.`,
+          details: null
+        }));
+      }
+
+      const documentObject = controlRootElement.ownerDocument;
+      const [, loadingError] = updateLoadingStatus(
+        documentObject,
+        `Loading benchmark scene: ${benchmarkScene.metadata.displayName}...`
+      );
+      if (loadingError) {
+        return displayError(errorElement, loadingError);
+      }
+
+      return runAndDisplayError(errorElement, () => {
+        const [, stopRunnerError] = uiController.stopBenchmarkRunner();
+        if (stopRunnerError) {
+          return returnFailure(stopRunnerError.code, stopRunnerError.message, stopRunnerError.details);
+        }
+        const [, benchmarkLoadError] = uiController.loadBenchmarkScene(resolvedBenchmarkSceneName);
+        if (benchmarkLoadError) {
+          return returnFailure(
+            benchmarkLoadError.code,
+            benchmarkLoadError.message,
+            benchmarkLoadError.details
+          );
+        }
+        return queueLoadingOverlayDismiss(documentObject);
+      });
     }
 
     return returnSuccess(undefined);
@@ -8028,22 +11383,57 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
   ));
 
   uiController.resolutionPresetSelect.addEventListener('change', () => {
-    if (uiController.resolutionPresetSelect.value !== 'custom') {
-      uiController.customResolutionInput.value = uiController.resolutionPresetSelect.value;
+    if (uiController.resolutionPresetSelect.value === 'custom') {
+      return runAndDisplayError(errorElement, () => uiController.updateCustomRenderResolutionPreview());
     }
-    return returnSuccess(undefined);
+    return runAndDisplayError(
+      errorElement,
+      () => uiController.applyResolutionPreset(uiController.resolutionPresetSelect.value)
+    );
   });
 
+  uiController.renderScaleInput.addEventListener('input', () => (
+    runAndDisplayError(errorElement, () => uiController.updateRenderScalePreviewFromInput())
+  ));
+
+  uiController.customRenderWidthInput.addEventListener('input', () => (
+    runAndDisplayError(errorElement, () => uiController.updateCustomRenderResolutionPreview())
+  ));
+
+  uiController.customRenderHeightInput.addEventListener('input', () => (
+    runAndDisplayError(errorElement, () => uiController.updateCustomRenderResolutionPreview())
+  ));
+
+  if (windowObject) {
+    windowObject.addEventListener('resize', () => (
+      runAndDisplayError(errorElement, () => uiController.updateRenderScalePreviewFromInput())
+    ));
+  }
+
   controlRootElement.ownerDocument.addEventListener('fullscreenchange', () => {
-    runAndDisplayError(errorElement, () => uiController.syncFullscreenCanvasButton());
+    runAndDisplayError(errorElement, () => {
+      const [, canvasButtonError] = uiController.syncFullscreenCanvasButton();
+      if (canvasButtonError) {
+        return returnFailure(canvasButtonError.code, canvasButtonError.message, canvasButtonError.details);
+      }
+      return uiController.syncFullscreenPanelsButton();
+    });
   });
 
   uiController.lightBounceInput.addEventListener('input', () => (
     runAndDisplayError(errorElement, () => uiController.updateLightBounceCountFromInput())
   ));
 
+  uiController.lightIntensityInput.addEventListener('input', () => (
+    runAndDisplayError(errorElement, () => uiController.updateLightIntensityFromInput())
+  ));
+
   uiController.lightSizeInput.addEventListener('input', () => (
     runAndDisplayError(errorElement, () => uiController.updateLightSizeFromInput())
+  ));
+
+  uiController.lightColorInput.addEventListener('input', () => (
+    runAndDisplayError(errorElement, () => uiController.updateLightColorFromInput())
   ));
 
   uiController.fogDensityInput.addEventListener('input', () => (
@@ -8064,6 +11454,10 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
 
   uiController.denoiserStrengthInput.addEventListener('input', () => (
     runAndDisplayError(errorElement, () => uiController.updateDenoiserStrengthFromInput())
+  ));
+
+  uiController.cameraFieldOfViewInput.addEventListener('input', () => (
+    runAndDisplayError(errorElement, () => uiController.updateCameraFieldOfViewFromInput())
   ));
 
   uiController.cameraFocusDistanceInput.addEventListener('input', () => (
@@ -8110,10 +11504,60 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     runAndDisplayError(errorElement, () => uiController.updateGlareStrengthFromInput())
   ));
 
+  const documentObject = controlRootElement.ownerDocument;
+  for (const lightPositionInputId of ['light-position-x', 'light-position-y', 'light-position-z']) {
+    const lightPositionInput = readOptionalElement(documentObject, lightPositionInputId);
+    if (lightPositionInput instanceof HTMLInputElement) {
+      lightPositionInput.addEventListener('change', () => (
+        runAndDisplayError(errorElement, () => uiController.updateLightPositionFromInputs())
+      ));
+    }
+  }
+
+  for (const transformInputId of ['selected-position-x', 'selected-position-y', 'selected-position-z']) {
+    const transformInput = readOptionalElement(documentObject, transformInputId);
+    if (transformInput instanceof HTMLInputElement) {
+      transformInput.addEventListener('change', () => (
+        runAndDisplayError(errorElement, () => uiController.updateSelectionTransformFromInputs())
+      ));
+    }
+  }
+
+  const physicsEnabledInput = readOptionalElement(documentObject, 'selected-physics-enabled');
+  if (physicsEnabledInput instanceof HTMLInputElement) {
+    physicsEnabledInput.addEventListener('change', () => (
+      runAndDisplayError(errorElement, () => uiController.updateSelectedPhysicsFromControls())
+    ));
+  }
+
+  const physicsBodyTypeSelect = readOptionalElement(documentObject, 'selected-physics-body-type');
+  if (physicsBodyTypeSelect instanceof HTMLSelectElement) {
+    physicsBodyTypeSelect.addEventListener('change', () => (
+      runAndDisplayError(errorElement, () => uiController.updateSelectedPhysicsFromControls())
+    ));
+  }
+
+  for (const physicsInputId of ['selected-physics-friction', 'selected-physics-restitution']) {
+    const physicsInput = readOptionalElement(documentObject, physicsInputId);
+    if (physicsInput instanceof HTMLInputElement) {
+      physicsInput.addEventListener('input', () => (
+        runAndDisplayError(errorElement, () => uiController.updateSelectedPhysicsFromControls())
+      ));
+    }
+  }
+
+  const physicsCollideWithObjectsInput = readOptionalElement(documentObject, 'selected-physics-collide-with-objects');
+  if (physicsCollideWithObjectsInput instanceof HTMLInputElement) {
+    physicsCollideWithObjectsInput.addEventListener('change', () => (
+      runAndDisplayError(errorElement, () => uiController.updateSelectedPhysicsFromControls())
+    ));
+  }
+
   return returnSuccess(undefined);
 };
 
 const createPathTracingApplication = async (documentObject) => {
+  updateLoadingStatus(documentObject, 'Initialising renderer...');
   const [canvasElement, canvasError] = readRequiredCanvas(documentObject, 'canvas');
   if (canvasError) {
     return returnFailure(canvasError.code, canvasError.message, canvasError.details);
@@ -8203,45 +11647,81 @@ const createPathTracingApplication = async (documentObject) => {
     );
   }
 
-  const [benchmarkRaysPerFrameElement, benchmarkRaysPerFrameError] = readRequiredElement(
+  const [benchmarkResolutionElement, benchmarkResolutionError] = readRequiredElement(
     documentObject,
-    'benchmark-rays-per-frame'
+    'benchmark-resolution'
   );
-  if (benchmarkRaysPerFrameError) {
-    return returnFailure(
-      benchmarkRaysPerFrameError.code,
-      benchmarkRaysPerFrameError.message,
-      benchmarkRaysPerFrameError.details
-    );
+  if (benchmarkResolutionError) {
+    return returnFailure(benchmarkResolutionError.code, benchmarkResolutionError.message, benchmarkResolutionError.details);
   }
 
-  const [benchmarkSamplesPerFrameElement, benchmarkSamplesPerFrameError] = readRequiredElement(
+  const [benchmarkBouncesElement, benchmarkBouncesError] = readRequiredElement(
     documentObject,
-    'benchmark-samples-per-frame'
+    'benchmark-bounces'
   );
-  if (benchmarkSamplesPerFrameError) {
-    return returnFailure(
-      benchmarkSamplesPerFrameError.code,
-      benchmarkSamplesPerFrameError.message,
-      benchmarkSamplesPerFrameError.details
-    );
+  if (benchmarkBouncesError) {
+    return returnFailure(benchmarkBouncesError.code, benchmarkBouncesError.message, benchmarkBouncesError.details);
   }
 
-  const [benchmarkFrameTimeElement, benchmarkFrameTimeError] = readRequiredElement(
+  const [benchmarkGpuRendererElement, benchmarkGpuRendererError] = readRequiredElement(
     documentObject,
-    'benchmark-frame-time'
+    'benchmark-gpu-renderer'
   );
-  if (benchmarkFrameTimeError) {
-    return returnFailure(
-      benchmarkFrameTimeError.code,
-      benchmarkFrameTimeError.message,
-      benchmarkFrameTimeError.details
-    );
+  if (benchmarkGpuRendererError) {
+    return returnFailure(benchmarkGpuRendererError.code, benchmarkGpuRendererError.message, benchmarkGpuRendererError.details);
   }
 
   const [benchmarkSourceElement, benchmarkSourceError] = readRequiredElement(documentObject, 'benchmark-source');
   if (benchmarkSourceError) {
     return returnFailure(benchmarkSourceError.code, benchmarkSourceError.message, benchmarkSourceError.details);
+  }
+
+  const [benchmarkRunnerStatusElement, benchmarkRunnerStatusError] = readRequiredElement(
+    documentObject,
+    'benchmark-runner-status'
+  );
+  if (benchmarkRunnerStatusError) {
+    return returnFailure(
+      benchmarkRunnerStatusError.code,
+      benchmarkRunnerStatusError.message,
+      benchmarkRunnerStatusError.details
+    );
+  }
+
+  const [benchmarkRunnerSummaryElement, benchmarkRunnerSummaryError] = readRequiredElement(
+    documentObject,
+    'benchmark-runner-summary'
+  );
+  if (benchmarkRunnerSummaryError) {
+    return returnFailure(
+      benchmarkRunnerSummaryError.code,
+      benchmarkRunnerSummaryError.message,
+      benchmarkRunnerSummaryError.details
+    );
+  }
+
+  const [benchmarkRunnerWarmupInput, benchmarkRunnerWarmupError] = readRequiredInput(
+    documentObject,
+    'benchmark-runner-warmup'
+  );
+  if (benchmarkRunnerWarmupError) {
+    return returnFailure(
+      benchmarkRunnerWarmupError.code,
+      benchmarkRunnerWarmupError.message,
+      benchmarkRunnerWarmupError.details
+    );
+  }
+
+  const [benchmarkRunnerMeasurementInput, benchmarkRunnerMeasurementError] = readRequiredInput(
+    documentObject,
+    'benchmark-runner-measurement'
+  );
+  if (benchmarkRunnerMeasurementError) {
+    return returnFailure(
+      benchmarkRunnerMeasurementError.code,
+      benchmarkRunnerMeasurementError.message,
+      benchmarkRunnerMeasurementError.details
+    );
   }
 
   const [glossinessContainer, glossinessContainerError] = readRequiredElement(documentObject, 'glossiness-factor');
@@ -8274,6 +11754,11 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(lightBounceValueError.code, lightBounceValueError.message, lightBounceValueError.details);
   }
 
+  const [lightIntensityInput, lightIntensityInputError] = readRequiredInput(documentObject, 'light-intensity');
+  if (lightIntensityInputError) {
+    return returnFailure(lightIntensityInputError.code, lightIntensityInputError.message, lightIntensityInputError.details);
+  }
+
   const [lightIntensityValueElement, lightIntensityValueError] = readRequiredElement(documentObject, 'light-intensity-value');
   if (lightIntensityValueError) {
     return returnFailure(lightIntensityValueError.code, lightIntensityValueError.message, lightIntensityValueError.details);
@@ -8287,6 +11772,11 @@ const createPathTracingApplication = async (documentObject) => {
   const [lightSizeValueElement, lightSizeValueError] = readRequiredElement(documentObject, 'light-size-value');
   if (lightSizeValueError) {
     return returnFailure(lightSizeValueError.code, lightSizeValueError.message, lightSizeValueError.details);
+  }
+
+  const [lightColorInput, lightColorInputError] = readRequiredInput(documentObject, 'light-color');
+  if (lightColorInputError) {
+    return returnFailure(lightColorInputError.code, lightColorInputError.message, lightColorInputError.details);
   }
 
   const [fogDensityInput, fogDensityInputError] = readRequiredInput(documentObject, 'fog-density');
@@ -8356,6 +11846,27 @@ const createPathTracingApplication = async (documentObject) => {
   const [focusPickButton, focusPickButtonError] = readRequiredButton(documentObject, 'focus-pick');
   if (focusPickButtonError) {
     return returnFailure(focusPickButtonError.code, focusPickButtonError.message, focusPickButtonError.details);
+  }
+
+  const [cameraFieldOfViewInput, cameraFieldOfViewInputError] = readRequiredInput(documentObject, 'camera-fov');
+  if (cameraFieldOfViewInputError) {
+    return returnFailure(
+      cameraFieldOfViewInputError.code,
+      cameraFieldOfViewInputError.message,
+      cameraFieldOfViewInputError.details
+    );
+  }
+
+  const [cameraFieldOfViewValueElement, cameraFieldOfViewValueError] = readRequiredElement(
+    documentObject,
+    'camera-fov-value'
+  );
+  if (cameraFieldOfViewValueError) {
+    return returnFailure(
+      cameraFieldOfViewValueError.code,
+      cameraFieldOfViewValueError.message,
+      cameraFieldOfViewValueError.details
+    );
   }
 
   const [cameraFocusDistanceInput, cameraFocusDistanceInputError] = readRequiredInput(
@@ -8527,9 +12038,34 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(resolutionPresetError.code, resolutionPresetError.message, resolutionPresetError.details);
   }
 
-  const [customResolutionInput, customResolutionError] = readRequiredInput(documentObject, 'custom-resolution');
-  if (customResolutionError) {
-    return returnFailure(customResolutionError.code, customResolutionError.message, customResolutionError.details);
+  const [renderScaleInput, renderScaleInputError] = readRequiredInput(documentObject, 'render-scale');
+  if (renderScaleInputError) {
+    return returnFailure(renderScaleInputError.code, renderScaleInputError.message, renderScaleInputError.details);
+  }
+
+  const [renderScaleValueElement, renderScaleValueError] = readRequiredElement(documentObject, 'render-scale-value');
+  if (renderScaleValueError) {
+    return returnFailure(renderScaleValueError.code, renderScaleValueError.message, renderScaleValueError.details);
+  }
+
+  const [renderScaleResolutionElement, renderScaleResolutionError] = readRequiredElement(documentObject, 'render-scale-resolution');
+  if (renderScaleResolutionError) {
+    return returnFailure(renderScaleResolutionError.code, renderScaleResolutionError.message, renderScaleResolutionError.details);
+  }
+
+  const [customRenderWidthInput, customRenderWidthError] = readRequiredInput(documentObject, 'custom-render-width');
+  if (customRenderWidthError) {
+    return returnFailure(customRenderWidthError.code, customRenderWidthError.message, customRenderWidthError.details);
+  }
+
+  const [customRenderHeightInput, customRenderHeightError] = readRequiredInput(documentObject, 'custom-render-height');
+  if (customRenderHeightError) {
+    return returnFailure(customRenderHeightError.code, customRenderHeightError.message, customRenderHeightError.details);
+  }
+
+  const [uiCanvasResolutionElement, uiCanvasResolutionError] = readRequiredElement(documentObject, 'ui-canvas-resolution');
+  if (uiCanvasResolutionError) {
+    return returnFailure(uiCanvasResolutionError.code, uiCanvasResolutionError.message, uiCanvasResolutionError.details);
   }
 
   const [exportStatusElement, exportStatusError] = readRequiredElement(documentObject, 'export-status');
@@ -8549,15 +12085,33 @@ const createPathTracingApplication = async (documentObject) => {
     );
   }
 
+  const [fullscreenPanelsButton, fullscreenPanelsButtonError] = readRequiredButton(
+    documentObject,
+    'fullscreen-panels-toggle'
+  );
+  if (fullscreenPanelsButtonError) {
+    return returnFailure(
+      fullscreenPanelsButtonError.code,
+      fullscreenPanelsButtonError.message,
+      fullscreenPanelsButtonError.details
+    );
+  }
+
+  updateLoadingStatus(documentObject, 'Creating WebGL context...');
   const [webGlContext, webGlContextError] = createWebGlContext(canvasElement);
   if (webGlContextError) {
     displayError(errorElement, webGlContextError);
     return returnFailure(webGlContextError.code, webGlContextError.message, webGlContextError.details);
   }
   const [gpuInfo] = updateGpuStatus(documentObject, webGlContext);
+  const [, backendStatusError] = updateRendererBackendStatus(documentObject);
+  if (backendStatusError) {
+    return returnFailure(backendStatusError.code, backendStatusError.message, backendStatusError.details);
+  }
 
   errorElement.textContent = 'Loading...';
 
+  updateLoadingStatus(documentObject, 'Initialising physics...');
   const [rapierRuntime, rapierError] = await createRapierRuntime();
   if (rapierError) {
     return returnFailure(rapierError.code, rapierError.message, rapierError.details);
@@ -8575,6 +12129,17 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(initialMaterialError.code, initialMaterialError.message, initialMaterialError.details);
   }
   applicationState.material = initialMaterial;
+  const [lightIntensity, lightIntensityError] = parseBoundedNumber(
+    lightIntensityInput.value,
+    DEFAULT_LIGHT_INTENSITY,
+    MIN_LIGHT_INTENSITY,
+    MAX_LIGHT_INTENSITY
+  );
+  if (lightIntensityError) {
+    return returnFailure(lightIntensityError.code, lightIntensityError.message, lightIntensityError.details);
+  }
+  applicationState.lightIntensity = lightIntensity;
+  lightIntensityInput.value = lightIntensity.toFixed(2);
   lightIntensityValueElement.textContent = formatLightIntensityValue(applicationState.lightIntensity);
   const [lightBounceCount, lightBounceCountError] = parseBoundedInteger(
     lightBounceInput.value,
@@ -8619,6 +12184,7 @@ const createPathTracingApplication = async (documentObject) => {
   temporalBlendFramesInput.value = String(temporalBlendFrames);
   temporalBlendFramesValueElement.textContent = String(temporalBlendFrames);
 
+  updateLoadingStatus(documentObject, 'Compiling shaders...');
   const [selectionRenderer, rendererError] = SelectionRenderer.create(webGlContext);
   if (rendererError) {
     return returnFailure(rendererError.code, rendererError.message, rendererError.details);
@@ -8629,10 +12195,12 @@ const createPathTracingApplication = async (documentObject) => {
     benchmarkRaysPerSecondElement,
     benchmarkRayBandwidthElement,
     benchmarkPerceptualFramesPerSecondElement,
-    benchmarkRaysPerFrameElement,
-    benchmarkSamplesPerFrameElement,
-    benchmarkFrameTimeElement,
-    benchmarkSourceElement
+    benchmarkResolutionElement,
+    benchmarkBouncesElement,
+    benchmarkGpuRendererElement,
+    benchmarkSourceElement,
+    applicationState,
+    gpuInfo.renderer || 'Renderer hidden by browser'
   );
 
   const uiController = new UserInterfaceController(
@@ -8640,6 +12208,7 @@ const createPathTracingApplication = async (documentObject) => {
     physicsWorld,
     applicationState,
     canvasElement,
+    appShellElement,
     cameraPlaybackButton,
     framePauseButton,
     convergencePauseButton,
@@ -8651,9 +12220,11 @@ const createPathTracingApplication = async (documentObject) => {
     glossinessInput,
     lightBounceInput,
     lightBounceValueElement,
+    lightIntensityInput,
     lightIntensityValueElement,
     lightSizeInput,
     lightSizeValueElement,
+    lightColorInput,
     fogDensityInput,
     fogDensityValueElement,
     skyBrightnessInput,
@@ -8674,6 +12245,8 @@ const createPathTracingApplication = async (documentObject) => {
     colorSaturationValueElement,
     colorGammaInput,
     colorGammaValueElement,
+    cameraFieldOfViewInput,
+    cameraFieldOfViewValueElement,
     cameraFocusDistanceInput,
     cameraFocusDistanceValueElement,
     cameraApertureInput,
@@ -8690,10 +12263,20 @@ const createPathTracingApplication = async (documentObject) => {
     sceneTreeListElement,
     sceneTreeCountElement,
     resolutionPresetSelect,
-    customResolutionInput,
+    renderScaleInput,
+    renderScaleValueElement,
+    renderScaleResolutionElement,
+    customRenderWidthInput,
+    customRenderHeightInput,
+    uiCanvasResolutionElement,
     exportStatusElement,
     fullscreenCanvasButton,
-    benchmarkDisplay
+    fullscreenPanelsButton,
+    benchmarkDisplay,
+    benchmarkRunnerStatusElement,
+    benchmarkRunnerSummaryElement,
+    benchmarkRunnerWarmupInput,
+    benchmarkRunnerMeasurementInput
   );
 
   const [, colorCorrectionError] = uiController.updateColorCorrectionFromInputs();
@@ -8706,6 +12289,7 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(cameraEffectsError.code, cameraEffectsError.message, cameraEffectsError.details);
   }
 
+  updateLoadingStatus(documentObject, 'Building scene...');
   const initialEffectUpdates = [
     () => uiController.updateLightSizeFromInput(),
     () => uiController.updateFogDensityFromInput(),
@@ -8758,6 +12342,11 @@ const createPathTracingApplication = async (documentObject) => {
   const [, controlHandlerError] = attachControlHandlers(appShellElement, errorElement, uiController);
   if (controlHandlerError) {
     return returnFailure(controlHandlerError.code, controlHandlerError.message, controlHandlerError.details);
+  }
+
+  const [, accordionError] = attachInspectorAccordionHandlers(documentObject, controlsElement);
+  if (accordionError) {
+    return returnFailure(accordionError.code, accordionError.message, accordionError.details);
   }
 
   const [, panelMenuError] = attachPanelMenuHandlers(documentObject, controlsElement);
@@ -8828,6 +12417,15 @@ const startAnimationLoop = (application) => {
       return returnFailure(renderError.code, renderError.message, renderError.details);
     }
 
+    if (!application.applicationState.isInitialFrameReady) {
+      application.applicationState.isInitialFrameReady = true;
+      const [, loadingDismissError] = hideLoadingOverlay(application.uiController.canvasElement.ownerDocument);
+      if (loadingDismissError) {
+        displayError(application.errorElement, loadingDismissError);
+        return returnFailure(loadingDismissError.code, loadingDismissError.message, loadingDismissError.details);
+      }
+    }
+
     const didTraceNewSamples = pathTracer.lastRenderedSampleCount > 0;
     if (didTraceNewSamples && pathTracer.benchmarkSnapshot.measurementSource !== 'gpu-timer') {
       const [, frameBenchmarkError] = pathTracer.writeBenchmarkSnapshot(
@@ -8855,6 +12453,15 @@ const startAnimationLoop = (application) => {
         displayError(application.errorElement, pausedBenchmarkError);
         return returnFailure(pausedBenchmarkError.code, pausedBenchmarkError.message, pausedBenchmarkError.details);
       }
+    }
+
+    const [, runnerError] = application.uiController.advanceBenchmarkRunner(
+      currentTime,
+      pathTracer.benchmarkSnapshot
+    );
+    if (runnerError) {
+      displayError(application.errorElement, runnerError);
+      return returnFailure(runnerError.code, runnerError.message, runnerError.details);
     }
 
     const [, benchmarkError] = application.benchmarkDisplay.update(

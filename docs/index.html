@@ -3,716 +3,17 @@
   <meta charset="utf8">
   <title>WebGL Path Tracing</title>
   <link rel="stylesheet" href="dist/app.css">
-  <style type="text/css"><!--
-
-:root {
-  --canvas-render-size: 512px;
-  --canvas-display-size: min(100vw, 100vh);
-  --menu-height: 34px;
-  --floating-panel-bg: rgba(48, 52, 58, 0.94);
-}
-
-body {
-  width: 100vw;
-  height: 100vh;
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
-  overflow: hidden;
-  background: #111418;
-  color: #16181c;
-  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-#app-shell {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.06), transparent 46%),
-    #111418;
-}
-
-.app-menu {
-  position: fixed;
-  z-index: 900;
-  left: 0;
-  top: 0;
-  width: 100vw;
-  min-height: var(--menu-height);
-  box-sizing: border-box;
-  padding: 3px 8px;
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  color: #edf1f4;
-  background: rgba(31, 35, 40, 0.96);
-  border-bottom: 1px solid #15181c;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 10px 24px rgba(0, 0, 0, 0.28);
-}
-
-.menu-group {
-  position: relative;
-}
-
-.menu-trigger {
-  min-width: 54px;
-  min-height: 27px;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  font-weight: 700;
-}
-
-.menu-trigger:hover,
-.menu-group:focus-within .menu-trigger {
-  background: #3d444d;
-}
-
-.menu-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 210px;
-  box-sizing: border-box;
-  padding: 6px;
-  display: none;
-  grid-template-columns: 1fr;
-  gap: 2px;
-  color: #f4f5f6;
-  background: rgba(38, 43, 49, 0.98);
-  border: 1px solid #171a1e;
-  border-radius: 6px;
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.34);
-}
-
-.menu-group:focus-within .menu-popover,
-.menu-group.is-open .menu-popover {
-  display: grid;
-}
-
-.menu-popover button,
-.menu-popover a {
-  width: 100%;
-  min-height: 28px;
-  box-sizing: border-box;
-  padding: 5px 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  color: #f6f7f8;
-  text-align: left;
-  text-decoration: none;
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.menu-popover button:hover,
-.menu-popover a:hover,
-.menu-popover button[aria-pressed="true"] {
-  background: #454b53;
-}
-
-.menu-shortcut {
-  color: #aeb7c2;
-  font-size: 11px;
-}
-
-.menu-separator {
-  height: 1px;
-  margin: 4px 2px;
-  background: rgba(255, 255, 255, 0.12);
-}
-
-#main {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-}
-
-#error {
-  position: relative;
-  z-index: -1;
-  grid-area: 1 / 1;
-  width: var(--canvas-display-size);
-  height: var(--canvas-display-size);
-  box-sizing: border-box;
-  padding: 50px;
-  text-align: center;
-  background: #DFDFDF;
-}
-
-canvas {
-  position: relative;
-  z-index: 0;
-  grid-area: 1 / 1;
-  width: var(--canvas-display-size);
-  height: var(--canvas-display-size);
-  border-radius: 0;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 64px rgba(0, 0, 0, 0.36);
-  touch-action: none; /* Need this to prevent scrolling on iOS 15+ */
-}
-
-canvas:fullscreen {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  max-width: none;
-  max-height: none;
-  object-fit: contain;
-  background: #050607;
-  border-radius: 0;
-}
-
-canvas.focus-pick-mode {
-  cursor: crosshair;
-}
-
-.floating-window {
-  position: fixed;
-  z-index: 100;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  color: #f4f5f6;
-  background: var(--floating-panel-bg);
-  border: 1px solid #25282d;
-  border-radius: 8px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -28px 48px rgba(0, 0, 0, 0.22),
-    inset 0 0 18px rgba(0, 0, 0, 0.22),
-    0 18px 42px rgba(0, 0, 0, 0.34);
-  resize: both;
-}
-
-.floating-window[hidden] {
-  display: none;
-}
-
-.floating-window.is-collapsed {
-  height: auto !important;
-  resize: none;
-}
-
-.floating-window.is-collapsed .floating-window-body {
-  display: none;
-}
-
-.floating-window-titlebar {
-  min-height: 34px;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 8px 6px 10px;
-  color: #edf1f4;
-  background: rgba(36, 40, 46, 0.96);
-  border-bottom: 1px solid rgba(21, 24, 28, 0.82);
-  cursor: move;
-  user-select: none;
-}
-
-.floating-window-titlebar strong {
-  overflow: hidden;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.floating-window-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.floating-window-actions button {
-  width: 26px;
-  min-height: 24px;
-  padding: 0;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.floating-window-body {
-  min-height: 0;
-  padding: 14px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-#controls {
-  top: 48px;
-  right: 18px;
-  width: 360px;
-  height: min(74vh, 680px);
-}
-
-#scene-tree-window {
-  top: 48px;
-  left: 18px;
-  width: 270px;
-  height: 370px;
-}
-
-.scene-tree-summary {
-  margin-bottom: 8px;
-  color: #aeb7c2;
-  font-size: 12px;
-}
-
-.scene-tree-list {
-  display: grid;
-  gap: 4px;
-}
-
-.scene-tree-list button {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  text-align: left;
-}
-
-.scene-tree-list button[aria-pressed="true"] {
-  background: #6b5a3d;
-}
-
-.control-panel {
-  display: grid;
-  gap: 12px;
-}
-
-.control-panel[hidden] {
-  display: none;
-}
-
-.button-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.button-row.two-up {
-  grid-template-columns: repeat(2, 1fr);
-}
-
-.primitive-actions {
-  grid-template-columns: 1fr 1fr;
-}
-
-.primitive-actions .section-title,
-.primitive-actions .wide-control {
-  grid-column: 1 / -1;
-}
-
-.primitive-actions button {
-  width: 100%;
-  text-align: left;
-}
-
-.primitive-actions .wide-control {
-  text-align: center;
-}
-
-.camera-playback {
-  width: 100%;
-  min-height: 34px;
-  margin-bottom: -4px;
-  background: #59616c;
-  font-weight: 700;
-}
-
-.camera-playback:hover {
-  background: #626b78;
-}
-
-.render-pause-toggle {
-  width: 100%;
-  min-height: 32px;
-  background: #4c5662;
-  font-weight: 700;
-}
-
-.render-pause-toggle:hover {
-  background: #566270;
-}
-
-.render-pause-toggle[aria-pressed="true"] {
-  background: #6b5a3d;
-}
-
-.render-pause-toggle[aria-pressed="true"]:hover {
-  background: #766546;
-}
-
-.control-section {
-  display: grid;
-  gap: 8px;
-}
-
-.render-settings,
-.camera-settings,
-.color-settings,
-.bloom-settings {
-  gap: 8px;
-}
-
-.camera-settings,
-.color-settings,
-.bloom-settings {
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-.field {
-  display: grid;
-  gap: 4px;
-}
-
-.field label,
-.section-title {
-  color: #d6d9de;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.slider-field label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.slider-value {
-  min-width: 24px;
-  padding: 1px 6px;
-  color: #ffffff;
-  text-align: center;
-  background: #24282e;
-  border: 1px solid #1c1f24;
-  border-radius: 4px;
-  box-shadow:
-    inset 0 1px 2px rgba(0, 0, 0, 0.55),
-    0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-button,
-select,
-input {
-  font: inherit;
-}
-
-button,
-select {
-  min-height: 28px;
-  color: #f6f7f8;
-  background: #454b53;
-  border: 1px solid #1f2227;
-  border-radius: 5px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    0 1px 2px rgba(0, 0, 0, 0.28);
-}
-
-button {
-  padding: 5px 8px;
-  cursor: pointer;
-}
-
-button:hover,
-select:hover {
-  background: #505762;
-}
-
-button:active {
-  background: #3a3f46;
-  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.32);
-}
-
-select {
-  width: 100%;
-  padding: 4px 8px;
-}
-
-input[type="number"] {
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 28px;
-  padding: 4px 8px;
-  color: #f6f7f8;
-  background: #454b53;
-  border: 1px solid #1f2227;
-  border-radius: 5px;
-}
-
-input[type="range"] {
-  width: 100%;
-  height: 16px;
-  margin: 0;
-  accent-color: #aab7c7;
-  cursor: pointer;
-}
-
-.presets {
-  grid-template-columns: 1fr 1fr;
-}
-
-.presets .section-title {
-  grid-column: 1 / -1;
-}
-
-.presets button {
-  width: 100%;
-  text-align: left;
-}
-
-.presets .reset-all {
-  grid-column: 1 / -1;
-  text-align: center;
-  background: #5a4850;
-}
-
-.presets .reset-all:hover {
-  background: #66515b;
-}
-
-.color-reset {
-  width: 100%;
-  margin-top: 2px;
-  background: #3f464e;
-}
-
-.color-reset:hover {
-  background: #48515b;
-}
-
-.light-cycle-toggle,
-.focus-pick-toggle {
-  width: 100%;
-  background: #4c5662;
-}
-
-.light-cycle-toggle:hover,
-.focus-pick-toggle:hover {
-  background: #566270;
-}
-
-.light-cycle-toggle[aria-pressed="true"],
-.focus-pick-toggle[aria-pressed="true"] {
-  background: #6b5a3d;
-}
-
-.light-cycle-toggle[aria-pressed="true"]:hover,
-.focus-pick-toggle[aria-pressed="true"]:hover {
-  background: #766546;
-}
-
-.gpu-status {
-  display: grid;
-  gap: 3px;
-  padding: 8px 10px;
-  color: #edf1f4;
-  background: #24282e;
-  border: 1px solid #191c20;
-  border-radius: 5px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.22);
-}
-
-.gpu-status strong {
-  color: #b9c0c9;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.gpu-status span {
-  overflow-wrap: anywhere;
-  font-size: 12px;
-}
-
-.selection-readout,
-.export-status {
-  min-height: 28px;
-  box-sizing: border-box;
-  padding: 6px 8px;
-  color: #f2f4f6;
-  background: #24282e;
-  border: 1px solid #191c20;
-  border-radius: 5px;
-}
-
-.export-status {
-  color: #aeb7c2;
-  font-size: 12px;
-}
-
-.gpu-status.is-preferred {
-  border-color: rgba(109, 183, 126, 0.72);
-}
-
-.gpu-status.is-fallback {
-  border-color: rgba(218, 171, 85, 0.72);
-}
-
-.benchmark-panel {
-  left: 18px;
-  bottom: 18px;
-  width: min(860px, calc(100vw - 420px));
-  min-width: 430px;
-  height: auto;
-  box-sizing: border-box;
-  padding: 0;
-  color: #edf1f4;
-  background: #262b31;
-  border: 1px solid #1f2328;
-  border-radius: 8px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -20px 34px rgba(0, 0, 0, 0.22),
-    0 14px 28px rgba(28, 34, 44, 0.18);
-  resize: horizontal;
-}
-
-.benchmark-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.benchmark-source {
-  color: #aeb7c2;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.benchmark-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.benchmark-metric {
-  min-width: 0;
-  padding: 9px 8px;
-  background: #1f2328;
-  border: 1px solid #191c20;
-  border-radius: 5px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.22);
-}
-
-.benchmark-metric strong,
-.benchmark-metric span {
-  display: block;
-}
-
-.benchmark-metric strong {
-  overflow: hidden;
-  color: #ffffff;
-  font-size: 16px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.benchmark-metric span {
-  margin-top: 2px;
-  color: #aeb7c2;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-a {
-  color: inherit;
-}
-
-#glossiness-factor {
-  display: none;
-  color: #d6d9de;
-  font-size: 12px;
-}
-
-#glossiness-factor input {
-  width: 40px;
-  text-align: center;
-  color: #f6f7f8;
-  background: #454b53;
-  border: 1px solid #1f2227;
-  border-radius: 4px;
-}
-
-@media (max-width: 980px) {
-  :root {
-    --canvas-display-size: min(100vw, 100vh);
-  }
-
-  .app-menu {
-    overflow-x: auto;
-  }
-
-  .menu-popover {
-    max-height: calc(100vh - 48px);
-    overflow-y: auto;
-  }
-
-  .floating-window,
-  #controls,
-  #scene-tree-window,
-  .benchmark-panel {
-    left: 12px;
-    right: auto;
-    width: calc(100vw - 24px);
-    min-width: 0;
-    max-width: calc(100vw - 24px);
-  }
-
-  #controls {
-    top: 44px;
-    height: min(52vh, 520px);
-  }
-
-  #scene-tree-window {
-    top: calc(44px + min(52vh, 520px) + 10px);
-    height: min(28vh, 260px);
-  }
-
-  .benchmark-panel {
-    bottom: 12px;
-  }
-
-  .benchmark-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  <link rel="stylesheet" href="src/app.css">
+  <script type="importmap">
+{
+  "imports": {
+    "preact": "https://esm.sh/preact@10.29.1",
+    "preact/hooks": "https://esm.sh/preact@10.29.1/hooks",
+    "htm/preact": "https://esm.sh/htm@3.1.1/preact",
+    "@preact/signals": "https://esm.sh/@preact/signals@2.9.0"
   }
 }
-
-  --></style>
+  </script>
   <script type="module" src="webgl-path-tracing.js"></script>
 </head><body class="antialiased">
   <div id="app-shell">
@@ -720,16 +21,22 @@ a {
     <div class="menu-group">
       <button class="menu-trigger" aria-haspopup="true">File</button>
       <div class="menu-popover" role="menu">
-        <button data-action="save-bitmap">Save PNG <span class="menu-shortcut">Ctrl+S</span></button>
+        <button data-action="reset-all">New Scene <span class="menu-shortcut">Ctrl+N</span></button>
         <button data-action="reset-all">Reset Scene</button>
+        <div class="menu-separator"></div>
+        <button data-panel-target="output-panel" data-window-target="controls">Output Settings <span class="menu-shortcut">Ctrl+5</span></button>
+        <button data-action="save-bitmap">Save PNG <span class="menu-shortcut">Ctrl+S</span></button>
       </div>
     </div>
     <div class="menu-group">
       <button class="menu-trigger" aria-haspopup="true">Edit</button>
       <div class="menu-popover" role="menu">
+        <button disabled>Undo <span class="menu-shortcut">Ctrl+Z</span></button>
+        <button disabled>Redo <span class="menu-shortcut">Ctrl+Y</span></button>
+        <div class="menu-separator"></div>
         <button data-action="select-light">Select Light <span class="menu-shortcut">L</span></button>
         <button data-action="delete-selection">Delete Selection <span class="menu-shortcut">Del</span></button>
-        <button data-panel-target="object-panel" data-window-target="controls">Object Settings <span class="menu-shortcut">Ctrl+2</span></button>
+        <button disabled>Duplicate Selected <span class="menu-shortcut">Ctrl+D</span></button>
       </div>
     </div>
     <div class="menu-group">
@@ -738,22 +45,82 @@ a {
         <button data-window-target="controls">Inspector <span class="menu-shortcut">I</span></button>
         <button data-window-target="scene-tree-window">Scene Tree <span class="menu-shortcut">T</span></button>
         <button data-window-target="benchmark">Benchmark <span class="menu-shortcut">B</span></button>
+        <button data-panel-target="scene-panel" data-window-target="controls">Create Panel <span class="menu-shortcut">Ctrl+1</span></button>
         <div class="menu-separator"></div>
-        <button id="canvas-fullscreen" data-action="toggle-canvas-fullscreen" aria-pressed="false">Canvas Fullscreen <span class="menu-shortcut">F</span></button>
+        <button data-action="toggle-camera-playback" aria-pressed="true">Camera Auto-Rotate <span class="menu-shortcut">C</span></button>
+        <button id="canvas-fullscreen" data-action="toggle-canvas-fullscreen" aria-pressed="false"><span data-fullscreen-label>Fullscreen</span> <span class="menu-shortcut">F</span></button>
+        <button id="fullscreen-panels-toggle" data-action="toggle-fullscreen-panels" aria-pressed="false"><span data-fullscreen-panels-label>Fullscreen Panels</span></button>
+        <div class="menu-separator"></div>
+        <button data-debug-view="beauty" aria-pressed="true">Debug: Beauty</button>
+        <button data-debug-view="normals" aria-pressed="false">Debug: Normals</button>
+        <button data-debug-view="albedo" aria-pressed="false">Debug: Albedo</button>
+        <button data-debug-view="depth" aria-pressed="false">Debug: Depth</button>
       </div>
     </div>
     <div class="menu-group">
       <button class="menu-trigger" aria-haspopup="true">Create</button>
       <div class="menu-popover" role="menu">
+        <div class="menu-label">Core</div>
         <button data-action="add-sphere">Sphere</button>
         <button data-action="add-cube">Cube</button>
+        <button data-action="add-area-light">Area Light</button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Curved</div>
         <button data-action="add-cylinder">Cylinder</button>
         <button data-action="add-cone">Cone</button>
+        <button data-action="add-frustum">Frustum</button>
         <button data-action="add-capsule">Capsule</button>
+        <button data-action="add-ellipsoid">Ellipsoid</button>
         <button data-action="add-torus">Torus</button>
         <button data-action="add-rounded-box">Rounded Box</button>
-        <button data-action="add-area-light">Area Light</button>
-        <button data-panel-target="scene-panel" data-window-target="controls">More Primitives <span class="menu-shortcut">Ctrl+1</span></button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Flat</div>
+        <button data-action="add-plane">Plane</button>
+        <button data-action="add-disk">Disk</button>
+        <button data-action="add-triangle">Triangle</button>
+        <button data-action="add-wedge">Wedge</button>
+        <button data-action="add-prism">Prism</button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Implicit</div>
+        <button data-action="add-metaballs">Metaballs</button>
+        <button data-action="add-csg-shape">CSG Shape</button>
+        <button data-action="add-mandelbulb">Mandelbulb</button>
+        <button data-action="add-sdf-fractal">SDF Fractal</button>
+      </div>
+    </div>
+    <div class="menu-group">
+      <button class="menu-trigger" aria-haspopup="true">Scene</button>
+      <div class="menu-popover" role="menu">
+        <div class="menu-label">Core presets</div>
+        <button data-preset="sphereColumn">Sphere Column</button>
+        <button data-preset="spherePyramid">Sphere Pyramid</button>
+        <button data-preset="sphereAndCube">Sphere and Cube</button>
+        <button data-preset="cubeAndSpheres">Cube and Spheres</button>
+        <button data-preset="tableAndChair">Table and Chair</button>
+        <button data-preset="stacks">Stacks</button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Shader and recursive</div>
+        <button data-preset="shaderShowcase">Shader Showcase</button>
+        <button data-preset="recursiveSpheres">Recursive Spheres</button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Primitive and light showcases</div>
+        <button data-preset="primitiveShowcase">Primitive Showcase</button>
+        <button data-preset="curvedPrimitiveShowcase">Curved Primitives</button>
+        <button data-preset="flatPrimitiveShowcase">Flat Primitives</button>
+        <button data-preset="implicitPrimitiveShowcase">Implicit Primitives</button>
+        <button data-preset="areaLightShowcase">Area Light Studio</button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Benchmark scenes</div>
+        <button data-benchmark-scene="default">Standard Benchmark <span class="menu-shortcut">Fixed</span></button>
+        <button data-benchmark-scene="benchmarkShaderGauntlet">Shader Gauntlet</button>
+        <button data-benchmark-scene="benchmarkPhysicsChaos">Physics Chaos</button>
+        <button data-benchmark-scene="benchmarkSdfComplexity">SDF Complexity</button>
+        <button data-benchmark-scene="benchmarkCausticPool">Caustic Pool</button>
+        <button data-benchmark-scene="benchmarkMotionBlurStress">Motion Blur Stress</button>
+        <button data-benchmark-scene="benchmarkVolumetricFog">Volumetric Fog Flythrough</button>
+        <div class="menu-separator"></div>
+        <button data-action="run-benchmark-sequence">Run Benchmark Sequence</button>
+        <button disabled>Demo Scenes</button>
       </div>
     </div>
     <div class="menu-group">
@@ -761,9 +128,17 @@ a {
       <div class="menu-popover" role="menu">
         <button data-action="toggle-frame-pause">Pause Frames <span class="menu-shortcut">P</span></button>
         <button data-action="toggle-convergence-pause">Pause Rays at Converged <span class="menu-shortcut">K</span></button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Quality</div>
+        <button data-quality-preset="draft">Draft <span class="menu-shortcut">1</span></button>
+        <button data-quality-preset="preview">Preview <span class="menu-shortcut">2</span></button>
+        <button data-quality-preset="final">Final <span class="menu-shortcut">3</span></button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Settings</div>
         <button data-panel-target="render-panel" data-window-target="controls">Render Settings <span class="menu-shortcut">Ctrl+3</span></button>
         <button data-panel-target="camera-panel" data-window-target="controls">Camera Settings <span class="menu-shortcut">Ctrl+4</span></button>
-        <button data-panel-target="output-panel" data-window-target="controls">Output <span class="menu-shortcut">Ctrl+5</span></button>
+        <button data-panel-target="render-panel" data-window-target="controls">Environment Settings</button>
+        <button data-panel-target="output-panel" data-window-target="controls">Resolution / Output <span class="menu-shortcut">Ctrl+5</span></button>
       </div>
     </div>
     <div class="menu-group">
@@ -773,11 +148,42 @@ a {
         <a href="README.md" target="_blank" rel="noreferrer">README</a>
       </div>
     </div>
+    <div id="menu-quick-actions" class="menu-quick-actions" role="toolbar" aria-label="Quick actions">
+      <button class="menu-quick-action wide" type="button" data-preset="sphereColumn" data-tooltip="Load Sphere Column" title="Load Sphere Column" aria-label="Load Sphere Column">Col</button>
+      <button class="menu-quick-action wide" type="button" data-preset="shaderShowcase" data-tooltip="Load Shader Showcase" title="Load Shader Showcase" aria-label="Load Shader Showcase">Mat</button>
+      <button class="menu-quick-action wide" type="button" data-preset="primitiveShowcase" data-tooltip="Load Primitive Showcase" title="Load Primitive Showcase" aria-label="Load Primitive Showcase">Prim</button>
+      <button class="menu-quick-action wide" type="button" data-preset="areaLightShowcase" data-tooltip="Load Area Light Studio" title="Load Area Light Studio" aria-label="Load Area Light Studio">Lit</button>
+      <span class="menu-quick-divider" aria-hidden="true"></span>
+      <button class="menu-quick-action" type="button" data-action="add-sphere" data-tooltip="Add Sphere" title="Add Sphere" aria-label="Add Sphere">Sphere</button>
+      <button class="menu-quick-action" type="button" data-action="add-cube" data-tooltip="Add Cube" title="Add Cube" aria-label="Add Cube">Box</button>
+      <button class="menu-quick-action" type="button" data-action="add-area-light" data-tooltip="Add Area Light" title="Add Area Light" aria-label="Add Area Light">Light</button>
+      <span class="menu-quick-divider" aria-hidden="true"></span>
+      <button class="menu-quick-action" type="button" data-panel-target="scene-panel" data-window-target="controls" data-tooltip="Create Panel" title="Create Panel" aria-label="Open Create Panel">Create</button>
+      <button class="menu-quick-action" type="button" data-panel-target="object-panel" data-window-target="controls" data-tooltip="Inspector" title="Inspector" aria-label="Open Inspector">Inspect</button>
+      <button class="menu-quick-action" type="button" data-panel-target="render-panel" data-window-target="controls" data-tooltip="Render Settings" title="Render Settings" aria-label="Open Render Settings">Render</button>
+      <button class="menu-quick-action" type="button" data-window-target="scene-tree-window" data-tooltip="Scene Tree" title="Scene Tree" aria-label="Toggle Scene Tree">Tree</button>
+      <button class="menu-quick-action" type="button" data-window-target="benchmark" data-tooltip="Benchmark" title="Benchmark" aria-label="Toggle Benchmark">Bench</button>
+      <span class="menu-quick-divider" aria-hidden="true"></span>
+      <button class="menu-quick-action" type="button" data-action="toggle-frame-pause" data-tooltip="Pause Frames" title="Pause Frames" aria-label="Pause or resume frames">Frames</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-convergence-pause" data-tooltip="Pause Rays at Converged" title="Pause Rays at Converged" aria-label="Toggle convergence pause">Rays</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-fullscreen-panels" data-tooltip="Show Panels in Fullscreen" title="Show Panels in Fullscreen" aria-label="Show panels in fullscreen" aria-pressed="false">UI</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-canvas-fullscreen" data-tooltip="Fullscreen" title="Fullscreen" aria-label="Toggle fullscreen">FS</button>
+      <button class="menu-quick-action" type="button" data-action="save-bitmap" data-tooltip="Save PNG" title="Save PNG" aria-label="Save PNG">PNG</button>
+    </div>
   </nav>
 
   <div id="main" class="render-stage">
     <canvas id="canvas" width="512" height="512"></canvas>
     <div id="error"><noscript>Please enable JavaScript.</noscript></div>
+  </div>
+  <div id="ui-root" hidden></div>
+  <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite">
+    <div class="loading-card">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <div class="loading-title">Loading renderer</div>
+      <div id="loading-status" class="loading-status">Initialising renderer...</div>
+      <div id="loading-detail" class="loading-detail">Blank frames during setup are expected while the renderer builds the scene.</div>
+    </div>
   </div>
 
     <section id="scene-tree-window" class="floating-window" data-floating-window data-window-key="scene-tree" aria-label="Scene tree">
@@ -790,6 +196,40 @@ a {
       </header>
       <div class="floating-window-body">
         <div id="scene-tree-count" class="scene-tree-summary">0 items</div>
+        <div class="scene-tree-tools">
+          <div class="section-title">Selection</div>
+          <button data-action="select-light">Select Light</button>
+          <button data-action="delete-selection">Delete Selected</button>
+          <div class="section-title">Settings</div>
+          <button data-panel-target="scene-panel" data-window-target="controls">Create</button>
+          <button data-panel-target="object-panel" data-window-target="controls">Object</button>
+          <button data-panel-target="render-panel" data-window-target="controls">Render</button>
+          <button data-panel-target="camera-panel" data-window-target="controls">Camera</button>
+          <button data-panel-target="output-panel" data-window-target="controls">Output</button>
+          <button data-panel-target="preset-panel" data-window-target="controls">Presets</button>
+        </div>
+        <div class="scene-tree-create">
+          <div class="section-title">Create primitive</div>
+          <button data-action="add-sphere">Sphere</button>
+          <button data-action="add-cube">Cube</button>
+          <button data-action="add-cylinder">Cylinder</button>
+          <button data-action="add-cone">Cone</button>
+          <button data-action="add-frustum">Frustum</button>
+          <button data-action="add-capsule">Capsule</button>
+          <button data-action="add-ellipsoid">Ellipsoid</button>
+          <button data-action="add-torus">Torus</button>
+          <button data-action="add-rounded-box">Rounded Box</button>
+          <button data-action="add-plane">Plane</button>
+          <button data-action="add-disk">Disk</button>
+          <button data-action="add-triangle">Triangle</button>
+          <button data-action="add-wedge">Wedge</button>
+          <button data-action="add-prism">Prism</button>
+          <button data-action="add-metaballs">Metaballs</button>
+          <button data-action="add-csg-shape">CSG Shape</button>
+          <button data-action="add-mandelbulb">Mandelbulb</button>
+          <button data-action="add-sdf-fractal">SDF Fractal</button>
+          <button class="wide-control" data-action="add-area-light">Area Light</button>
+        </div>
         <div id="scene-tree-list" class="scene-tree-list" role="listbox" aria-label="Scene items"></div>
       </div>
     </section>
@@ -803,14 +243,12 @@ a {
         </div>
       </header>
       <div class="floating-window-body">
+      <details class="inspector-section" data-inspector-section="scene" style="--section-accent: #4a90e2" open>
+        <summary><span data-inspector-section-label>Create</span></summary>
       <div id="scene-panel" class="control-panel" data-control-panel>
         <button id="camera-playback" class="camera-playback" data-action="toggle-camera-playback" aria-pressed="true">Pause Camera</button>
         <button id="frame-pause" class="render-pause-toggle" data-action="toggle-frame-pause" aria-pressed="false">Pause Frames</button>
         <button id="convergence-pause" class="render-pause-toggle" data-action="toggle-convergence-pause" aria-pressed="false">Pause Rays at Converged</button>
-        <div id="gpu-status" class="gpu-status" role="status" aria-live="polite">
-          <strong>GPU</strong>
-          <span id="gpu-renderer">Requesting high-performance adapter...</span>
-        </div>
 
         <div class="control-section primitive-actions">
         <div class="section-title">Add primitive</div>
@@ -835,14 +273,62 @@ a {
         <button class="wide-control" data-action="add-area-light">Area Light</button>
         </div>
       </div>
+      </details>
 
-      <div id="object-panel" class="control-panel" data-control-panel hidden>
+      <details class="inspector-section" data-inspector-section="object" style="--section-accent: #4a90e2">
+        <summary><span data-inspector-section-label>Nothing selected</span></summary>
+      <div id="object-panel" class="control-panel" data-control-panel>
         <div class="control-section">
           <div class="section-title">Selected item</div>
           <div id="selected-item-name" class="selection-readout">No selection</div>
+          <div class="field">
+            <label for="selected-item-name-input">Name</label>
+            <input id="selected-item-name-input" type="text" placeholder="Scene item">
+            <button data-action="rename-selection">Rename</button>
+          </div>
           <div class="button-row two-up">
             <button data-action="select-light">Light</button>
             <button data-action="delete-selection">Delete</button>
+          </div>
+          <div class="button-row">
+            <button data-action="duplicate-selection">Duplicate</button>
+            <button id="selection-hidden-toggle" data-action="toggle-selection-hidden" aria-pressed="false">Hide</button>
+            <button id="selection-lock-toggle" data-action="toggle-selection-locked" aria-pressed="false">Lock</button>
+          </div>
+          <div class="field">
+            <label>Position</label>
+            <div class="button-row">
+              <input id="selected-position-x" type="number" min="-2" max="2" step="0.05" placeholder="X">
+              <input id="selected-position-y" type="number" min="-2" max="2" step="0.05" placeholder="Y">
+              <input id="selected-position-z" type="number" min="-2" max="2" step="0.05" placeholder="Z">
+            </div>
+          </div>
+          <div class="field">
+            <label for="selected-physics-enabled">Physics</label>
+            <div class="button-row two-up">
+              <label><input id="selected-physics-enabled" type="checkbox" disabled> Enabled</label>
+              <select id="selected-physics-body-type" aria-label="Physics body type" disabled>
+                <option value="dynamic">Dynamic</option>
+                <option value="fixed">Fixed</option>
+              </select>
+            </div>
+          </div>
+          <div class="field slider-field">
+            <label for="selected-physics-friction">
+              Friction
+              <span id="selected-physics-friction-value" class="slider-value">0.00</span>
+            </label>
+            <input id="selected-physics-friction" type="range" min="0" max="1" step="0.01" value="0" disabled>
+          </div>
+          <div class="field slider-field">
+            <label for="selected-physics-restitution">
+              Restitution
+              <span id="selected-physics-restitution-value" class="slider-value">0.00</span>
+            </label>
+            <input id="selected-physics-restitution" type="range" min="0" max="1" step="0.01" value="0" disabled>
+          </div>
+          <div class="field">
+            <label><input id="selected-physics-collide-with-objects" type="checkbox" disabled checked> Collide with objects</label>
           </div>
         </div>
 
@@ -864,6 +350,11 @@ a {
             <option value="11">Bokeh</option>
             <option value="12">Motion Blur Stress</option>
             <option value="13">Fire Plasma</option>
+            <option value="14">Thin Film</option>
+            <option value="15">Retroreflector</option>
+            <option value="16">Velvet Sheen</option>
+            <option value="17">Voronoi Cracks</option>
+            <option value="18">Diffraction Grating</option>
           </select>
           <button data-action="apply-object-shader">Apply to Selection</button>
           <span id="glossiness-factor">
@@ -872,8 +363,11 @@ a {
         </div>
         </div>
       </div>
+      </details>
 
-      <div id="render-panel" class="control-panel" data-control-panel hidden>
+      <details class="inspector-section" data-inspector-section="render" style="--section-accent: #5cb85c" open>
+        <summary><span data-inspector-section-label>Render</span></summary>
+      <div id="render-panel" class="control-panel" data-control-panel>
         <div class="control-section">
           <div class="field">
           <label for="environment">Environment</label>
@@ -886,6 +380,13 @@ a {
         </div>
 
       <div class="control-section render-settings">
+        <div class="section-title">Quality preset</div>
+        <div class="button-row">
+          <button data-quality-preset="draft">Draft</button>
+          <button data-quality-preset="preview">Preview</button>
+          <button data-quality-preset="final">Final</button>
+        </div>
+
         <div class="field slider-field">
           <label for="light-bounces">
             Light bounces
@@ -895,10 +396,20 @@ a {
         </div>
 
         <div class="field slider-field">
-          <label>
+          <label>Light position</label>
+          <div class="button-row">
+            <input id="light-position-x" type="number" min="-1" max="1" step="0.05" value="0.40" aria-label="Light X position">
+            <input id="light-position-y" type="number" min="-1" max="1" step="0.05" value="0.50" aria-label="Light Y position">
+            <input id="light-position-z" type="number" min="-1" max="1" step="0.05" value="-0.60" aria-label="Light Z position">
+          </div>
+        </div>
+
+        <div class="field slider-field">
+          <label for="light-intensity">
             Light intensity
             <span id="light-intensity-value" class="slider-value">0.50</span>
           </label>
+          <input id="light-intensity" type="range" min="0.1" max="1" step="0.01" value="0.5">
           <button id="light-cycle" class="light-cycle-toggle" data-action="toggle-light-cycle" aria-pressed="false">Cycle Light</button>
         </div>
 
@@ -908,6 +419,11 @@ a {
             <span id="light-size-value" class="slider-value">0.10</span>
           </label>
           <input id="light-size" type="range" min="0.02" max="0.5" step="0.01" value="0.1">
+        </div>
+
+        <div class="field">
+          <label for="light-color">Light color</label>
+          <input id="light-color" type="color" value="#ffffff" aria-label="Light color">
         </div>
 
         <div class="field slider-field">
@@ -951,10 +467,29 @@ a {
         </div>
       </div>
       </div>
+      </details>
 
-      <div id="camera-panel" class="control-panel" data-control-panel hidden>
+      <details class="inspector-section" data-inspector-section="camera" style="--section-accent: #f0ad4e">
+        <summary><span data-inspector-section-label>Camera</span></summary>
+      <div id="camera-panel" class="control-panel" data-control-panel>
       <div class="control-section camera-settings">
         <div class="section-title">Camera effects</div>
+        <div class="button-row">
+          <button data-camera-shot-save="0">Save A</button>
+          <button data-camera-shot-save="1">Save B</button>
+          <button data-camera-shot-save="2">Save C</button>
+          <button data-camera-shot-load="0">Shot A</button>
+          <button data-camera-shot-load="1">Shot B</button>
+          <button data-camera-shot-load="2">Shot C</button>
+        </div>
+
+        <div class="field slider-field">
+          <label for="camera-fov">
+            FOV
+            <span id="camera-fov-value" class="slider-value">55 deg</span>
+          </label>
+          <input id="camera-fov" type="range" min="35" max="85" step="1" value="55">
+        </div>
 
         <div class="field slider-field">
           <label for="camera-focus-distance">
@@ -982,24 +517,59 @@ a {
         </div>
       </div>
       </div>
+      </details>
 
-      <div id="output-panel" class="control-panel" data-control-panel hidden>
+      <details class="inspector-section" data-inspector-section="output" style="--section-accent: #9b59b6">
+        <summary><span data-inspector-section-label>Output</span></summary>
+      <div id="output-panel" class="control-panel" data-control-panel>
       <div class="control-section">
         <div class="section-title">Resolution / Export</div>
         <div class="field">
-          <label for="resolution-preset">Render size</label>
+          <label for="renderer-backend">Renderer backend</label>
+          <select id="renderer-backend">
+            <option value="webgl" selected>WebGL</option>
+            <option value="webgpu" disabled>WebGPU unavailable</option>
+          </select>
+          <div id="renderer-backend-status" class="export-status" role="status" aria-live="polite">WebGL active</div>
+        </div>
+        <div class="field slider-field">
+          <label for="render-scale">
+            Render Scale
+            <span id="render-scale-value" class="slider-value">100%</span>
+          </label>
+          <input id="render-scale" type="range" min="0.25" max="2" step="0.25" value="1" list="render-scale-ticks">
+          <datalist id="render-scale-ticks">
+            <option value="0.25" label="25%"></option>
+            <option value="0.5" label="50%"></option>
+            <option value="1" label="100%"></option>
+            <option value="1.5" label="150%"></option>
+            <option value="2" label="200%"></option>
+          </datalist>
+          <div id="render-scale-resolution" class="export-status" role="status" aria-live="polite">Canvas-sized render target</div>
+        </div>
+        <div class="field">
+          <label for="resolution-preset">Exact render size</label>
           <select id="resolution-preset">
             <option value="256">256 x 256</option>
             <option value="384">384 x 384</option>
             <option value="512" selected>512 x 512</option>
             <option value="768">768 x 768</option>
             <option value="1024">1024 x 1024</option>
-            <option value="custom">Custom square</option>
+            <option value="custom">Custom width x height</option>
           </select>
         </div>
+        <div class="button-row">
+          <button data-resolution-preset="256">256</button>
+          <button data-resolution-preset="512">512</button>
+          <button data-resolution-preset="1024">1024</button>
+        </div>
         <div class="field">
-          <label for="custom-resolution">Custom size</label>
-          <input id="custom-resolution" type="number" min="256" max="1024" step="64" value="512">
+          <label for="custom-render-width">Custom render resolution</label>
+          <div class="resolution-pair">
+            <input id="custom-render-width" type="number" min="256" max="2048" step="1" value="512" aria-label="Custom render width">
+            <input id="custom-render-height" type="number" min="256" max="2048" step="1" value="512" aria-label="Custom render height">
+          </div>
+          <div id="ui-canvas-resolution" class="export-status" role="status" aria-live="polite">Canvas fit: page size</div>
         </div>
         <div class="button-row two-up">
           <button data-action="apply-resolution">Apply Size</button>
@@ -1083,8 +653,11 @@ a {
         </div>
       </div>
       </div>
+      </details>
 
-      <div id="preset-panel" class="control-panel" data-control-panel hidden>
+      <details class="inspector-section" data-inspector-section="preset" style="--section-accent: #7f8c8d">
+        <summary><span data-inspector-section-label>Presets</span></summary>
+      <div id="preset-panel" class="control-panel" data-control-panel>
       <div class="control-section presets">
         <div class="section-title">Load preset scene</div>
         <button data-preset="sphereColumn">Sphere Column</button>
@@ -1100,8 +673,18 @@ a {
         <button data-preset="flatPrimitiveShowcase">Flat Primitives</button>
         <button data-preset="implicitPrimitiveShowcase">Implicit Primitives</button>
         <button data-preset="areaLightShowcase">Area Light Studio</button>
+        <div class="section-title">Benchmark scenes</div>
+        <button data-benchmark-scene="default">Standard Benchmark</button>
+        <button data-benchmark-scene="benchmarkShaderGauntlet">Shader Gauntlet</button>
+        <button data-benchmark-scene="benchmarkPhysicsChaos">Physics Chaos</button>
+        <button data-benchmark-scene="benchmarkSdfComplexity">SDF Complexity</button>
+        <button data-benchmark-scene="benchmarkCausticPool">Caustic Pool</button>
+        <button data-benchmark-scene="benchmarkMotionBlurStress">Motion Blur Stress</button>
+        <button data-benchmark-scene="benchmarkVolumetricFog">Volumetric Fog Flythrough</button>
         <button class="reset-all" data-action="reset-all">Reset All</button>
       </div>
+      </div>
+      </details>
       </div>
       </div>
     </section>
@@ -1140,17 +723,37 @@ a {
         <span>Perceptual FPS</span>
       </div>
       <div class="benchmark-metric">
-        <strong id="benchmark-rays-per-frame">...</strong>
-        <span>Rays/frame</span>
+        <strong id="benchmark-resolution">...</strong>
+        <span>Resolution</span>
       </div>
       <div class="benchmark-metric">
-        <strong id="benchmark-samples-per-frame">...</strong>
-        <span>Samples/frame</span>
+        <strong id="benchmark-bounces">...</strong>
+        <span>Bounces</span>
       </div>
-      <div class="benchmark-metric">
-        <strong id="benchmark-frame-time">...</strong>
-        <span>Trace time</span>
+    </div>
+    <div id="benchmark-gpu-renderer" class="benchmark-gpu-label">...</div>
+    <div class="benchmark-runner">
+      <div class="section-title">Benchmark sequence</div>
+      <div class="button-row two-up">
+        <button data-action="run-benchmark-sequence">Run Sequence</button>
+        <button data-action="stop-benchmark-sequence">Stop</button>
       </div>
+      <div class="button-row two-up">
+        <label>
+          Warm-up
+          <input id="benchmark-runner-warmup" type="number" min="0" max="60" step="1" value="3">
+        </label>
+        <label>
+          Measure
+          <input id="benchmark-runner-measurement" type="number" min="1" max="120" step="1" value="10">
+        </label>
+      </div>
+      <div class="button-row two-up">
+        <button data-action="copy-benchmark-results">Copy Results</button>
+        <button data-action="save-benchmark-baseline">Save As Baseline</button>
+      </div>
+      <div id="benchmark-runner-status" class="benchmark-source">Idle</div>
+      <div id="benchmark-runner-summary" class="benchmark-runner-summary"></div>
     </div>
     </div>
   </section>
