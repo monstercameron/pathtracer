@@ -4,15 +4,24 @@ Changes are grouped by commit date, newest first. Each bullet represents one com
 
 ## 2026-05-01
 
-- This commit - Complete the editor UI and rendering control pass:
-  - Add extended scene primitives, SDF shapes, visible area lights, and primitive showcase presets.
-  - Keep new primitive materials aligned with the current object material instead of forcing special shader materials.
-  - Add frame pause and convergence pause behavior with benchmark metrics that report paused states accurately.
-  - Add render resolution presets, custom square render size, fitted supersampled canvas display, canvas fullscreen, and PNG export.
-  - Add Tailwind CSS build tooling and generated root/docs CSS output.
-  - Complete Workstream 5 with a full-screen render stage, File/Edit/View/Create/Render/Help menu bar, floating scene tree, floating inspector, floating benchmark panel, keyboard shortcuts, and persisted panel layout.
-  - Update README and TODO tracking for the new workflow.
-  - Update Rapier initialization to the current object-form API.
+- This commit - Update project docs, TODO audit, and changelog grouping:
+  - Document the current editor controls, benchmark sequence, loader scaffold, and fullscreen/output behavior.
+  - Mark completed TODOs across the implemented UI, loader, benchmark, and renderer workstreams while leaving larger architecture work open.
+  - Split the day's current work into grouped changelog entries and keep previous commit history backfilled by day.
+- `3d0a8fe` - Mirror app updates to docs site:
+  - Publish the updated root app, generated CSS, README copy, and source scaffold into `docs/`.
+  - Add workstream decision notes for scene documents, imported assets, renderer backends, and canvas export.
+- `74f8118` - Add modular UI and asset loader scaffold:
+  - Add Preact/HTM signal stores, menu, quick-action, floating-window, inspector, scene-tree, benchmark, canvas, and control-panel components.
+  - Add OBJ/MTL, STL, and PLY parser modules plus loader smoke samples for the future mesh-import path.
+- `54dc65d` - Expand path tracer editor runtime:
+  - Add render-scale and custom width/height output controls, canvas-sized default rendering, fullscreen panel mode, and accordion inspector behavior.
+  - Add light color editing, debug views, benchmark sequence execution, benchmark result export/baselines, stable scene entity IDs, and benchmark rolling-window allocation improvements.
+  - Add parser wiring notes, physics sync allocation reductions, material/debug fixes, and update Rapier initialization to the current object-form API.
+- `ee8bc56` - Complete Workstream 5 renderer UI:
+  - Add extended scene primitives, SDF shapes, visible area lights, primitive showcase presets, and material alignment for new primitives.
+  - Add pause-frame and pause-ray behavior, clean PNG export, FOV/depth controls, startup loading overlays, object edit controls, camera shots, quality presets, and benchmark context tiles.
+  - Extract inline CSS into `src/app.css`, add Tailwind CSS build output, and introduce the full-screen render stage with application-style menus and persisted floating panels.
 
 ## 2026-04-30
 
