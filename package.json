@@ -4,10 +4,13 @@
   "private": true,
   "main": "electron-main.cjs",
   "scripts": {
+    "build:css": "tailwindcss -i ./src/tailwind.css -o ./dist/app.css --minify",
     "start": "electron .",
     "start:b580": "electron ."
   },
   "devDependencies": {
-    "electron": "41.3.0"
+    "@tailwindcss/cli": "^4.2.4",
+    "electron": "41.3.0",
+    "tailwindcss": "^4.2.4"
   }
 }

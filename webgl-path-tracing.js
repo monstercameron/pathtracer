@@ -8,7 +8,27 @@
 
 'use strict';
 
-const CANVAS_SIZE = 512;
+const DEFAULT_CANVAS_SIZE = 512;
+const MIN_CANVAS_SIZE = 256;
+const MAX_CANVAS_SIZE = 1024;
+const CANVAS_SIZE_STEP = 64;
+const CANVAS_SIZE_PRESETS = Object.freeze([256, 384, 512, 768, 1024]);
+const normalizeCanvasSize = (value) => {
+  const parsedSize = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsedSize)) {
+    return DEFAULT_CANVAS_SIZE;
+  }
+  const steppedSize = Math.round(parsedSize / CANVAS_SIZE_STEP) * CANVAS_SIZE_STEP;
+  return Math.min(Math.max(steppedSize, MIN_CANVAS_SIZE), MAX_CANVAS_SIZE);
+};
+const readInitialCanvasSize = () => {
+  if (typeof window === 'undefined' || !window.location || !window.URLSearchParams) {
+    return DEFAULT_CANVAS_SIZE;
+  }
+  const urlParameters = new window.URLSearchParams(window.location.search);
+  return normalizeCanvasSize(urlParameters.get('resolution'));
+};
+const CANVAS_SIZE = readInitialCanvasSize();
 const HALF_CANVAS_SIZE = CANVAS_SIZE / 2;
 const CANVAS_SIZE_RECIPROCAL = 1 / CANVAS_SIZE;
 const CAMERA_FIELD_OF_VIEW_DEGREES = 55;
@@ -48,6 +68,7 @@ const MAX_LIGHT_BOUNCE_COUNT = 12;
 const DEFAULT_RAYS_PER_PIXEL = 12;
 const MIN_RAYS_PER_PIXEL = 1;
 const MAX_RAYS_PER_PIXEL = 64;
+const CONVERGED_SAMPLE_COUNT = 2048;
 const DEFAULT_TEMPORAL_BLEND_FRAMES = 16;
 const MIN_TEMPORAL_BLEND_FRAMES = 1;
 const MAX_TEMPORAL_BLEND_FRAMES = 32;
@@ -116,6 +137,10 @@ const UINT32_RECIPROCAL = 1 / 4294967296;
 const HALTON_BASE_3_RECIPROCAL = 1 / 3;
 const RAY_JITTER_COMPONENT_COUNT = 2;
 const SHADER_EPSILON = '0.0001';
+const SDF_TRACE_STEP_COUNT = 72;
+const SDF_SURFACE_EPSILON = '0.0015';
+const SDF_TRACE_MIN_STEP = '0.0015';
+const SDF_TRACE_MAX_STEP = '0.08';
 const SHADER_INFINITY = '10000.0';
 const MAX_INTERSECTION_DISTANCE = Number.MAX_VALUE;
 const FLOATS_PER_VEC3 = 3;
@@ -126,7 +151,7 @@ const HIGH_PERFORMANCE_WEBGL_CONTEXT_ATTRIBUTES = Object.freeze({
   antialias: false,
   depth: false,
   premultipliedAlpha: false,
-  preserveDrawingBuffer: false,
+  preserveDrawingBuffer: true,
   powerPreference: WEBGL_POWER_PREFERENCE,
   failIfMajorPerformanceCaveat: false,
   stencil: false
@@ -780,7 +805,7 @@ const initializeRapierRuntime = (rapierModule) => {
   }
 
   const wasmUrl = new URL('./vendor/rapier/rapier_wasm3d_bg.wasm', import.meta.url);
-  return rapierModule.init(wasmUrl).then(
+  return rapierModule.init({ module_or_path: wasmUrl }).then(
     () => returnSuccess(rapierModule),
     (initError) => returnFailure('rapier-init-failed', 'Rapier runtime could not be initialized.', readErrorMessage(initError))
   );
@@ -1032,6 +1057,46 @@ const formatBenchmarkMilliseconds = (value) => {
     return '...';
   }
   return `${value.toFixed(2)} ms`;
+};
+
+const isPausedBenchmarkSource = (measurementSource) => (
+  measurementSource === 'frame-paused' ||
+  measurementSource === 'rays-paused'
+);
+
+const formatPausedAwareCompactMetricValue = (value, shouldShowPausedZero) => {
+  if (shouldShowPausedZero && Number.isFinite(value) && value === 0) {
+    return '0';
+  }
+  return formatCompactMetricValue(value);
+};
+
+const formatPausedAwareBenchmarkRateValue = (value, shouldShowPausedZero) => {
+  if (shouldShowPausedZero && Number.isFinite(value) && value === 0) {
+    return '0/s';
+  }
+  return formatBenchmarkRateValue(value);
+};
+
+const formatPausedAwareBandwidthValue = (value, shouldShowPausedZero) => {
+  if (shouldShowPausedZero && Number.isFinite(value) && value === 0) {
+    return '0 B/s';
+  }
+  return formatBandwidthValue(value);
+};
+
+const formatPausedAwareFramesPerSecondValue = (value, shouldShowPausedZero) => {
+  if (shouldShowPausedZero && Number.isFinite(value) && value === 0) {
+    return '0';
+  }
+  return formatFramesPerSecondValue(value);
+};
+
+const formatPausedAwareBenchmarkMilliseconds = (value, shouldShowPausedZero) => {
+  if (shouldShowPausedZero && Number.isFinite(value) && value === 0) {
+    return '0.00 ms';
+  }
+  return formatBenchmarkMilliseconds(value);
 };
 
 const calculatePerformanceScore = (benchmarkSnapshot) => {
@@ -1368,9 +1433,18 @@ const sceneUsesSphereShadowTests = (sceneObjects) => {
   return false;
 };
 
+const sceneUsesSdfShadowTests = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    if (sceneObject instanceof SdfSceneObject && !isTransparentMaterial(sceneObject.material)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 const createShadowShaderSource = (sceneObjects) => [
   'float shadow(vec3 origin, vec3 ray) {',
-  sceneUsesCubeShadowTests(sceneObjects) ? '  vec3 inverseRay = 1.0 / ray;' : '',
+  sceneUsesCubeShadowTests(sceneObjects) || sceneUsesSdfShadowTests(sceneObjects) ? '  vec3 inverseRay = 1.0 / ray;' : '',
   sceneUsesSphereShadowTests(sceneObjects) ? '  float inverseRayLengthSquared = 1.0 / dot(ray, ray);' : '',
   joinObjectShaderCode(sceneObjects, (sceneObject) => sceneObject.getShadowTestCode()),
   '  return 1.0;',
@@ -2153,6 +2227,476 @@ class CubeSceneObject {
   }
 }
 
+class SdfSceneObject {
+  constructor(centerPosition, boundsHalfExtents, parameterA, parameterB, objectId, material = MATERIAL.DIFFUSE) {
+    this.centerPosition = cloneVec3(centerPosition);
+    this.boundsHalfExtents = cloneVec3(boundsHalfExtents);
+    this.parameterA = cloneVec3(parameterA);
+    this.parameterB = cloneVec3(parameterB);
+    this.material = normalizeMaterial(material);
+    this.centerUniformName = `sdfCenter${objectId}`;
+    this.boundsHalfExtentsUniformName = `sdfBounds${objectId}`;
+    this.parameterAUniformName = `sdfParamA${objectId}`;
+    this.parameterBUniformName = `sdfParamB${objectId}`;
+    this.distanceFunctionName = `sdfDistance${objectId}`;
+    this.intersectFunctionName = `intersectSdf${objectId}`;
+    this.normalFunctionName = `normalForSdf${objectId}`;
+    this.intersectionName = `tSdf${objectId}`;
+    this.temporaryTranslation = createVec3(0, 0, 0);
+    this.uniformCenterPosition = createVec3(0, 0, 0);
+    this.previousUniformCenterPosition = createVec3(Number.NaN, Number.NaN, Number.NaN);
+    this.previousUniformBoundsHalfExtents = createVec3(Number.NaN, Number.NaN, Number.NaN);
+    this.previousUniformParameterA = createVec3(Number.NaN, Number.NaN, Number.NaN);
+    this.previousUniformParameterB = createVec3(Number.NaN, Number.NaN, Number.NaN);
+    this.boundsMinCorner = createVec3(0, 0, 0);
+    this.boundsMaxCorner = createVec3(0, 0, 0);
+    this.centerUniformLocation = null;
+    this.boundsHalfExtentsUniformLocation = null;
+    this.parameterAUniformLocation = null;
+    this.parameterBUniformLocation = null;
+    this.isUniformCenterDirty = true;
+    this.areParameterUniformsDirty = true;
+  }
+
+  getDistanceFunctionBody() {
+    return `  return length(sdfPoint) - ${this.parameterAUniformName}.x;`;
+  }
+
+  getGlobalCode() {
+    return [
+      `uniform vec3 ${this.centerUniformName};`,
+      `uniform vec3 ${this.boundsHalfExtentsUniformName};`,
+      `uniform vec3 ${this.parameterAUniformName};`,
+      `uniform vec3 ${this.parameterBUniformName};`,
+      `float ${this.distanceFunctionName}(vec3 point) {`,
+      `  vec3 sdfPoint = point - ${this.centerUniformName};`,
+      this.getDistanceFunctionBody(),
+      '}',
+      `float ${this.intersectFunctionName}(vec3 origin, vec3 ray, vec3 inverseRay) {`,
+      `  vec3 sdfMin = ${this.centerUniformName} - ${this.boundsHalfExtentsUniformName};`,
+      `  vec3 sdfMax = ${this.centerUniformName} + ${this.boundsHalfExtentsUniformName};`,
+      '  vec3 sdfTMin = (sdfMin - origin) * inverseRay;',
+      '  vec3 sdfTMax = (sdfMax - origin) * inverseRay;',
+      '  vec3 sdfT1 = min(sdfTMin, sdfTMax);',
+      '  vec3 sdfT2 = max(sdfTMin, sdfTMax);',
+      '  float sdfNear = max(max(sdfT1.x, sdfT1.y), sdfT1.z);',
+      '  float sdfFar = min(min(sdfT2.x, sdfT2.y), sdfT2.z);',
+      `  if(sdfNear >= sdfFar || sdfFar <= ${SHADER_EPSILON}) return ${SHADER_INFINITY};`,
+      `  float sdfRayLength = max(length(ray), ${SHADER_EPSILON});`,
+      '  vec3 sdfRayDirection = ray / sdfRayLength;',
+      `  float sdfTraceDistance = max(sdfNear, ${SHADER_EPSILON}) * sdfRayLength;`,
+      '  float sdfTraceEndDistance = sdfFar * sdfRayLength;',
+      `  for(int sdfStep = 0; sdfStep < ${SDF_TRACE_STEP_COUNT}; sdfStep++) {`,
+      `    if(sdfTraceDistance > sdfTraceEndDistance) return ${SHADER_INFINITY};`,
+      '    vec3 sdfTracePoint = origin + sdfRayDirection * sdfTraceDistance;',
+      `    float sdfSignedDistance = ${this.distanceFunctionName}(sdfTracePoint);`,
+      `    if(abs(sdfSignedDistance) < ${SDF_SURFACE_EPSILON}) return sdfTraceDistance / sdfRayLength;`,
+      `    sdfTraceDistance += clamp(abs(sdfSignedDistance) * 0.82, ${SDF_TRACE_MIN_STEP}, ${SDF_TRACE_MAX_STEP});`,
+      '  }',
+      `  return ${SHADER_INFINITY};`,
+      '}',
+      `vec3 ${this.normalFunctionName}(vec3 point) {`,
+      '  vec2 sdfEpsilon = vec2(0.002, 0.0);',
+      '  return normalize(vec3(',
+      `    ${this.distanceFunctionName}(point + sdfEpsilon.xyy) - ${this.distanceFunctionName}(point - sdfEpsilon.xyy),`,
+      `    ${this.distanceFunctionName}(point + sdfEpsilon.yxy) - ${this.distanceFunctionName}(point - sdfEpsilon.yxy),`,
+      `    ${this.distanceFunctionName}(point + sdfEpsilon.yyx) - ${this.distanceFunctionName}(point - sdfEpsilon.yyx)`,
+      '  ));',
+      '}'
+    ].join('');
+  }
+
+  getIntersectCode() {
+    return `float ${this.intersectionName} = ${this.intersectFunctionName}(origin, ray, inverseRay);`;
+  }
+
+  getShadowTestCode() {
+    if (isTransparentMaterial(this.material)) {
+      return '';
+    }
+    return `if(${this.intersectFunctionName}(origin, ray, inverseRay) < 1.0) return 0.0;`;
+  }
+
+  getMinimumIntersectCode() {
+    return `if(${this.intersectionName} < t) t = ${this.intersectionName};`;
+  }
+
+  getNormalCalculationCode() {
+    return [
+      `else if(t == ${this.intersectionName}) {`,
+      `normal = ${this.normalFunctionName}(hit);`,
+      materialUsesSurfaceShaderUtilities(this.material) ? `surfaceObjectPoint = normalize(hit - ${this.centerUniformName}) * ${this.parameterAUniformName}.x;` : '',
+      createObjectSurfaceShaderSource(this.material),
+      '}'
+    ].join('');
+  }
+
+  setMaterial(material) {
+    this.material = normalizeMaterial(material);
+    return returnSuccess(undefined);
+  }
+
+  cacheUniformLocations(webGlContext, program, uniformLocationCache) {
+    this.centerUniformLocation = readUniformLocation(webGlContext, program, uniformLocationCache, this.centerUniformName);
+    this.boundsHalfExtentsUniformLocation = readUniformLocation(
+      webGlContext,
+      program,
+      uniformLocationCache,
+      this.boundsHalfExtentsUniformName
+    );
+    this.parameterAUniformLocation = readUniformLocation(webGlContext, program, uniformLocationCache, this.parameterAUniformName);
+    this.parameterBUniformLocation = readUniformLocation(webGlContext, program, uniformLocationCache, this.parameterBUniformName);
+    writeVec3(this.previousUniformCenterPosition, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousUniformBoundsHalfExtents, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousUniformParameterA, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousUniformParameterB, Number.NaN, Number.NaN, Number.NaN);
+    this.isUniformCenterDirty = true;
+    this.areParameterUniformsDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  setUniforms(webGlContext) {
+    if (this.centerUniformLocation !== null && this.isUniformCenterDirty) {
+      writeAddVec3(this.uniformCenterPosition, this.centerPosition, this.temporaryTranslation);
+      setChangedCachedVec3UniformValue(
+        webGlContext,
+        this.centerUniformLocation,
+        this.uniformCenterPosition,
+        this.previousUniformCenterPosition
+      );
+      this.isUniformCenterDirty = false;
+    }
+
+    if (!this.areParameterUniformsDirty) {
+      return;
+    }
+
+    setChangedCachedVec3UniformValue(
+      webGlContext,
+      this.boundsHalfExtentsUniformLocation,
+      this.boundsHalfExtents,
+      this.previousUniformBoundsHalfExtents
+    );
+    setChangedCachedVec3UniformValue(
+      webGlContext,
+      this.parameterAUniformLocation,
+      this.parameterA,
+      this.previousUniformParameterA
+    );
+    setChangedCachedVec3UniformValue(
+      webGlContext,
+      this.parameterBUniformLocation,
+      this.parameterB,
+      this.previousUniformParameterB
+    );
+    this.areParameterUniformsDirty = false;
+  }
+
+  setTemporaryTranslation(translationVector) {
+    writeVec3(this.temporaryTranslation, translationVector[0], translationVector[1], translationVector[2]);
+    this.isUniformCenterDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  commitTranslation(translationVector) {
+    writeAddVec3(this.centerPosition, this.centerPosition, translationVector);
+    this.isUniformCenterDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  getTranslatedCenter() {
+    return writeAddVec3(this.uniformCenterPosition, this.centerPosition, this.temporaryTranslation);
+  }
+
+  getMinCorner() {
+    return writeSubtractVec3(this.boundsMinCorner, this.getTranslatedCenter(), this.boundsHalfExtents);
+  }
+
+  getMaxCorner() {
+    return writeAddVec3(this.boundsMaxCorner, this.getTranslatedCenter(), this.boundsHalfExtents);
+  }
+
+  intersectRay(originPosition, rayDirection) {
+    const intersectionDistance = intersectCube(originPosition, rayDirection, this.getMinCorner(), this.getMaxCorner());
+    return returnSuccess(intersectionDistance);
+  }
+}
+
+class CylinderSceneObject extends SdfSceneObject {
+  constructor(centerPosition, radius, halfHeight, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      createVec3(radius, halfHeight, radius),
+      createVec3(radius, halfHeight, 0),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec2 cylinderDistance = abs(vec2(length(sdfPoint.xz), sdfPoint.y)) - vec2(${this.parameterAUniformName}.x, ${this.parameterAUniformName}.y);`,
+      '  return min(max(cylinderDistance.x, cylinderDistance.y), 0.0) + length(max(cylinderDistance, 0.0));'
+    ].join('');
+  }
+}
+
+class ConeSceneObject extends SdfSceneObject {
+  constructor(centerPosition, bottomRadius, topRadius, halfHeight, objectId, material = MATERIAL.DIFFUSE) {
+    const boundsRadius = Math.max(bottomRadius, topRadius);
+    super(
+      centerPosition,
+      createVec3(boundsRadius, halfHeight, boundsRadius),
+      createVec3(bottomRadius, topRadius, halfHeight),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  float coneHalfHeight = ${this.parameterAUniformName}.z;`,
+      `  float coneHeightMix = clamp((sdfPoint.y + coneHalfHeight) / max(coneHalfHeight * 2.0, ${SHADER_EPSILON}), 0.0, 1.0);`,
+      `  float coneRadius = mix(${this.parameterAUniformName}.x, ${this.parameterAUniformName}.y, coneHeightMix);`,
+      '  vec2 coneDistance = vec2(length(sdfPoint.xz) - coneRadius, abs(sdfPoint.y) - coneHalfHeight);',
+      '  return min(max(coneDistance.x, coneDistance.y), 0.0) + length(max(coneDistance, 0.0));'
+    ].join('');
+  }
+}
+
+class CapsuleSceneObject extends SdfSceneObject {
+  constructor(centerPosition, radius, halfSegmentHeight, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      createVec3(radius, halfSegmentHeight + radius, radius),
+      createVec3(radius, halfSegmentHeight, 0),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      '  vec3 capsulePoint = sdfPoint;',
+      `  capsulePoint.y -= clamp(capsulePoint.y, -${this.parameterAUniformName}.y, ${this.parameterAUniformName}.y);`,
+      `  return length(capsulePoint) - ${this.parameterAUniformName}.x;`
+    ].join('');
+  }
+}
+
+class EllipsoidSceneObject extends SdfSceneObject {
+  constructor(centerPosition, radii, objectId, material = MATERIAL.DIFFUSE) {
+    super(centerPosition, radii, radii, ORIGIN_VECTOR, objectId, material);
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec3 ellipsoidRadii = max(${this.parameterAUniformName}, vec3(${SHADER_EPSILON}));`,
+      '  float ellipsoidScale = min(min(ellipsoidRadii.x, ellipsoidRadii.y), ellipsoidRadii.z);',
+      '  return (length(sdfPoint / ellipsoidRadii) - 1.0) * ellipsoidScale;'
+    ].join('');
+  }
+}
+
+class TorusSceneObject extends SdfSceneObject {
+  constructor(centerPosition, majorRadius, minorRadius, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      createVec3(majorRadius + minorRadius, minorRadius, majorRadius + minorRadius),
+      createVec3(majorRadius, minorRadius, 0),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec2 torusDistance = vec2(length(sdfPoint.xz) - ${this.parameterAUniformName}.x, sdfPoint.y);`,
+      `  return length(torusDistance) - ${this.parameterAUniformName}.y;`
+    ].join('');
+  }
+}
+
+class RoundedBoxSceneObject extends SdfSceneObject {
+  constructor(centerPosition, halfExtents, radius, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      addVec3(halfExtents, createVec3(radius, radius, radius)),
+      halfExtents,
+      createVec3(radius, 0, 0),
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec3 roundedBoxDistance = abs(sdfPoint) - ${this.parameterAUniformName};`,
+      '  float roundedBoxOutside = length(max(roundedBoxDistance, 0.0));',
+      '  float roundedBoxInside = min(max(roundedBoxDistance.x, max(roundedBoxDistance.y, roundedBoxDistance.z)), 0.0);',
+      `  return roundedBoxOutside + roundedBoxInside - ${this.parameterBUniformName}.x;`
+    ].join('');
+  }
+}
+
+class DiskSceneObject extends CylinderSceneObject {
+  constructor(centerPosition, radius, halfThickness, objectId, material = MATERIAL.DIFFUSE) {
+    super(centerPosition, radius, halfThickness, objectId, material);
+  }
+}
+
+class WedgeSceneObject extends SdfSceneObject {
+  constructor(centerPosition, halfWidth, halfHeight, halfDepth, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      createVec3(halfWidth, halfHeight, halfDepth),
+      createVec3(halfWidth, halfHeight, halfDepth),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  float wedgeRamp = clamp((sdfPoint.y + ${this.parameterAUniformName}.y) / max(${this.parameterAUniformName}.y * 2.0, ${SHADER_EPSILON}), 0.0, 1.0);`,
+      `  float wedgeWidth = mix(${this.parameterAUniformName}.x, 0.0, wedgeRamp);`,
+      `  vec3 wedgeDistance = vec3(abs(sdfPoint.x) - wedgeWidth, abs(sdfPoint.y) - ${this.parameterAUniformName}.y, abs(sdfPoint.z) - ${this.parameterAUniformName}.z);`,
+      '  return min(max(wedgeDistance.x, max(wedgeDistance.y, wedgeDistance.z)), 0.0) + length(max(wedgeDistance, 0.0));'
+    ].join('');
+  }
+}
+
+class TriangularPrismSceneObject extends WedgeSceneObject {
+  constructor(centerPosition, halfWidth, halfHeight, halfDepth, objectId, material = MATERIAL.DIFFUSE) {
+    super(centerPosition, halfWidth, halfHeight, halfDepth, objectId, material);
+  }
+}
+
+class MetaballsSceneObject extends SdfSceneObject {
+  constructor(centerPosition, radius, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      createVec3(radius * 2.2, radius * 1.55, radius * 1.35),
+      createVec3(radius, radius * 0.64, 0.18),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  float metaballRadius = ${this.parameterAUniformName}.x;`,
+      `  float metaballBlend = ${this.parameterAUniformName}.z;`,
+      `  float metaballOne = length(sdfPoint - vec3(-${this.parameterAUniformName}.y, 0.0, 0.0)) - metaballRadius;`,
+      `  float metaballTwo = length(sdfPoint - vec3(${this.parameterAUniformName}.y, 0.0, 0.0)) - metaballRadius;`,
+      `  float metaballThree = length(sdfPoint - vec3(0.0, ${this.parameterAUniformName}.y * 0.72, ${this.parameterAUniformName}.y * 0.45)) - metaballRadius * 0.82;`,
+      '  float metaballMixA = clamp(0.5 + 0.5 * (metaballTwo - metaballOne) / metaballBlend, 0.0, 1.0);',
+      '  float metaballDistance = mix(metaballTwo, metaballOne, metaballMixA) - metaballBlend * metaballMixA * (1.0 - metaballMixA);',
+      '  float metaballMixB = clamp(0.5 + 0.5 * (metaballThree - metaballDistance) / metaballBlend, 0.0, 1.0);',
+      '  return mix(metaballThree, metaballDistance, metaballMixB) - metaballBlend * metaballMixB * (1.0 - metaballMixB);'
+    ].join('');
+  }
+}
+
+class CsgSceneObject extends SdfSceneObject {
+  constructor(centerPosition, size, objectId, material = MATERIAL.DIFFUSE) {
+    super(
+      centerPosition,
+      createVec3(size, size, size),
+      createVec3(size * 0.58, size * 0.18, size * 0.52),
+      ORIGIN_VECTOR,
+      objectId,
+      material
+    );
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec3 csgBoxDistance = abs(sdfPoint) - vec3(${this.parameterAUniformName}.x);`,
+      '  float csgBox = length(max(csgBoxDistance, 0.0)) + min(max(csgBoxDistance.x, max(csgBoxDistance.y, csgBoxDistance.z)), 0.0);',
+      `  float csgSphere = length(sdfPoint - vec3(${this.parameterAUniformName}.y)) - ${this.parameterAUniformName}.z;`,
+      '  return max(csgBox, -csgSphere);'
+    ].join('');
+  }
+}
+
+class MandelbulbSceneObject extends SdfSceneObject {
+  constructor(centerPosition, radius, objectId, material = MATERIAL.DIFFUSE) {
+    super(centerPosition, createVec3(radius, radius, radius), createVec3(radius, 8, 0), ORIGIN_VECTOR, objectId, material);
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec3 mandelPoint = sdfPoint / max(${this.parameterAUniformName}.x, ${SHADER_EPSILON});`,
+      '  vec3 mandelZ = mandelPoint;',
+      '  float mandelDerivative = 1.0;',
+      '  float mandelRadius = 0.0;',
+      '  for(int mandelStep = 0; mandelStep < 6; mandelStep++) {',
+      '    mandelRadius = max(length(mandelZ), 0.0001);',
+      '    if(mandelRadius > 2.0) break;',
+      '    float mandelTheta = acos(clamp(mandelZ.z / mandelRadius, -1.0, 1.0));',
+      '    float mandelPhi = atan(mandelZ.y, mandelZ.x);',
+      `    float mandelPower = ${this.parameterAUniformName}.y;`,
+      '    mandelDerivative = pow(mandelRadius, mandelPower - 1.0) * mandelPower * mandelDerivative + 1.0;',
+      '    float mandelScale = pow(mandelRadius, mandelPower);',
+      '    mandelTheta *= mandelPower;',
+      '    mandelPhi *= mandelPower;',
+      '    mandelZ = mandelScale * vec3(sin(mandelTheta) * cos(mandelPhi), sin(mandelPhi) * sin(mandelTheta), cos(mandelTheta)) + mandelPoint;',
+      '  }',
+      `  return 0.5 * log(max(mandelRadius, 0.0001)) * mandelRadius / mandelDerivative * ${this.parameterAUniformName}.x;`
+    ].join('');
+  }
+}
+
+class SdfFractalSceneObject extends SdfSceneObject {
+  constructor(centerPosition, radius, objectId, material = MATERIAL.DIFFUSE) {
+    super(centerPosition, createVec3(radius, radius, radius), createVec3(radius, 0.34, 0.16), ORIGIN_VECTOR, objectId, material);
+  }
+
+  getDistanceFunctionBody() {
+    return [
+      `  vec3 fractalPoint = sdfPoint / max(${this.parameterAUniformName}.x, ${SHADER_EPSILON});`,
+      '  float fractalScale = 1.0;',
+      '  for(int fractalStep = 0; fractalStep < 5; fractalStep++) {',
+      '    fractalPoint = abs(fractalPoint);',
+      `    fractalPoint = fractalPoint * 2.05 - vec3(${this.parameterAUniformName}.y);`,
+      '    fractalScale *= 2.05;',
+      '  }',
+      `  vec3 fractalBoxDistance = abs(fractalPoint) - vec3(${this.parameterAUniformName}.z);`,
+      '  float fractalBox = length(max(fractalBoxDistance, 0.0)) + min(max(fractalBoxDistance.x, max(fractalBoxDistance.y, fractalBoxDistance.z)), 0.0);',
+      `  return fractalBox / fractalScale * ${this.parameterAUniformName}.x;`
+    ].join('');
+  }
+}
+
+class AreaLightSceneObject extends RoundedBoxSceneObject {
+  constructor(centerPosition, halfExtents, radius, objectId) {
+    super(centerPosition, halfExtents, radius, objectId, MATERIAL.DIFFUSE);
+  }
+
+  getShadowTestCode() {
+    return '';
+  }
+
+  getNormalCalculationCode() {
+    return [
+      `else if(t == ${this.intersectionName}) {`,
+      `normal = ${this.normalFunctionName}(hit);`,
+      'surfaceColor = vec3(1.0, 0.82, 0.44);',
+      'surfaceLightResponse = 0.0;',
+      'accumulatedColor += colorMask * surfaceColor * lightIntensity * 3.2;',
+      newDiffuseRaySource,
+      '}'
+    ].join('');
+  }
+}
+
 class LightSceneObject {
   constructor(applicationState) {
     this.applicationState = applicationState;
@@ -2737,6 +3281,25 @@ const createBenchmarkSnapshot = () => ({
   measurementSource: 'warming-up'
 });
 
+const writePausedBenchmarkSnapshot = (benchmarkSnapshot, measurementSource, shouldPauseFrames) => {
+  benchmarkSnapshot.activeRaysPerSecond = 0;
+  benchmarkSnapshot.estimatedRayBandwidthBytesPerSecond = 0;
+  benchmarkSnapshot.activeRaysPerFrame = 0;
+  benchmarkSnapshot.pathRayBudgetPerFrame = 0;
+  benchmarkSnapshot.samplesPerFrame = 0;
+  benchmarkSnapshot.traceMilliseconds = 0;
+  benchmarkSnapshot.rollingSamplesPerFrame = 0;
+  benchmarkSnapshot.rollingTraceMilliseconds = 0;
+  benchmarkSnapshot.scoreSampleCount = 0;
+  benchmarkSnapshot.performanceScore = 0;
+  benchmarkSnapshot.measurementSource = measurementSource;
+  if (shouldPauseFrames) {
+    benchmarkSnapshot.perceptualFramesPerSecond = 0;
+    benchmarkSnapshot.perceptualFrameMilliseconds = 0;
+  }
+  return returnSuccess(undefined);
+};
+
 class RollingBenchmarkWindow {
   constructor(traceSampleBytes) {
     this.samples = [];
@@ -2963,6 +3526,7 @@ class PathTracer {
     this.sampleCount = 0;
     this.randomSampleSequence = 0;
     this.currentRaysPerPixel = DEFAULT_RAYS_PER_PIXEL;
+    this.lastRenderedSampleCount = 0;
     this.tracerProgram = null;
     this.tracerVertexAttribute = -1;
     this.currentTextureIndex = 0;
@@ -3439,6 +4003,10 @@ class PathTracer {
     return this.benchmarkWindow.recordFramePacing(this.benchmarkSnapshot, timestampMilliseconds, elapsedSeconds);
   }
 
+  writePausedBenchmarkSnapshot(measurementSource, shouldPauseFrames) {
+    return writePausedBenchmarkSnapshot(this.benchmarkSnapshot, measurementSource, shouldPauseFrames);
+  }
+
   update(inverseCameraMatrix, applicationState, didCameraChange, cameraRight, cameraUp) {
     if (!this.tracerProgram) {
       return returnFailure('missing-tracer-program', 'Path tracer program has not been created.');
@@ -3453,6 +4021,32 @@ class PathTracer {
     );
     const sampleUniformValues = this.sampleUniformValues;
     this.currentRaysPerPixel = raysPerPixel;
+    this.lastRenderedSampleCount = 0;
+
+    if (
+      applicationState.isConvergencePauseEnabled &&
+      this.sampleCount >= applicationState.convergenceSampleCount
+    ) {
+      const [latestGpuTiming, latestGpuTimingError] = this.readLatestBenchmarkTiming();
+      if (latestGpuTimingError) {
+        return returnFailure(latestGpuTimingError.code, latestGpuTimingError.message, latestGpuTimingError.details);
+      }
+      if (latestGpuTiming) {
+        const [, benchmarkSnapshotError] = this.writeBenchmarkSnapshot(
+          performance.now(),
+          latestGpuTiming.renderedSampleCount,
+          latestGpuTiming.lightBounceCount,
+          latestGpuTiming.durationMilliseconds,
+          'gpu-timer'
+        );
+        if (benchmarkSnapshotError) {
+          return returnFailure(benchmarkSnapshotError.code, benchmarkSnapshotError.message, benchmarkSnapshotError.details);
+        }
+      }
+      applicationState.isConvergencePaused = true;
+      return returnSuccess(undefined);
+    }
+    applicationState.isConvergencePaused = false;
 
     if (didCameraChange) {
       writeVec3(this.cameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
@@ -3550,6 +4144,8 @@ class PathTracer {
         return returnFailure(benchmarkEndError.code, benchmarkEndError.message, benchmarkEndError.details);
       }
     }
+
+    this.lastRenderedSampleCount = raysPerPixel;
 
     if (latestGpuTiming) {
       const [, benchmarkSnapshotError] = this.writeBenchmarkSnapshot(
@@ -4048,6 +4644,12 @@ const formatBenchmarkSourceLabel = (measurementSource) => {
   if (measurementSource === 'gpu-timer') {
     return 'GPU timer';
   }
+  if (measurementSource === 'frame-paused') {
+    return 'Frames paused';
+  }
+  if (measurementSource === 'rays-paused') {
+    return 'Rays paused';
+  }
   if (measurementSource === 'frame-estimate-pending') {
     return 'Frame estimate';
   }
@@ -4079,8 +4681,9 @@ class BenchmarkDisplay {
     this.previousUpdateMilliseconds = 0;
   }
 
-  update(currentTimeMilliseconds, benchmarkSnapshot) {
+  update(currentTimeMilliseconds, benchmarkSnapshot, shouldForceUpdate = false) {
     if (
+      !shouldForceUpdate &&
       this.previousUpdateMilliseconds > 0 &&
       currentTimeMilliseconds - this.previousUpdateMilliseconds < BENCHMARK_UPDATE_INTERVAL_MILLISECONDS
     ) {
@@ -4088,9 +4691,10 @@ class BenchmarkDisplay {
     }
 
     this.previousUpdateMilliseconds = currentTimeMilliseconds;
+    const shouldShowPausedZero = isPausedBenchmarkSource(benchmarkSnapshot.measurementSource);
     const [, performanceScoreError] = writeElementTextIfChanged(
       this.performanceScoreElement,
-      formatCompactMetricValue(benchmarkSnapshot.performanceScore)
+      formatPausedAwareCompactMetricValue(benchmarkSnapshot.performanceScore, shouldShowPausedZero)
     );
     if (performanceScoreError) {
       return returnFailure(performanceScoreError.code, performanceScoreError.message, performanceScoreError.details);
@@ -4098,7 +4702,7 @@ class BenchmarkDisplay {
 
     const [, raysPerSecondError] = writeElementTextIfChanged(
       this.raysPerSecondElement,
-      formatBenchmarkRateValue(benchmarkSnapshot.activeRaysPerSecond)
+      formatPausedAwareBenchmarkRateValue(benchmarkSnapshot.activeRaysPerSecond, shouldShowPausedZero)
     );
     if (raysPerSecondError) {
       return returnFailure(raysPerSecondError.code, raysPerSecondError.message, raysPerSecondError.details);
@@ -4106,7 +4710,7 @@ class BenchmarkDisplay {
 
     const [, rayBandwidthError] = writeElementTextIfChanged(
       this.rayBandwidthElement,
-      formatBandwidthValue(benchmarkSnapshot.estimatedRayBandwidthBytesPerSecond)
+      formatPausedAwareBandwidthValue(benchmarkSnapshot.estimatedRayBandwidthBytesPerSecond, shouldShowPausedZero)
     );
     if (rayBandwidthError) {
       return returnFailure(rayBandwidthError.code, rayBandwidthError.message, rayBandwidthError.details);
@@ -4114,7 +4718,7 @@ class BenchmarkDisplay {
 
     const [, perceptualFramesPerSecondError] = writeElementTextIfChanged(
       this.perceptualFramesPerSecondElement,
-      formatFramesPerSecondValue(benchmarkSnapshot.perceptualFramesPerSecond)
+      formatPausedAwareFramesPerSecondValue(benchmarkSnapshot.perceptualFramesPerSecond, shouldShowPausedZero)
     );
     if (perceptualFramesPerSecondError) {
       return returnFailure(
@@ -4126,7 +4730,7 @@ class BenchmarkDisplay {
 
     const [, raysPerFrameError] = writeElementTextIfChanged(
       this.raysPerFrameElement,
-      formatCompactMetricValue(benchmarkSnapshot.activeRaysPerFrame)
+      formatPausedAwareCompactMetricValue(benchmarkSnapshot.activeRaysPerFrame, shouldShowPausedZero)
     );
     if (raysPerFrameError) {
       return returnFailure(raysPerFrameError.code, raysPerFrameError.message, raysPerFrameError.details);
@@ -4134,7 +4738,7 @@ class BenchmarkDisplay {
 
     const [, samplesPerFrameError] = writeElementTextIfChanged(
       this.samplesPerFrameElement,
-      formatCompactMetricValue(benchmarkSnapshot.samplesPerFrame)
+      formatPausedAwareCompactMetricValue(benchmarkSnapshot.samplesPerFrame, shouldShowPausedZero)
     );
     if (samplesPerFrameError) {
       return returnFailure(samplesPerFrameError.code, samplesPerFrameError.message, samplesPerFrameError.details);
@@ -4142,7 +4746,7 @@ class BenchmarkDisplay {
 
     const [, frameTimeError] = writeElementTextIfChanged(
       this.frameTimeElement,
-      formatBenchmarkMilliseconds(benchmarkSnapshot.traceMilliseconds)
+      formatPausedAwareBenchmarkMilliseconds(benchmarkSnapshot.traceMilliseconds, shouldShowPausedZero)
     );
     if (frameTimeError) {
       return returnFailure(frameTimeError.code, frameTimeError.message, frameTimeError.details);
@@ -4160,6 +4764,23 @@ class BenchmarkDisplay {
   }
 }
 
+const formatSceneObjectDisplayName = (sceneObject, lightObject) => {
+  if (!sceneObject) {
+    return 'No selection';
+  }
+  if (sceneObject === lightObject) {
+    return 'Light';
+  }
+  const constructorName = sceneObject.constructor && sceneObject.constructor.name
+    ? sceneObject.constructor.name
+    : 'Scene item';
+  return constructorName
+    .replace(/SceneObject$/, '')
+    .replace(/Sdf/g, 'SDF')
+    .replace(/Csg/g, 'CSG')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+};
+
 class UserInterfaceController {
   constructor(
     selectionRenderer,
@@ -4167,6 +4788,8 @@ class UserInterfaceController {
     applicationState,
     canvasElement,
     cameraPlaybackButton,
+    framePauseButton,
+    convergencePauseButton,
     lightCycleButton,
     focusPickButton,
     glossinessContainer,
@@ -4209,13 +4832,23 @@ class UserInterfaceController {
     bloomThresholdInput,
     bloomThresholdValueElement,
     glareStrengthInput,
-    glareStrengthValueElement
+    glareStrengthValueElement,
+    selectedItemNameElement,
+    sceneTreeListElement,
+    sceneTreeCountElement,
+    resolutionPresetSelect,
+    customResolutionInput,
+    exportStatusElement,
+    fullscreenCanvasButton,
+    benchmarkDisplay
   ) {
     this.selectionRenderer = selectionRenderer;
     this.physicsWorld = physicsWorld;
     this.applicationState = applicationState;
     this.canvasElement = canvasElement;
     this.cameraPlaybackButton = cameraPlaybackButton;
+    this.framePauseButton = framePauseButton;
+    this.convergencePauseButton = convergencePauseButton;
     this.lightCycleButton = lightCycleButton;
     this.focusPickButton = focusPickButton;
     this.glossinessContainer = glossinessContainer;
@@ -4259,6 +4892,14 @@ class UserInterfaceController {
     this.bloomThresholdValueElement = bloomThresholdValueElement;
     this.glareStrengthInput = glareStrengthInput;
     this.glareStrengthValueElement = glareStrengthValueElement;
+    this.selectedItemNameElement = selectedItemNameElement;
+    this.sceneTreeListElement = sceneTreeListElement;
+    this.sceneTreeCountElement = sceneTreeCountElement;
+    this.resolutionPresetSelect = resolutionPresetSelect;
+    this.customResolutionInput = customResolutionInput;
+    this.exportStatusElement = exportStatusElement;
+    this.fullscreenCanvasButton = fullscreenCanvasButton;
+    this.benchmarkDisplay = benchmarkDisplay;
     this.sceneObjects = [];
     this.lightObject = new LightSceneObject(applicationState);
     this.isMovingSelection = false;
@@ -4284,6 +4925,15 @@ class UserInterfaceController {
 
   setSceneObjects(sceneObjects) {
     this.sceneObjects = [this.lightObject, ...sceneObjects];
+    if (!this.sceneObjects.includes(this.selectionRenderer.selectedObject)) {
+      this.selectionRenderer.selectedObject = null;
+    }
+
+    const [, syncError] = this.syncSelectedItemReadout();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
     return this.syncSceneObjectsToRendererAndPhysics();
   }
 
@@ -4391,7 +5041,70 @@ class UserInterfaceController {
       return returnFailure(rendererError.code, rendererError.message, rendererError.details);
     }
 
+    const [, convergencePauseButtonError] = updateConvergencePauseButton(
+      this.convergencePauseButton,
+      this.applicationState.isConvergencePauseEnabled,
+      this.applicationState.isConvergencePaused,
+      this.applicationState.convergenceSampleCount
+    );
+    if (convergencePauseButtonError) {
+      return returnFailure(
+        convergencePauseButtonError.code,
+        convergencePauseButtonError.message,
+        convergencePauseButtonError.details
+      );
+    }
+
     return returnSuccess(undefined);
+  }
+
+  syncSelectedItemReadout() {
+    const [, readoutError] = writeElementTextIfChanged(
+      this.selectedItemNameElement,
+      formatSceneObjectDisplayName(this.selectionRenderer.selectedObject, this.lightObject)
+    );
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.syncSceneTree();
+  }
+
+  syncSceneTree() {
+    const documentObject = this.sceneTreeListElement.ownerDocument;
+    this.sceneTreeListElement.textContent = '';
+    const selectedObject = this.selectionRenderer.selectedObject;
+    for (let sceneObjectIndex = 0; sceneObjectIndex < this.sceneObjects.length; sceneObjectIndex += 1) {
+      const sceneObject = this.sceneObjects[sceneObjectIndex];
+      const itemButton = documentObject.createElement('button');
+      itemButton.type = 'button';
+      itemButton.dataset.sceneObjectIndex = String(sceneObjectIndex);
+      itemButton.setAttribute('role', 'option');
+      itemButton.setAttribute('aria-selected', sceneObject === selectedObject ? 'true' : 'false');
+      itemButton.setAttribute('aria-pressed', sceneObject === selectedObject ? 'true' : 'false');
+      const sceneItemName = formatSceneObjectDisplayName(sceneObject, this.lightObject);
+      itemButton.textContent = sceneObject === this.lightObject ? sceneItemName : `${sceneItemName} #${sceneObjectIndex}`;
+      this.sceneTreeListElement.appendChild(itemButton);
+    }
+
+    return writeElementTextIfChanged(
+      this.sceneTreeCountElement,
+      `${this.sceneObjects.length} scene ${this.sceneObjects.length === 1 ? 'item' : 'items'}`
+    );
+  }
+
+  selectSceneObjectByIndex(sceneObjectIndexValue) {
+    const sceneObjectIndex = Number.parseInt(sceneObjectIndexValue, 10);
+    if (!Number.isInteger(sceneObjectIndex) || sceneObjectIndex < 0 || sceneObjectIndex >= this.sceneObjects.length) {
+      return returnFailure('invalid-scene-tree-selection', 'Scene tree item is not available.');
+    }
+
+    const selectedObject = this.sceneObjects[sceneObjectIndex];
+    this.selectionRenderer.selectedObject = selectedObject;
+    const [, materialSyncError] = this.syncMaterialSelectToObject(selectedObject);
+    if (materialSyncError) {
+      return returnFailure(materialSyncError.code, materialSyncError.message, materialSyncError.details);
+    }
+    return this.syncSelectedItemReadout();
   }
 
   render() {
@@ -4400,7 +5113,7 @@ class UserInterfaceController {
 
   selectLight() {
     this.selectionRenderer.selectedObject = this.lightObject;
-    return returnSuccess(undefined);
+    return this.syncSelectedItemReadout();
   }
 
   addSphere() {
@@ -4411,6 +5124,11 @@ class UserInterfaceController {
       this.applicationState.material
     );
     this.sceneObjects.push(sphereObject);
+    this.selectionRenderer.selectedObject = sphereObject;
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
     return this.syncSceneObjectsToRendererAndPhysics();
   }
 
@@ -4422,6 +5140,22 @@ class UserInterfaceController {
       this.applicationState.material
     );
     this.sceneObjects.push(cubeObject);
+    this.selectionRenderer.selectedObject = cubeObject;
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.syncSceneObjectsToRendererAndPhysics();
+  }
+
+  addPrimitive(primitiveFactory) {
+    const sceneObject = primitiveFactory(this.applicationState);
+    this.sceneObjects.push(sceneObject);
+    this.selectionRenderer.selectedObject = sceneObject;
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
     return this.syncSceneObjectsToRendererAndPhysics();
   }
 
@@ -4437,6 +5171,10 @@ class UserInterfaceController {
     }
 
     this.selectionRenderer.selectedObject = null;
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
     return this.syncSceneObjectsToRendererAndPhysics();
   }
 
@@ -5077,6 +5815,103 @@ class UserInterfaceController {
     return returnSuccess(undefined);
   }
 
+  applyResolutionFromControls() {
+    const sourceValue = this.resolutionPresetSelect.value === 'custom'
+      ? this.customResolutionInput.value
+      : this.resolutionPresetSelect.value;
+    const nextCanvasSize = normalizeCanvasSize(sourceValue);
+    this.customResolutionInput.value = String(nextCanvasSize);
+    if (CANVAS_SIZE_PRESETS.includes(nextCanvasSize)) {
+      this.resolutionPresetSelect.value = String(nextCanvasSize);
+    } else {
+      this.resolutionPresetSelect.value = 'custom';
+    }
+
+    if (nextCanvasSize === CANVAS_SIZE) {
+      return writeElementTextIfChanged(this.exportStatusElement, `${CANVAS_SIZE} x ${CANVAS_SIZE} square`);
+    }
+
+    const windowObject = this.canvasElement.ownerDocument.defaultView;
+    if (!windowObject || !windowObject.location || !windowObject.URL || !windowObject.URLSearchParams) {
+      return returnFailure('resolution-reload-unavailable', 'Resolution changes require browser URL support.');
+    }
+
+    const nextUrl = new windowObject.URL(windowObject.location.href);
+    nextUrl.searchParams.set('resolution', String(nextCanvasSize));
+    writeElementTextIfChanged(this.exportStatusElement, `Reloading at ${nextCanvasSize} x ${nextCanvasSize}...`);
+    windowObject.location.href = nextUrl.href;
+    return returnSuccess(undefined);
+  }
+
+  saveCanvasBitmap() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const windowObject = documentObject.defaultView;
+    if (!windowObject || typeof this.canvasElement.toBlob !== 'function') {
+      return returnFailure('bitmap-export-unavailable', 'Canvas bitmap export is not available in this browser.');
+    }
+
+    writeElementTextIfChanged(this.exportStatusElement, 'Saving PNG...');
+    this.canvasElement.toBlob((blob) => {
+      if (!blob) {
+        writeElementTextIfChanged(this.exportStatusElement, 'PNG export failed.');
+        return;
+      }
+      const downloadLink = documentObject.createElement('a');
+      const objectUrl = windowObject.URL.createObjectURL(blob);
+      downloadLink.href = objectUrl;
+      downloadLink.download = `pathtracer-${CANVAS_SIZE}x${CANVAS_SIZE}.png`;
+      documentObject.body.appendChild(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
+      windowObject.URL.revokeObjectURL(objectUrl);
+      writeElementTextIfChanged(this.exportStatusElement, `Saved ${CANVAS_SIZE} x ${CANVAS_SIZE} PNG`);
+    }, 'image/png');
+
+    return returnSuccess(undefined);
+  }
+
+  syncFullscreenCanvasButton() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const isCanvasFullscreen = documentObject.fullscreenElement === this.canvasElement;
+    this.fullscreenCanvasButton.setAttribute('aria-pressed', isCanvasFullscreen ? 'true' : 'false');
+    return writeElementTextIfChanged(
+      this.fullscreenCanvasButton,
+      isCanvasFullscreen ? 'Exit Fullscreen' : 'Fullscreen'
+    );
+  }
+
+  toggleCanvasFullscreen() {
+    const documentObject = this.canvasElement.ownerDocument;
+    if (documentObject.fullscreenElement === this.canvasElement) {
+      if (typeof documentObject.exitFullscreen !== 'function') {
+        return returnFailure('fullscreen-unavailable', 'Fullscreen exit is not available in this browser.');
+      }
+
+      const fullscreenExit = documentObject.exitFullscreen();
+      if (fullscreenExit && typeof fullscreenExit.catch === 'function') {
+        fullscreenExit.catch(() => {
+          writeElementTextIfChanged(this.exportStatusElement, 'Fullscreen exit failed.');
+        });
+      }
+      return returnSuccess(undefined);
+    }
+
+    if (documentObject.fullscreenElement) {
+      return returnFailure('fullscreen-active', 'Another element is already fullscreen.');
+    }
+    if (typeof this.canvasElement.requestFullscreen !== 'function') {
+      return returnFailure('fullscreen-unavailable', 'Canvas fullscreen is not available in this browser.');
+    }
+
+    const fullscreenRequest = this.canvasElement.requestFullscreen();
+    if (fullscreenRequest && typeof fullscreenRequest.catch === 'function') {
+      fullscreenRequest.catch(() => {
+        writeElementTextIfChanged(this.exportStatusElement, 'Fullscreen failed.');
+      });
+    }
+    return returnSuccess(undefined);
+  }
+
   syncIntegerControlFromState(inputElement, valueElement, value) {
     inputElement.value = String(value);
     valueElement.textContent = String(value);
@@ -5087,6 +5922,13 @@ class UserInterfaceController {
     inputElement.value = value.toFixed(2);
     valueElement.textContent = formatValue(value);
     return returnSuccess(undefined);
+  }
+
+  syncResolutionControlsFromState() {
+    const presetValue = CANVAS_SIZE_PRESETS.includes(CANVAS_SIZE) ? String(CANVAS_SIZE) : 'custom';
+    this.resolutionPresetSelect.value = presetValue;
+    this.customResolutionInput.value = String(CANVAS_SIZE);
+    return writeElementTextIfChanged(this.exportStatusElement, `${CANVAS_SIZE} x ${CANVAS_SIZE} square`);
   }
 
   syncAllControlsFromState() {
@@ -5197,8 +6039,18 @@ class UserInterfaceController {
       ),
       () => this.syncLightIntensityValue(),
       () => updateCameraAutoRotationButton(this.cameraPlaybackButton, state.isCameraAutoRotating),
+      () => updateFramePauseButton(this.framePauseButton, state.isFramePaused),
+      () => updateConvergencePauseButton(
+        this.convergencePauseButton,
+        state.isConvergencePauseEnabled,
+        state.isConvergencePaused,
+        state.convergenceSampleCount
+      ),
       () => updateLightIntensityCycleButton(this.lightCycleButton, state.isLightIntensityCycling),
-      () => this.syncFocusPickMode()
+      () => this.syncFocusPickMode(),
+      () => this.syncSelectedItemReadout(),
+      () => this.syncResolutionControlsFromState(),
+      () => this.syncFullscreenCanvasButton()
     ];
 
     for (const syncAction of syncActions) {
@@ -5246,6 +6098,9 @@ class UserInterfaceController {
     state.isRotatingCamera = false;
     state.isPickingFocus = false;
     state.isPointerDown = false;
+    state.isConvergencePauseEnabled = false;
+    state.isConvergencePaused = false;
+    state.convergenceSampleCount = CONVERGED_SAMPLE_COUNT;
     state.isCameraAutoRotating = true;
     state.cameraAutoRotationSpeed = CAMERA_AUTO_ROTATION_SPEED;
     state.previousPointerX = 0;
@@ -5305,6 +6160,59 @@ class UserInterfaceController {
       return returnFailure(buttonError.code, buttonError.message, buttonError.details);
     }
     return this.selectionRenderer.pathTracer.clearSamples();
+  }
+
+  refreshPausedBenchmarkDisplay(measurementSource, shouldPauseFrames) {
+    const pathTracer = this.selectionRenderer.pathTracer;
+    const [, snapshotError] = pathTracer.writePausedBenchmarkSnapshot(measurementSource, shouldPauseFrames);
+    if (snapshotError) {
+      return returnFailure(snapshotError.code, snapshotError.message, snapshotError.details);
+    }
+    return this.benchmarkDisplay.update(performance.now(), pathTracer.benchmarkSnapshot, true);
+  }
+
+  toggleFramePause(toggleButton) {
+    this.applicationState.isFramePaused = !this.applicationState.isFramePaused;
+    const [, buttonError] = updateFramePauseButton(toggleButton, this.applicationState.isFramePaused);
+    if (buttonError) {
+      return returnFailure(buttonError.code, buttonError.message, buttonError.details);
+    }
+
+    if (this.applicationState.isFramePaused) {
+      const [, benchmarkError] = this.refreshPausedBenchmarkDisplay('frame-paused', true);
+      if (benchmarkError) {
+        return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
+      }
+      return cancelScheduledAnimationFrame(this.applicationState);
+    }
+    this.applicationState.didResumeFromFramePause = true;
+    return scheduleAnimationFrame(this.applicationState);
+  }
+
+  toggleConvergencePause(toggleButton) {
+    this.applicationState.isConvergencePauseEnabled = !this.applicationState.isConvergencePauseEnabled;
+    if (!this.applicationState.isConvergencePauseEnabled) {
+      this.applicationState.isConvergencePaused = false;
+    } else if (this.selectionRenderer.pathTracer.sampleCount >= this.applicationState.convergenceSampleCount) {
+      this.applicationState.isConvergencePaused = true;
+    }
+
+    const [, buttonError] = updateConvergencePauseButton(
+      toggleButton,
+      this.applicationState.isConvergencePauseEnabled,
+      this.applicationState.isConvergencePaused,
+      this.applicationState.convergenceSampleCount
+    );
+    if (buttonError) {
+      return returnFailure(buttonError.code, buttonError.message, buttonError.details);
+    }
+    if (this.applicationState.isFramePaused) {
+      return this.refreshPausedBenchmarkDisplay('frame-paused', true);
+    }
+    if (this.applicationState.isConvergencePaused) {
+      return this.refreshPausedBenchmarkDisplay('rays-paused', false);
+    }
+    return returnSuccess(undefined);
   }
 
   cancelActivePointerInteraction() {
@@ -5378,6 +6286,10 @@ class UserInterfaceController {
     const [, materialSyncError] = this.syncMaterialSelectToObject(closestObject);
     if (materialSyncError) {
       return returnFailure(materialSyncError.code, materialSyncError.message, materialSyncError.details);
+    }
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
     return returnSuccess(closestDistance < MAX_INTERSECTION_DISTANCE);
   }
@@ -5544,11 +6456,17 @@ const createApplicationState = () => ({
   isRotatingCamera: false,
   isPickingFocus: false,
   isPointerDown: false,
+  isFramePaused: false,
+  didResumeFromFramePause: false,
+  isConvergencePauseEnabled: false,
+  isConvergencePaused: false,
+  convergenceSampleCount: CONVERGED_SAMPLE_COUNT,
   isCameraAutoRotating: true,
   cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
   previousPointerX: 0,
   previousPointerY: 0,
-  animationFrameId: 0
+  animationFrameId: 0,
+  animationFrameCallback: null
 });
 
 const updateCameraAutoRotationButton = (toggleButton, isCameraAutoRotating) => {
@@ -5558,6 +6476,37 @@ const updateCameraAutoRotationButton = (toggleButton, isCameraAutoRotating) => {
 
   toggleButton.textContent = isCameraAutoRotating ? 'Pause Camera' : 'Play Camera';
   toggleButton.setAttribute('aria-pressed', isCameraAutoRotating ? 'true' : 'false');
+  return returnSuccess(undefined);
+};
+
+const updateFramePauseButton = (toggleButton, isFramePaused) => {
+  if (!(toggleButton instanceof HTMLButtonElement)) {
+    return returnFailure('invalid-toggle-button', 'Frame pause control is not a button.');
+  }
+
+  toggleButton.textContent = isFramePaused ? 'Resume Frames' : 'Pause Frames';
+  toggleButton.setAttribute('aria-pressed', isFramePaused ? 'true' : 'false');
+  return returnSuccess(undefined);
+};
+
+const updateConvergencePauseButton = (
+  toggleButton,
+  isConvergencePauseEnabled,
+  isConvergencePaused,
+  convergenceSampleCount
+) => {
+  if (!(toggleButton instanceof HTMLButtonElement)) {
+    return returnFailure('invalid-toggle-button', 'Convergence pause control is not a button.');
+  }
+
+  if (isConvergencePaused) {
+    toggleButton.textContent = 'Resume Rays';
+  } else if (isConvergencePauseEnabled) {
+    toggleButton.textContent = `Pause at ${convergenceSampleCount} Samples`;
+  } else {
+    toggleButton.textContent = 'Pause Rays at Converged';
+  }
+  toggleButton.setAttribute('aria-pressed', isConvergencePauseEnabled ? 'true' : 'false');
   return returnSuccess(undefined);
 };
 
@@ -5591,6 +6540,26 @@ const advanceCameraAutoRotation = (applicationState, elapsedSeconds, pathTracer)
   return returnSuccess(undefined);
 };
 
+const scheduleAnimationFrame = (applicationState) => {
+  if (applicationState.isFramePaused || applicationState.animationFrameId) {
+    return returnSuccess(undefined);
+  }
+  if (typeof applicationState.animationFrameCallback !== 'function') {
+    return returnFailure('missing-animation-callback', 'Animation loop callback is not available.');
+  }
+
+  applicationState.animationFrameId = requestAnimationFrame(applicationState.animationFrameCallback);
+  return returnSuccess(undefined);
+};
+
+const cancelScheduledAnimationFrame = (applicationState) => {
+  if (applicationState.animationFrameId) {
+    cancelAnimationFrame(applicationState.animationFrameId);
+    applicationState.animationFrameId = 0;
+  }
+  return returnSuccess(undefined);
+};
+
 const createSphereObject = (applicationState, x, y, z, radius, material = MATERIAL.DIFFUSE) => new SphereSceneObject(
   createVec3(x, y, z),
   radius,
@@ -5613,6 +6582,301 @@ const createCubeObject = (
   allocateSceneObjectId(applicationState),
   material
 );
+
+const createCylinderObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  halfHeight,
+  material = MATERIAL.DIFFUSE
+) => new CylinderSceneObject(
+  createVec3(x, y, z),
+  radius,
+  halfHeight,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createConeObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  halfHeight,
+  material = MATERIAL.DIFFUSE
+) => new ConeSceneObject(
+  createVec3(x, y, z),
+  radius,
+  0.01,
+  halfHeight,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createFrustumObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  bottomRadius,
+  topRadius,
+  halfHeight,
+  material = MATERIAL.DIFFUSE
+) => new ConeSceneObject(
+  createVec3(x, y, z),
+  bottomRadius,
+  topRadius,
+  halfHeight,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createCapsuleObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  halfSegmentHeight,
+  material = MATERIAL.DIFFUSE
+) => new CapsuleSceneObject(
+  createVec3(x, y, z),
+  radius,
+  halfSegmentHeight,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createEllipsoidObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radiusX,
+  radiusY,
+  radiusZ,
+  material = MATERIAL.DIFFUSE
+) => new EllipsoidSceneObject(
+  createVec3(x, y, z),
+  createVec3(radiusX, radiusY, radiusZ),
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createTorusObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  majorRadius,
+  minorRadius,
+  material = MATERIAL.DIFFUSE
+) => new TorusSceneObject(
+  createVec3(x, y, z),
+  majorRadius,
+  minorRadius,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createRoundedBoxObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  halfExtentX,
+  halfExtentY,
+  halfExtentZ,
+  radius,
+  material = MATERIAL.DIFFUSE
+) => new RoundedBoxSceneObject(
+  createVec3(x, y, z),
+  createVec3(halfExtentX, halfExtentY, halfExtentZ),
+  radius,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createPlaneObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  halfExtentX,
+  halfExtentZ,
+  material = MATERIAL.DIFFUSE
+) => createRoundedBoxObject(applicationState, x, y, z, halfExtentX, 0.012, halfExtentZ, 0.006, material);
+
+const createDiskObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  material = MATERIAL.DIFFUSE
+) => new DiskSceneObject(
+  createVec3(x, y, z),
+  radius,
+  0.012,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createTriangleObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  halfWidth,
+  halfHeight,
+  halfDepth,
+  material = MATERIAL.DIFFUSE
+) => new TriangularPrismSceneObject(
+  createVec3(x, y, z),
+  halfWidth,
+  halfHeight,
+  halfDepth,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createWedgeObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  halfWidth,
+  halfHeight,
+  halfDepth,
+  material = MATERIAL.DIFFUSE
+) => new WedgeSceneObject(
+  createVec3(x, y, z),
+  halfWidth,
+  halfHeight,
+  halfDepth,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createPrismObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  halfWidth,
+  halfHeight,
+  halfDepth,
+  material = MATERIAL.DIFFUSE
+) => new TriangularPrismSceneObject(
+  createVec3(x, y, z),
+  halfWidth,
+  halfHeight,
+  halfDepth,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createMetaballsObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  material = MATERIAL.DIFFUSE
+) => new MetaballsSceneObject(
+  createVec3(x, y, z),
+  radius,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createCsgObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  size,
+  material = MATERIAL.DIFFUSE
+) => new CsgSceneObject(
+  createVec3(x, y, z),
+  size,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createMandelbulbObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  material = MATERIAL.DIFFUSE
+) => new MandelbulbSceneObject(
+  createVec3(x, y, z),
+  radius,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createSdfFractalObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  radius,
+  material = MATERIAL.DIFFUSE
+) => new SdfFractalSceneObject(
+  createVec3(x, y, z),
+  radius,
+  allocateSceneObjectId(applicationState),
+  material
+);
+
+const createAreaLightObject = (
+  applicationState,
+  x,
+  y,
+  z,
+  halfExtentX,
+  halfExtentY,
+  halfExtentZ
+) => new AreaLightSceneObject(
+  createVec3(x, y, z),
+  createVec3(halfExtentX, halfExtentY, halfExtentZ),
+  0.02,
+  allocateSceneObjectId(applicationState)
+);
+
+const primitiveActionFactories = Object.freeze({
+  'add-cylinder': (applicationState) => createCylinderObject(applicationState, 0, -0.45, 0, 0.18, 0.42, applicationState.material),
+  'add-cone': (applicationState) => createConeObject(applicationState, 0, -0.48, 0, 0.24, 0.38, applicationState.material),
+  'add-frustum': (applicationState) => createFrustumObject(applicationState, 0, -0.48, 0, 0.24, 0.11, 0.38, applicationState.material),
+  'add-capsule': (applicationState) => createCapsuleObject(applicationState, 0, -0.45, 0, 0.14, 0.32, applicationState.material),
+  'add-ellipsoid': (applicationState) => createEllipsoidObject(applicationState, 0, -0.45, 0, 0.30, 0.18, 0.22, applicationState.material),
+  'add-torus': (applicationState) => createTorusObject(applicationState, 0, -0.45, 0, 0.22, 0.065, applicationState.material),
+  'add-rounded-box': (applicationState) => createRoundedBoxObject(applicationState, 0, -0.45, 0, 0.22, 0.18, 0.22, 0.055, applicationState.material),
+  'add-plane': (applicationState) => createPlaneObject(applicationState, 0, -0.78, 0, 0.38, 0.26, applicationState.material),
+  'add-disk': (applicationState) => createDiskObject(applicationState, 0, -0.78, 0, 0.30, applicationState.material),
+  'add-triangle': (applicationState) => createTriangleObject(applicationState, 0, -0.55, 0, 0.28, 0.26, 0.05, applicationState.material),
+  'add-wedge': (applicationState) => createWedgeObject(applicationState, 0, -0.55, 0, 0.30, 0.25, 0.16, applicationState.material),
+  'add-prism': (applicationState) => createPrismObject(applicationState, 0, -0.50, 0, 0.24, 0.32, 0.20, applicationState.material),
+  'add-metaballs': (applicationState) => createMetaballsObject(applicationState, 0, -0.48, 0, 0.18, applicationState.material),
+  'add-csg-shape': (applicationState) => createCsgObject(applicationState, 0, -0.45, 0, 0.32, applicationState.material),
+  'add-mandelbulb': (applicationState) => createMandelbulbObject(applicationState, 0, -0.45, 0, 0.32, applicationState.material),
+  'add-sdf-fractal': (applicationState) => createSdfFractalObject(applicationState, 0, -0.45, 0, 0.34, applicationState.material),
+  'add-area-light': (applicationState) => createAreaLightObject(
+    applicationState,
+    applicationState.lightPosition[0],
+    applicationState.lightPosition[1],
+    applicationState.lightPosition[2],
+    0.28,
+    0.018,
+    0.18
+  )
+});
 
 const createStacksSceneObjects = (applicationState) => returnSuccess([
   createCubeObject(applicationState, -0.5, -0.75, -0.5, 0.5, -0.7, 0.5),
@@ -5747,6 +7011,63 @@ const createShaderShowcaseSceneObjects = (applicationState) => returnSuccess([
   createSphereObject(applicationState, 0.72, -0.22, 0.34, 0.15, MATERIAL.FIRE_PLASMA)
 ]);
 
+const createPrimitiveShowcaseSceneObjects = (applicationState) => returnSuccess([
+  createCylinderObject(applicationState, -0.72, -0.62, -0.34, 0.10, 0.30, MATERIAL.DIFFUSE),
+  createConeObject(applicationState, -0.46, -0.65, -0.34, 0.14, 0.27, MATERIAL.DIFFUSE),
+  createFrustumObject(applicationState, -0.18, -0.65, -0.34, 0.15, 0.07, 0.27, MATERIAL.DIFFUSE),
+  createCapsuleObject(applicationState, 0.12, -0.62, -0.34, 0.09, 0.28, MATERIAL.DIFFUSE),
+  createEllipsoidObject(applicationState, 0.44, -0.62, -0.34, 0.15, 0.24, 0.11, MATERIAL.DIFFUSE),
+  createTorusObject(applicationState, 0.74, -0.61, -0.34, 0.13, 0.04, MATERIAL.DIFFUSE),
+  createRoundedBoxObject(applicationState, -0.52, -0.74, 0.24, 0.13, 0.13, 0.13, 0.04, MATERIAL.DIFFUSE),
+  createDiskObject(applicationState, -0.16, -0.86, 0.24, 0.18, MATERIAL.DIFFUSE),
+  createTriangleObject(applicationState, 0.20, -0.76, 0.24, 0.15, 0.18, 0.05, MATERIAL.DIFFUSE),
+  createMetaballsObject(applicationState, 0.58, -0.72, 0.24, 0.12, MATERIAL.DIFFUSE)
+]);
+
+const createCurvedPrimitiveShowcaseSceneObjects = (applicationState) => returnSuccess([
+  createCylinderObject(applicationState, -0.64, -0.58, -0.22, 0.14, 0.38, MATERIAL.DIFFUSE),
+  createConeObject(applicationState, -0.30, -0.62, -0.22, 0.20, 0.34, MATERIAL.DIFFUSE),
+  createFrustumObject(applicationState, 0.06, -0.62, -0.22, 0.20, 0.08, 0.34, MATERIAL.DIFFUSE),
+  createCapsuleObject(applicationState, 0.42, -0.58, -0.22, 0.12, 0.36, MATERIAL.DIFFUSE),
+  createEllipsoidObject(applicationState, -0.32, -0.72, 0.30, 0.22, 0.13, 0.16, MATERIAL.DIFFUSE),
+  createTorusObject(applicationState, 0.30, -0.70, 0.30, 0.18, 0.055, MATERIAL.DIFFUSE),
+  createRoundedBoxObject(applicationState, 0.70, -0.72, 0.30, 0.14, 0.14, 0.14, 0.05, MATERIAL.DIFFUSE)
+]);
+
+const createFlatPrimitiveShowcaseSceneObjects = (applicationState) => returnSuccess([
+  createPlaneObject(applicationState, -0.55, -0.96, -0.24, 0.28, 0.20, MATERIAL.DIFFUSE),
+  createDiskObject(applicationState, -0.12, -0.86, -0.24, 0.18, MATERIAL.DIFFUSE),
+  createTriangleObject(applicationState, 0.30, -0.72, -0.24, 0.20, 0.24, 0.05, MATERIAL.DIFFUSE),
+  createWedgeObject(applicationState, -0.42, -0.74, 0.28, 0.20, 0.24, 0.15, MATERIAL.DIFFUSE),
+  createPrismObject(applicationState, 0.04, -0.72, 0.28, 0.18, 0.28, 0.18, MATERIAL.DIFFUSE),
+  createRoundedBoxObject(applicationState, 0.52, -0.78, 0.28, 0.16, 0.08, 0.18, 0.035, MATERIAL.DIFFUSE)
+]);
+
+const createImplicitPrimitiveShowcaseSceneObjects = (applicationState) => returnSuccess([
+  createMetaballsObject(applicationState, -0.56, -0.66, -0.20, 0.18, MATERIAL.DIFFUSE),
+  createCsgObject(applicationState, -0.10, -0.66, -0.20, 0.27, MATERIAL.DIFFUSE),
+  createMandelbulbObject(applicationState, 0.38, -0.64, -0.20, 0.28, MATERIAL.DIFFUSE),
+  createSdfFractalObject(applicationState, -0.32, -0.68, 0.34, 0.27, MATERIAL.DIFFUSE),
+  createTorusObject(applicationState, 0.26, -0.70, 0.34, 0.16, 0.045, MATERIAL.DIFFUSE),
+  createEllipsoidObject(applicationState, 0.68, -0.74, 0.34, 0.15, 0.10, 0.19, MATERIAL.DIFFUSE)
+]);
+
+const createAreaLightShowcaseSceneObjects = (applicationState) => returnSuccess([
+  createAreaLightObject(
+    applicationState,
+    applicationState.lightPosition[0],
+    applicationState.lightPosition[1],
+    applicationState.lightPosition[2],
+    0.30,
+    0.018,
+    0.18
+  ),
+  createRoundedBoxObject(applicationState, -0.48, -0.82, -0.18, 0.20, 0.12, 0.20, 0.05, MATERIAL.MIRROR),
+  createSphereObject(applicationState, 0.02, -0.74, -0.18, 0.22, MATERIAL.GLASS),
+  createTorusObject(applicationState, 0.50, -0.76, -0.18, 0.16, 0.045, MATERIAL.GGX_PBR),
+  createPlaneObject(applicationState, 0.00, -0.98, 0.35, 0.60, 0.24, MATERIAL.PROCEDURAL)
+]);
+
 const scenePresetFactories = Object.freeze({
   sphereColumn: createSphereColumnSceneObjects,
   spherePyramid: createSpherePyramidSceneObjects,
@@ -5755,7 +7076,12 @@ const scenePresetFactories = Object.freeze({
   tableAndChair: createTableAndChairSceneObjects,
   stacks: createStacksSceneObjects,
   shaderShowcase: createShaderShowcaseSceneObjects,
-  recursiveSpheres: createRecursiveSpheresSceneObjects
+  recursiveSpheres: createRecursiveSpheresSceneObjects,
+  primitiveShowcase: createPrimitiveShowcaseSceneObjects,
+  curvedPrimitiveShowcase: createCurvedPrimitiveShowcaseSceneObjects,
+  flatPrimitiveShowcase: createFlatPrimitiveShowcaseSceneObjects,
+  implicitPrimitiveShowcase: createImplicitPrimitiveShowcaseSceneObjects,
+  areaLightShowcase: createAreaLightShowcaseSceneObjects
 });
 
 const readInitialPresetName = (documentObject) => {
@@ -5796,6 +7122,18 @@ const readRequiredInput = (documentObject, elementId) => {
   return returnSuccess(element);
 };
 
+const readRequiredSelect = (documentObject, elementId) => {
+  const [element, elementError] = readRequiredElement(documentObject, elementId);
+  if (elementError) {
+    return returnFailure(elementError.code, elementError.message, elementError.details);
+  }
+
+  if (!(element instanceof HTMLSelectElement)) {
+    return returnFailure('invalid-select-element', `Element "${elementId}" is not a select.`);
+  }
+  return returnSuccess(element);
+};
+
 const readRequiredButton = (documentObject, elementId) => {
   const [element, elementError] = readRequiredElement(documentObject, elementId);
   if (elementError) {
@@ -5821,6 +7159,13 @@ const readRequiredCanvas = (documentObject, elementId) => {
   return returnSuccess(element);
 };
 
+const applyCanvasSizeToDocument = (documentObject, canvasElement) => {
+  documentObject.documentElement.style.setProperty('--canvas-render-size', `${CANVAS_SIZE}px`);
+  canvasElement.width = CANVAS_SIZE;
+  canvasElement.height = CANVAS_SIZE;
+  return returnSuccess(undefined);
+};
+
 const createWebGlContext = (canvasElement) => {
   const webGlContext = (
     canvasElement.getContext('webgl', HIGH_PERFORMANCE_WEBGL_CONTEXT_ATTRIBUTES) ||
@@ -5835,6 +7180,7 @@ const createWebGlContext = (canvasElement) => {
   }
 
   webGlContext.disable(webGlContext.DITHER);
+  webGlContext.viewport(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
   return returnSuccess(webGlContext);
 };
@@ -5942,6 +7288,10 @@ const isTextInputFocused = (documentObject) => {
     return false;
   }
 
+  if (activeElement.isContentEditable) {
+    return true;
+  }
+
   const tagName = activeElement.tagName;
   return tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'TEXTAREA';
 };
@@ -5951,6 +7301,16 @@ const runAndDisplayError = (errorElement, action) => {
   if (actionError) {
     return displayError(errorElement, actionError);
   }
+  return returnSuccess(undefined);
+};
+
+const clickUiButton = (documentObject, selector) => {
+  const targetButton = documentObject.querySelector(selector);
+  if (!(targetButton instanceof HTMLButtonElement)) {
+    return returnFailure('missing-shortcut-target', `Shortcut target "${selector}" is not available.`);
+  }
+
+  targetButton.click();
   return returnSuccess(undefined);
 };
 
@@ -6090,6 +7450,47 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
       return returnSuccess(undefined);
     }
 
+    if (event.repeat) {
+      return returnSuccess(undefined);
+    }
+
+    const isSystemShortcut = event.ctrlKey || event.metaKey;
+    if (isSystemShortcut && !event.altKey && !event.shiftKey) {
+      const panelShortcutSelectors = Object.freeze({
+        Digit1: 'button[data-panel-target="scene-panel"]',
+        Digit2: 'button[data-panel-target="object-panel"]',
+        Digit3: 'button[data-panel-target="render-panel"]',
+        Digit4: 'button[data-panel-target="camera-panel"]',
+        Digit5: 'button[data-panel-target="output-panel"]',
+        Digit6: 'button[data-panel-target="preset-panel"]',
+        KeyS: 'button[data-action="save-bitmap"]'
+      });
+      const shortcutSelector = panelShortcutSelectors[event.code];
+      if (shortcutSelector) {
+        runAndDisplayError(errorElement, () => clickUiButton(documentObject, shortcutSelector));
+        event.preventDefault();
+        return returnSuccess(undefined);
+      }
+    }
+
+    if (!isSystemShortcut && !event.altKey && !event.shiftKey) {
+      const commandShortcutSelectors = Object.freeze({
+        KeyB: 'button[data-window-target="benchmark"]',
+        KeyF: '#canvas-fullscreen',
+        KeyI: 'button[data-window-target="controls"]',
+        KeyK: '#convergence-pause',
+        KeyL: 'button[data-action="select-light"]',
+        KeyP: '#frame-pause',
+        KeyT: 'button[data-window-target="scene-tree-window"]'
+      });
+      const shortcutSelector = commandShortcutSelectors[event.code];
+      if (shortcutSelector) {
+        runAndDisplayError(errorElement, () => clickUiButton(documentObject, shortcutSelector));
+        event.preventDefault();
+        return returnSuccess(undefined);
+      }
+    }
+
     if (event.key === 'Escape' && applicationState.isPickingFocus) {
       applicationState.isPickingFocus = false;
       const [, focusPickError] = uiController.syncFocusPickMode();
@@ -6180,17 +7581,367 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
   return returnSuccess(undefined);
 };
 
-const attachControlHandlers = (controlsElement, errorElement, uiController) => {
-  controlsElement.addEventListener('click', (event) => {
-    if (!(event.target instanceof HTMLButtonElement)) {
+const attachPanelMenuHandlers = (documentObject, controlsElement) => {
+  const [menuElement, menuError] = readRequiredElement(documentObject, 'app-menu');
+  if (menuError) {
+    return returnFailure(menuError.code, menuError.message, menuError.details);
+  }
+  const panelElements = Array.from(documentObject.querySelectorAll('[data-control-panel]'));
+  const menuButtons = Array.from(menuElement.querySelectorAll('button[data-panel-target]'));
+  if (panelElements.length === 0 || menuButtons.length === 0) {
+    return returnFailure('missing-panel-navigation', 'Panel navigation controls are missing.');
+  }
+
+  menuElement.addEventListener('click', (event) => {
+    const targetButton = event.target instanceof Element ? event.target.closest('button') : null;
+    if (!(targetButton instanceof HTMLButtonElement) || !menuElement.contains(targetButton)) {
       return returnSuccess(undefined);
     }
 
-    const actionName = event.target.dataset.action;
-    const presetName = event.target.dataset.preset;
+    const targetPanelId = targetButton.dataset.panelTarget;
+    if (!targetPanelId) {
+      return returnSuccess(undefined);
+    }
+
+    for (const panelElement of panelElements) {
+      panelElement.hidden = panelElement.id !== targetPanelId;
+    }
+    for (const menuButton of menuButtons) {
+      menuButton.setAttribute('aria-pressed', menuButton.dataset.panelTarget === targetPanelId ? 'true' : 'false');
+    }
+    const scrollContainer = controlsElement.querySelector('.floating-window-body') || controlsElement;
+    scrollContainer.scrollTop = 0;
+    return returnSuccess(undefined);
+  });
+
+  return returnSuccess(undefined);
+};
+
+const FLOATING_WINDOW_STORAGE_KEY = 'pathtracer.floatingWindows.v1';
+const MIN_FLOATING_WINDOW_VISIBLE_SIZE = 80;
+const FLOATING_WINDOW_VIEWPORT_PADDING = 8;
+
+const readFloatingWindowStates = (documentObject) => {
+  const windowObject = documentObject.defaultView;
+  if (!windowObject || !windowObject.localStorage) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(windowObject.localStorage.getItem(FLOATING_WINDOW_STORAGE_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+};
+
+const writeFloatingWindowStates = (documentObject, floatingWindowElements) => {
+  const windowObject = documentObject.defaultView;
+  if (!windowObject || !windowObject.localStorage) {
+    return returnSuccess(undefined);
+  }
+
+  const existingStates = readFloatingWindowStates(documentObject);
+  const nextStates = {};
+  for (const floatingWindowElement of floatingWindowElements) {
+    const windowRectangle = floatingWindowElement.getBoundingClientRect();
+    const existingState = existingStates[floatingWindowElement.id] || {};
+    nextStates[floatingWindowElement.id] = {
+      left: floatingWindowElement.hidden ? existingState.left : Math.round(windowRectangle.left),
+      top: floatingWindowElement.hidden ? existingState.top : Math.round(windowRectangle.top),
+      width: floatingWindowElement.hidden ? existingState.width : Math.round(windowRectangle.width),
+      height: floatingWindowElement.hidden ? existingState.height : Math.round(windowRectangle.height),
+      hidden: floatingWindowElement.hidden,
+      collapsed: floatingWindowElement.classList.contains('is-collapsed')
+    };
+  }
+
+  try {
+    windowObject.localStorage.setItem(FLOATING_WINDOW_STORAGE_KEY, JSON.stringify(nextStates));
+  } catch {
+    return returnSuccess(undefined);
+  }
+  return returnSuccess(undefined);
+};
+
+const clampFloatingWindowToViewport = (windowObject, floatingWindowElement) => {
+  if (!windowObject) {
+    return returnSuccess(undefined);
+  }
+
+  const windowRectangle = floatingWindowElement.getBoundingClientRect();
+  const maxLeft = Math.max(
+    FLOATING_WINDOW_VIEWPORT_PADDING,
+    windowObject.innerWidth - MIN_FLOATING_WINDOW_VISIBLE_SIZE
+  );
+  const maxTop = Math.max(
+    FLOATING_WINDOW_VIEWPORT_PADDING,
+    windowObject.innerHeight - MIN_FLOATING_WINDOW_VISIBLE_SIZE
+  );
+  const nextLeft = clampNumber(
+    windowRectangle.left,
+    FLOATING_WINDOW_VIEWPORT_PADDING,
+    maxLeft
+  );
+  const nextTop = clampNumber(
+    windowRectangle.top,
+    FLOATING_WINDOW_VIEWPORT_PADDING,
+    maxTop
+  );
+  floatingWindowElement.style.left = `${nextLeft}px`;
+  floatingWindowElement.style.top = `${nextTop}px`;
+  floatingWindowElement.style.right = 'auto';
+  floatingWindowElement.style.bottom = 'auto';
+  return returnSuccess(undefined);
+};
+
+const createFloatingWindowManager = (documentObject) => {
+  const windowObject = documentObject.defaultView;
+  const floatingWindowElements = Array.from(documentObject.querySelectorAll('[data-floating-window]'));
+  const savedStates = readFloatingWindowStates(documentObject);
+  let nextZIndex = 200;
+
+  const syncWindowTargetButtons = () => {
+    for (const targetButton of documentObject.querySelectorAll('button[data-window-target]:not([data-panel-target])')) {
+      const targetWindow = documentObject.getElementById(targetButton.dataset.windowTarget);
+      targetButton.setAttribute('aria-pressed', targetWindow && !targetWindow.hidden ? 'true' : 'false');
+    }
+    return returnSuccess(undefined);
+  };
+
+  const saveStates = () => {
+    const [, saveError] = writeFloatingWindowStates(documentObject, floatingWindowElements);
+    if (saveError) {
+      return returnFailure(saveError.code, saveError.message, saveError.details);
+    }
+    return syncWindowTargetButtons();
+  };
+
+  const focusWindow = (floatingWindowElement) => {
+    nextZIndex += 1;
+    floatingWindowElement.style.zIndex = String(nextZIndex);
+    return returnSuccess(undefined);
+  };
+
+  const showWindow = (windowId) => {
+    const floatingWindowElement = documentObject.getElementById(windowId);
+    if (!floatingWindowElement || !floatingWindowElement.matches('[data-floating-window]')) {
+      return returnFailure('missing-floating-window', `Floating window "${windowId}" is not available.`);
+    }
+
+    floatingWindowElement.hidden = false;
+    floatingWindowElement.classList.remove('is-collapsed');
+    const [, focusError] = focusWindow(floatingWindowElement);
+    if (focusError) {
+      return returnFailure(focusError.code, focusError.message, focusError.details);
+    }
+    return saveStates();
+  };
+
+  const toggleWindow = (windowId, shouldForceShow = false) => {
+    const floatingWindowElement = documentObject.getElementById(windowId);
+    if (!floatingWindowElement || !floatingWindowElement.matches('[data-floating-window]')) {
+      return returnFailure('missing-floating-window', `Floating window "${windowId}" is not available.`);
+    }
+
+    floatingWindowElement.hidden = shouldForceShow ? false : !floatingWindowElement.hidden;
+    if (!floatingWindowElement.hidden) {
+      floatingWindowElement.classList.remove('is-collapsed');
+      const [, focusError] = focusWindow(floatingWindowElement);
+      if (focusError) {
+        return returnFailure(focusError.code, focusError.message, focusError.details);
+      }
+    }
+    return saveStates();
+  };
+
+  for (const floatingWindowElement of floatingWindowElements) {
+    const savedState = savedStates[floatingWindowElement.id];
+    if (savedState) {
+      if (Number.isFinite(savedState.left)) {
+        floatingWindowElement.style.left = `${savedState.left}px`;
+        floatingWindowElement.style.right = 'auto';
+      }
+      if (Number.isFinite(savedState.top)) {
+        floatingWindowElement.style.top = `${savedState.top}px`;
+        floatingWindowElement.style.bottom = 'auto';
+      }
+      if (Number.isFinite(savedState.width)) {
+        floatingWindowElement.style.width = `${Math.max(savedState.width, MIN_FLOATING_WINDOW_VISIBLE_SIZE)}px`;
+      }
+      if (Number.isFinite(savedState.height) && !savedState.collapsed) {
+        floatingWindowElement.style.height = `${Math.max(savedState.height, 34)}px`;
+      }
+      floatingWindowElement.hidden = Boolean(savedState.hidden);
+      floatingWindowElement.classList.toggle('is-collapsed', Boolean(savedState.collapsed));
+    }
+
+    nextZIndex += 1;
+    floatingWindowElement.style.zIndex = String(nextZIndex);
+    floatingWindowElement.addEventListener('pointerdown', () => {
+      focusWindow(floatingWindowElement);
+    });
+    if (!floatingWindowElement.hidden) {
+      const [, clampError] = clampFloatingWindowToViewport(windowObject, floatingWindowElement);
+      if (clampError) {
+        return returnFailure(clampError.code, clampError.message, clampError.details);
+      }
+    }
+  }
+
+  let activeDragState = null;
+  documentObject.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || !(event.target instanceof Element)) {
+      return returnSuccess(undefined);
+    }
+    if (event.target.closest('button, input, select, textarea, a')) {
+      return returnSuccess(undefined);
+    }
+
+    const dragHandle = event.target.closest('[data-window-drag-handle]');
+    if (!dragHandle) {
+      return returnSuccess(undefined);
+    }
+    const floatingWindowElement = dragHandle.closest('[data-floating-window]');
+    if (!(floatingWindowElement instanceof HTMLElement)) {
+      return returnSuccess(undefined);
+    }
+
+    const windowRectangle = floatingWindowElement.getBoundingClientRect();
+    activeDragState = {
+      floatingWindowElement,
+      pointerId: event.pointerId,
+      pointerOffsetX: event.clientX - windowRectangle.left,
+      pointerOffsetY: event.clientY - windowRectangle.top
+    };
+    floatingWindowElement.style.left = `${windowRectangle.left}px`;
+    floatingWindowElement.style.top = `${windowRectangle.top}px`;
+    floatingWindowElement.style.width = `${windowRectangle.width}px`;
+    floatingWindowElement.style.height = `${windowRectangle.height}px`;
+    floatingWindowElement.style.right = 'auto';
+    floatingWindowElement.style.bottom = 'auto';
+    focusWindow(floatingWindowElement);
+    if (typeof dragHandle.setPointerCapture === 'function') {
+      dragHandle.setPointerCapture(event.pointerId);
+    }
+    event.preventDefault();
+    return returnSuccess(undefined);
+  });
+
+  documentObject.addEventListener('pointermove', (event) => {
+    if (!activeDragState || activeDragState.pointerId !== event.pointerId || !windowObject) {
+      return returnSuccess(undefined);
+    }
+
+    const floatingWindowElement = activeDragState.floatingWindowElement;
+    const nextLeft = clampNumber(
+      event.clientX - activeDragState.pointerOffsetX,
+      FLOATING_WINDOW_VIEWPORT_PADDING,
+      Math.max(FLOATING_WINDOW_VIEWPORT_PADDING, windowObject.innerWidth - MIN_FLOATING_WINDOW_VISIBLE_SIZE)
+    );
+    const nextTop = clampNumber(
+      event.clientY - activeDragState.pointerOffsetY,
+      FLOATING_WINDOW_VIEWPORT_PADDING,
+      Math.max(FLOATING_WINDOW_VIEWPORT_PADDING, windowObject.innerHeight - MIN_FLOATING_WINDOW_VISIBLE_SIZE)
+    );
+    floatingWindowElement.style.left = `${nextLeft}px`;
+    floatingWindowElement.style.top = `${nextTop}px`;
+    event.preventDefault();
+    return returnSuccess(undefined);
+  });
+
+  documentObject.addEventListener('pointerup', (event) => {
+    if (!activeDragState || activeDragState.pointerId !== event.pointerId) {
+      return returnSuccess(undefined);
+    }
+
+    activeDragState = null;
+    return saveStates();
+  });
+
+  documentObject.addEventListener('click', (event) => {
+    const targetButton = event.target instanceof Element ? event.target.closest('button') : null;
+    if (!(targetButton instanceof HTMLButtonElement)) {
+      return returnSuccess(undefined);
+    }
+
+    const targetWindowId = targetButton.dataset.windowTarget;
+    if (targetWindowId) {
+      const shouldForceShow = Boolean(targetButton.dataset.panelTarget);
+      return toggleWindow(targetWindowId, shouldForceShow);
+    }
+
+    const windowCommand = targetButton.dataset.windowCommand;
+    if (!windowCommand) {
+      return returnSuccess(undefined);
+    }
+
+    const floatingWindowElement = targetButton.closest('[data-floating-window]');
+    if (!(floatingWindowElement instanceof HTMLElement)) {
+      return returnSuccess(undefined);
+    }
+
+    if (windowCommand === 'collapse') {
+      floatingWindowElement.classList.toggle('is-collapsed');
+      return saveStates();
+    }
+    if (windowCommand === 'close') {
+      floatingWindowElement.hidden = true;
+      return saveStates();
+    }
+    return returnSuccess(undefined);
+  });
+
+  if (windowObject && typeof windowObject.ResizeObserver === 'function') {
+    const resizeObserver = new windowObject.ResizeObserver(() => {
+      saveStates();
+    });
+    for (const floatingWindowElement of floatingWindowElements) {
+      resizeObserver.observe(floatingWindowElement);
+    }
+  }
+
+  if (windowObject) {
+    windowObject.addEventListener('resize', () => {
+      for (const floatingWindowElement of floatingWindowElements) {
+        if (!floatingWindowElement.hidden) {
+          clampFloatingWindowToViewport(windowObject, floatingWindowElement);
+        }
+      }
+      saveStates();
+    });
+  }
+
+  const [, syncError] = syncWindowTargetButtons();
+  if (syncError) {
+    return returnFailure(syncError.code, syncError.message, syncError.details);
+  }
+
+  return returnSuccess(Object.freeze({
+    showWindow,
+    toggleWindow
+  }));
+};
+
+const attachControlHandlers = (controlRootElement, errorElement, uiController) => {
+  controlRootElement.addEventListener('click', (event) => {
+    const targetButton = event.target instanceof Element ? event.target.closest('button') : null;
+    if (!(targetButton instanceof HTMLButtonElement) || !controlRootElement.contains(targetButton)) {
+      return returnSuccess(undefined);
+    }
+
+    const sceneObjectIndex = targetButton.dataset.sceneObjectIndex;
+    const actionName = targetButton.dataset.action;
+    const presetName = targetButton.dataset.preset;
+
+    if (sceneObjectIndex !== undefined) {
+      return runAndDisplayError(errorElement, () => uiController.selectSceneObjectByIndex(sceneObjectIndex));
+    }
 
     if (actionName === 'select-light') {
       return runAndDisplayError(errorElement, () => uiController.selectLight());
+    }
+    if (actionName === 'delete-selection') {
+      return runAndDisplayError(errorElement, () => uiController.deleteSelection());
     }
     if (actionName === 'add-sphere') {
       return runAndDisplayError(errorElement, () => uiController.addSphere());
@@ -6198,20 +7949,44 @@ const attachControlHandlers = (controlsElement, errorElement, uiController) => {
     if (actionName === 'add-cube') {
       return runAndDisplayError(errorElement, () => uiController.addCube());
     }
+    if (primitiveActionFactories[actionName]) {
+      return runAndDisplayError(errorElement, () => uiController.addPrimitive(primitiveActionFactories[actionName]));
+    }
     if (actionName === 'apply-object-shader') {
       return runAndDisplayError(errorElement, () => uiController.applyMaterialToSelection());
     }
     if (actionName === 'toggle-camera-playback') {
-      return runAndDisplayError(errorElement, () => uiController.toggleCameraAutoRotation(event.target));
+      return runAndDisplayError(
+        errorElement,
+        () => uiController.toggleCameraAutoRotation(uiController.cameraPlaybackButton)
+      );
+    }
+    if (actionName === 'toggle-frame-pause') {
+      return runAndDisplayError(errorElement, () => uiController.toggleFramePause(uiController.framePauseButton));
+    }
+    if (actionName === 'toggle-convergence-pause') {
+      return runAndDisplayError(
+        errorElement,
+        () => uiController.toggleConvergencePause(uiController.convergencePauseButton)
+      );
     }
     if (actionName === 'toggle-light-cycle') {
-      return runAndDisplayError(errorElement, () => uiController.toggleLightIntensityCycle(event.target));
+      return runAndDisplayError(errorElement, () => uiController.toggleLightIntensityCycle(uiController.lightCycleButton));
     }
     if (actionName === 'toggle-focus-pick') {
       return runAndDisplayError(errorElement, () => uiController.toggleFocusPickMode());
     }
     if (actionName === 'reset-color-correction') {
       return runAndDisplayError(errorElement, () => uiController.resetColorCorrection());
+    }
+    if (actionName === 'apply-resolution') {
+      return runAndDisplayError(errorElement, () => uiController.applyResolutionFromControls());
+    }
+    if (actionName === 'save-bitmap') {
+      return runAndDisplayError(errorElement, () => uiController.saveCanvasBitmap());
+    }
+    if (actionName === 'toggle-canvas-fullscreen') {
+      return runAndDisplayError(errorElement, () => uiController.toggleCanvasFullscreen());
     }
     if (actionName === 'reset-all') {
       return runAndDisplayError(errorElement, () => uiController.resetAllToDefaults());
@@ -6251,6 +8026,17 @@ const attachControlHandlers = (controlsElement, errorElement, uiController) => {
   uiController.glossinessInput.addEventListener('input', () => (
     runAndDisplayError(errorElement, () => uiController.updateGlossinessFromInput())
   ));
+
+  uiController.resolutionPresetSelect.addEventListener('change', () => {
+    if (uiController.resolutionPresetSelect.value !== 'custom') {
+      uiController.customResolutionInput.value = uiController.resolutionPresetSelect.value;
+    }
+    return returnSuccess(undefined);
+  });
+
+  controlRootElement.ownerDocument.addEventListener('fullscreenchange', () => {
+    runAndDisplayError(errorElement, () => uiController.syncFullscreenCanvasButton());
+  });
 
   uiController.lightBounceInput.addEventListener('input', () => (
     runAndDisplayError(errorElement, () => uiController.updateLightBounceCountFromInput())
@@ -6332,6 +8118,7 @@ const createPathTracingApplication = async (documentObject) => {
   if (canvasError) {
     return returnFailure(canvasError.code, canvasError.message, canvasError.details);
   }
+  applyCanvasSizeToDocument(documentObject, canvasElement);
 
   const [errorElement, errorElementError] = readRequiredElement(documentObject, 'error');
   if (errorElementError) {
@@ -6343,9 +8130,24 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(controlsElementError.code, controlsElementError.message, controlsElementError.details);
   }
 
+  const [appShellElement, appShellElementError] = readRequiredElement(documentObject, 'app-shell');
+  if (appShellElementError) {
+    return returnFailure(appShellElementError.code, appShellElementError.message, appShellElementError.details);
+  }
+
   const [cameraPlaybackButton, cameraPlaybackButtonError] = readRequiredButton(documentObject, 'camera-playback');
   if (cameraPlaybackButtonError) {
     return returnFailure(cameraPlaybackButtonError.code, cameraPlaybackButtonError.message, cameraPlaybackButtonError.details);
+  }
+
+  const [framePauseButton, framePauseButtonError] = readRequiredButton(documentObject, 'frame-pause');
+  if (framePauseButtonError) {
+    return returnFailure(framePauseButtonError.code, framePauseButtonError.message, framePauseButtonError.details);
+  }
+
+  const [convergencePauseButton, convergencePauseButtonError] = readRequiredButton(documentObject, 'convergence-pause');
+  if (convergencePauseButtonError) {
+    return returnFailure(convergencePauseButtonError.code, convergencePauseButtonError.message, convergencePauseButtonError.details);
   }
 
   const [lightCycleButton, lightCycleButtonError] = readRequiredButton(documentObject, 'light-cycle');
@@ -6447,12 +8249,12 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(glossinessContainerError.code, glossinessContainerError.message, glossinessContainerError.details);
   }
 
-  const [materialSelect, materialSelectError] = readRequiredElement(documentObject, 'material');
+  const [materialSelect, materialSelectError] = readRequiredSelect(documentObject, 'material');
   if (materialSelectError) {
     return returnFailure(materialSelectError.code, materialSelectError.message, materialSelectError.details);
   }
 
-  const [environmentSelect, environmentSelectError] = readRequiredElement(documentObject, 'environment');
+  const [environmentSelect, environmentSelectError] = readRequiredSelect(documentObject, 'environment');
   if (environmentSelectError) {
     return returnFailure(environmentSelectError.code, environmentSelectError.message, environmentSelectError.details);
   }
@@ -6705,6 +8507,48 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(glareStrengthValueError.code, glareStrengthValueError.message, glareStrengthValueError.details);
   }
 
+  const [selectedItemNameElement, selectedItemNameError] = readRequiredElement(documentObject, 'selected-item-name');
+  if (selectedItemNameError) {
+    return returnFailure(selectedItemNameError.code, selectedItemNameError.message, selectedItemNameError.details);
+  }
+
+  const [sceneTreeListElement, sceneTreeListError] = readRequiredElement(documentObject, 'scene-tree-list');
+  if (sceneTreeListError) {
+    return returnFailure(sceneTreeListError.code, sceneTreeListError.message, sceneTreeListError.details);
+  }
+
+  const [sceneTreeCountElement, sceneTreeCountError] = readRequiredElement(documentObject, 'scene-tree-count');
+  if (sceneTreeCountError) {
+    return returnFailure(sceneTreeCountError.code, sceneTreeCountError.message, sceneTreeCountError.details);
+  }
+
+  const [resolutionPresetSelect, resolutionPresetError] = readRequiredSelect(documentObject, 'resolution-preset');
+  if (resolutionPresetError) {
+    return returnFailure(resolutionPresetError.code, resolutionPresetError.message, resolutionPresetError.details);
+  }
+
+  const [customResolutionInput, customResolutionError] = readRequiredInput(documentObject, 'custom-resolution');
+  if (customResolutionError) {
+    return returnFailure(customResolutionError.code, customResolutionError.message, customResolutionError.details);
+  }
+
+  const [exportStatusElement, exportStatusError] = readRequiredElement(documentObject, 'export-status');
+  if (exportStatusError) {
+    return returnFailure(exportStatusError.code, exportStatusError.message, exportStatusError.details);
+  }
+
+  const [fullscreenCanvasButton, fullscreenCanvasButtonError] = readRequiredButton(
+    documentObject,
+    'canvas-fullscreen'
+  );
+  if (fullscreenCanvasButtonError) {
+    return returnFailure(
+      fullscreenCanvasButtonError.code,
+      fullscreenCanvasButtonError.message,
+      fullscreenCanvasButtonError.details
+    );
+  }
+
   const [webGlContext, webGlContextError] = createWebGlContext(canvasElement);
   if (webGlContextError) {
     displayError(errorElement, webGlContextError);
@@ -6780,12 +8624,25 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(rendererError.code, rendererError.message, rendererError.details);
   }
 
+  const benchmarkDisplay = new BenchmarkDisplay(
+    benchmarkPerformanceScoreElement,
+    benchmarkRaysPerSecondElement,
+    benchmarkRayBandwidthElement,
+    benchmarkPerceptualFramesPerSecondElement,
+    benchmarkRaysPerFrameElement,
+    benchmarkSamplesPerFrameElement,
+    benchmarkFrameTimeElement,
+    benchmarkSourceElement
+  );
+
   const uiController = new UserInterfaceController(
     selectionRenderer,
     physicsWorld,
     applicationState,
     canvasElement,
     cameraPlaybackButton,
+    framePauseButton,
+    convergencePauseButton,
     lightCycleButton,
     focusPickButton,
     glossinessContainer,
@@ -6828,17 +8685,15 @@ const createPathTracingApplication = async (documentObject) => {
     bloomThresholdInput,
     bloomThresholdValueElement,
     glareStrengthInput,
-    glareStrengthValueElement
-  );
-  const benchmarkDisplay = new BenchmarkDisplay(
-    benchmarkPerformanceScoreElement,
-    benchmarkRaysPerSecondElement,
-    benchmarkRayBandwidthElement,
-    benchmarkPerceptualFramesPerSecondElement,
-    benchmarkRaysPerFrameElement,
-    benchmarkSamplesPerFrameElement,
-    benchmarkFrameTimeElement,
-    benchmarkSourceElement
+    glareStrengthValueElement,
+    selectedItemNameElement,
+    sceneTreeListElement,
+    sceneTreeCountElement,
+    resolutionPresetSelect,
+    customResolutionInput,
+    exportStatusElement,
+    fullscreenCanvasButton,
+    benchmarkDisplay
   );
 
   const [, colorCorrectionError] = uiController.updateColorCorrectionFromInputs();
@@ -6877,14 +8732,37 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(setSceneError.code, setSceneError.message, setSceneError.details);
   }
 
+  const [, initialControlSyncError] = uiController.syncAllControlsFromState();
+  if (initialControlSyncError) {
+    return returnFailure(
+      initialControlSyncError.code,
+      initialControlSyncError.message,
+      initialControlSyncError.details
+    );
+  }
+
   const [, inputHandlerError] = attachInputHandlers(documentObject, canvasElement, errorElement, uiController);
   if (inputHandlerError) {
     return returnFailure(inputHandlerError.code, inputHandlerError.message, inputHandlerError.details);
   }
 
-  const [, controlHandlerError] = attachControlHandlers(controlsElement, errorElement, uiController);
+  const [, floatingWindowManagerError] = createFloatingWindowManager(documentObject);
+  if (floatingWindowManagerError) {
+    return returnFailure(
+      floatingWindowManagerError.code,
+      floatingWindowManagerError.message,
+      floatingWindowManagerError.details
+    );
+  }
+
+  const [, controlHandlerError] = attachControlHandlers(appShellElement, errorElement, uiController);
   if (controlHandlerError) {
     return returnFailure(controlHandlerError.code, controlHandlerError.message, controlHandlerError.details);
+  }
+
+  const [, panelMenuError] = attachPanelMenuHandlers(documentObject, controlsElement);
+  if (panelMenuError) {
+    return returnFailure(panelMenuError.code, panelMenuError.message, panelMenuError.details);
   }
 
   hideError(errorElement);
@@ -6903,6 +8781,15 @@ const startAnimationLoop = (application) => {
   let previousFrameTime = performance.now();
 
   const renderFrame = (currentTime) => {
+    application.applicationState.animationFrameId = 0;
+    if (application.applicationState.isFramePaused) {
+      return returnSuccess(undefined);
+    }
+    if (application.applicationState.didResumeFromFramePause) {
+      previousFrameTime = currentTime;
+      application.applicationState.didResumeFromFramePause = false;
+    }
+
     const elapsedSeconds = (currentTime - previousFrameTime) * 0.001;
     previousFrameTime = currentTime;
     const pathTracer = application.uiController.selectionRenderer.pathTracer;
@@ -6941,10 +8828,11 @@ const startAnimationLoop = (application) => {
       return returnFailure(renderError.code, renderError.message, renderError.details);
     }
 
-    if (pathTracer.benchmarkSnapshot.measurementSource !== 'gpu-timer') {
+    const didTraceNewSamples = pathTracer.lastRenderedSampleCount > 0;
+    if (didTraceNewSamples && pathTracer.benchmarkSnapshot.measurementSource !== 'gpu-timer') {
       const [, frameBenchmarkError] = pathTracer.writeBenchmarkSnapshot(
         currentTime,
-        application.applicationState.raysPerPixel,
+        pathTracer.lastRenderedSampleCount,
         application.applicationState.lightBounceCount,
         elapsedSeconds * 1000,
         pathTracer.gpuBenchmarkTimer ? 'frame-estimate-pending' : 'frame-estimate'
@@ -6961,6 +8849,14 @@ const startAnimationLoop = (application) => {
       return returnFailure(framePacingError.code, framePacingError.message, framePacingError.details);
     }
 
+    if (!didTraceNewSamples && application.applicationState.isConvergencePaused) {
+      const [, pausedBenchmarkError] = pathTracer.writePausedBenchmarkSnapshot('rays-paused', false);
+      if (pausedBenchmarkError) {
+        displayError(application.errorElement, pausedBenchmarkError);
+        return returnFailure(pausedBenchmarkError.code, pausedBenchmarkError.message, pausedBenchmarkError.details);
+      }
+    }
+
     const [, benchmarkError] = application.benchmarkDisplay.update(
       currentTime,
       pathTracer.benchmarkSnapshot
@@ -6970,12 +8866,11 @@ const startAnimationLoop = (application) => {
       return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
     }
 
-    application.applicationState.animationFrameId = requestAnimationFrame(renderFrame);
-    return returnSuccess(undefined);
+    return scheduleAnimationFrame(application.applicationState);
   };
 
-  application.applicationState.animationFrameId = requestAnimationFrame(renderFrame);
-  return returnSuccess(undefined);
+  application.applicationState.animationFrameCallback = renderFrame;
+  return scheduleAnimationFrame(application.applicationState);
 };
 
 const startPathTracingDemo = async () => {

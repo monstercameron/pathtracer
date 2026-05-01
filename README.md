@@ -17,12 +17,17 @@ This demo renders a small path-traced scene directly in the browser. It progress
 You can:
 
 - Switch between diffuse, mirror, glossy, and glass materials.
-- Add spheres and cubes to the scene.
+- Add spheres, cubes, and extended primitives to the scene.
 - Let Rapier physics move the spheres.
 - Change light bounces, rays per pixel, light size, light intensity, fog, bloom, glare, and denoising.
+- Use the File/Edit/View/Create/Render/Help menu bar to run commands and open floating panels.
+- Change square render resolution, keep the canvas fitted to the page, use fullscreen, and export the current canvas as a PNG.
+- Move, collapse, close, and reopen the floating inspector, scene tree, and benchmark panels.
 - Toggle camera rotation.
 - Load preset scenes.
 - Use the open-sky environment instead of a closed Cornell box.
+
+Supported extended geometry includes cylinders, cones/frustums, capsules, ellipsoids, toruses, rounded boxes, disks/planes, triangles/wedges/prisms, metaballs, CSG shapes, Mandelbulb/SDF fractals, and visible area light geometry.
 
 ## How To Use It
 
@@ -30,15 +35,22 @@ Open the page and let the image settle for a few seconds. Higher rays per pixel 
 
 Useful controls:
 
+- Menu bar: uses File/Edit/View/Create/Render/Help menus for global commands, creation, render controls, panel visibility, presets, and export.
+- Floating panels: move, collapse, close, and reopen the scene tree, inspector, and benchmark windows; panel layout is restored in the browser.
+- Scene tree: mirrors the active scene and stays synced with canvas selection and the selected-object inspector.
 - `Pause Camera` / `Play Camera`: starts or stops the slow camera orbit.
-- `Add Sphere` / `Add Cube`: adds objects to the scene.
-- `Select Light`: selects the light so it can be moved.
-- `Material`: changes the material used for scene objects.
+- `Pause Frames`: freezes the render loop without adding new frames.
+- `Pause Rays at Converged`: keeps rendering until the current scene reaches the convergence sample target, then stops adding new rays.
+- `Add primitive`: adds spheres, cubes, SDF primitives, and visible area light panels to the scene.
+- `Object`: shows the current selection, selects the light, deletes the selected item, and applies object shaders.
+- `Material`: changes the material used for new scene objects.
 - `Environment`: switches between Cornell boxes and the open-sky scene.
 - `Light Bounces`: controls path depth.
 - `Rays Per Pixel`: controls samples per frame.
 - `Frame Blend` and `Denoiser`: smooth temporal noise.
 - `Bloom`, `Glare`, and color controls: tune the final image.
+- `Output`: changes the internal square render size with a safe reload, keeps the visible canvas fitted to the page for supersampling, opens the canvas fullscreen, and saves the current canvas as PNG.
+- Shortcuts: `Ctrl+1` through `Ctrl+6` open the inspector tabs, `P` pauses frames, `K` pauses rays at convergence, `F` toggles canvas fullscreen, `I` toggles the inspector, `T` toggles the scene tree, `B` toggles benchmark, `L` selects the light, and `Ctrl+S` saves PNG.
 
 Click objects in the canvas to select and move them.
 
@@ -50,6 +62,12 @@ Install dependencies:
 
 ```sh
 npm install
+```
+
+Build the Tailwind CSS used by the UI:
+
+```sh
+npm run build:css
 ```
 
 Run the Electron app:
