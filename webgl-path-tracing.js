@@ -3930,7 +3930,12 @@ const displayTemporalAntialiasingSource = [
   '  historyWeight *= mix(1.0, 0.45, edgeAmount);',
   '  historyWeight *= 1.0 - historyRejection * 0.85;',
   '  vec3 antialiasedColor = mix(stabilizedCurrentColor, clippedHistoryColor, historyWeight);',
-  '  return mix(antialiasedColor, historyColor, motionBlend);',
+  '  vec3 temporallyFilteredColor = mix(antialiasedColor, historyColor, motionBlend);',
+  '  float targetLuminance = max(stabilizedCurrentYCoCg.x, 0.0001);',
+  '  float filteredLuminance = max(rgbToYCoCg(temporallyFilteredColor).x, 0.0001);',
+  '  float luminanceCorrection = clamp(targetLuminance / filteredLuminance, 0.5, 2.0);',
+  '  float luminancePreservation = clamp(historyWeight + motionBlend, 0.0, 1.0);',
+  '  return temporallyFilteredColor * mix(1.0, luminanceCorrection, luminancePreservation);',
   '}'
 ].join('');
 
@@ -9577,19 +9582,6 @@ class PathTracer {
     this.currentRaysPerPixel = raysPerPixel;
     this.lastRenderedSampleCount = 0;
 
-    if (
-      this.wasInteractiveQualityThrottleActive &&
-      !effectiveRenderQuality.isInteractiveQualityThrottleActive
-    ) {
-      const [, restoreQualityClearError] = this.clearSamples(false);
-      if (restoreQualityClearError) {
-        return returnFailure(
-          restoreQualityClearError.code,
-          restoreQualityClearError.message,
-          restoreQualityClearError.details
-        );
-      }
-    }
     this.wasInteractiveQualityThrottleActive = effectiveRenderQuality.isInteractiveQualityThrottleActive;
 
     if (
@@ -9873,6 +9865,12 @@ class PathTracer {
     );
   }
 
+  readTemporalFrameAge(temporalBlendFrames) {
+    const samplesPerDisplayFrame = Math.max(this.currentRaysPerPixel, 1);
+    const temporalRampSamples = Math.max(samplesPerDisplayFrame, temporalBlendFrames * samplesPerDisplayFrame);
+    return clampNumber(this.sampleCount / temporalRampSamples, 0, 1);
+  }
+
   readRenderTexture(applicationState) {
     if (shouldUseDraftPostProcessBypass(applicationState)) {
       this.hasDisplayHistory = false;
@@ -9952,7 +9950,7 @@ class PathTracer {
 
     const temporalUniformValues = this.temporalDisplayScalarUniformValues;
     temporalUniformValues.temporalBlendFrames = temporalBlendFrames;
-    temporalUniformValues.temporalFrameAge = Math.min(this.sampleCount / this.currentRaysPerPixel, 1);
+    temporalUniformValues.temporalFrameAge = this.readTemporalFrameAge(temporalBlendFrames);
     temporalUniformValues.historyAvailability = this.hasDisplayHistory ? 1 : 0;
     temporalUniformValues.motionBlurStrength = motionBlurStrength;
     temporalUniformValues.denoiserStrength = denoiserStrength;

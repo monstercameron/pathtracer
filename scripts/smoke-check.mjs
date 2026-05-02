@@ -713,8 +713,9 @@ const checkBenchmarkSignalContracts = () => {
   ));
   assert('interactive quality throttle follows camera drag state', legacyRendererSource.includes('const isInteractiveQualityThrottleActive = Boolean(applicationState.isRotatingCamera);'));
   assert(
-    'interactive quality throttle clears after restore',
-    /this\.wasInteractiveQualityThrottleActive\s*&&\s*!\s*effectiveRenderQuality\.isInteractiveQualityThrottleActive[\s\S]*this\.clearSamples\(false\)/u.test(legacyRendererSource)
+    'interactive quality throttle restore preserves valid accumulation',
+    !legacyRendererSource.includes('restoreQualityClearError') &&
+      !/this\.wasInteractiveQualityThrottleActive\s*&&\s*!\s*effectiveRenderQuality\.isInteractiveQualityThrottleActive[\s\S]*this\.clearSamples/u.test(legacyRendererSource)
   );
 };
 
@@ -1044,6 +1045,30 @@ const checkRendererPostProcessContracts = () => {
   assert('temporal display pass stays enabled for denoiser-only mode', (
     /shouldUseTemporalDisplayPass\(temporalBlendFrames, motionBlurStrength, denoiserStrength\) \{[\s\S]*denoiserStrength > MIN_DENOISER_STRENGTH/u
       .test(rendererSource)
+  ));
+  assert('temporal history ramps over configured blend frames', (
+    rendererSource.includes('readTemporalFrameAge(temporalBlendFrames)') &&
+    rendererSource.includes('temporalBlendFrames * samplesPerDisplayFrame') &&
+    rendererSource.includes('temporalUniformValues.temporalFrameAge = this.readTemporalFrameAge(temporalBlendFrames);')
+  ));
+  assert('temporal display preserves luminance while using history', (
+    rendererSource.includes('float luminanceCorrection = clamp(targetLuminance / filteredLuminance, 0.5, 2.0);') &&
+    rendererSource.includes('return temporallyFilteredColor * mix(1.0, luminanceCorrection, luminancePreservation);')
+  ));
+  assert('temporal history depends on actual camera-change invalidation', (
+    !rendererSource.includes('shouldUseTemporalHistory(applicationState)') &&
+    rendererSource.includes('temporalUniformValues.historyAvailability = this.hasDisplayHistory ? 1 : 0;') &&
+    /if \(didCameraChange\) \{[\s\S]*const \[, clearCameraSamplesError\] = this\.clearSamples\(\);/u.test(rendererSource)
+  ));
+  assert('manual camera press preserves valid temporal history until movement', (
+    /applicationState\.isRotatingCamera = !didSelectObject;[\s\S]{0,160}event\.preventDefault\(\);/u.test(rendererSource) &&
+      !/applicationState\.isRotatingCamera = !didSelectObject;[\s\S]{0,160}clearDisplayHistory\(\)/u.test(rendererSource)
+  ));
+  assert('camera playback pause preserves temporal display history', (
+    /toggleCameraAutoRotation\(toggleButton\) \{[\s\S]*this\.applicationState\.isCameraAutoRotating = !this\.applicationState\.isCameraAutoRotating;[\s\S]*updateCameraAutoRotationButton/u
+      .test(rendererSource) &&
+      !/toggleCameraAutoRotation\(toggleButton\) \{[\s\S]*this\.applicationState\.isCameraAutoRotating = !this\.applicationState\.isCameraAutoRotating;[\s\S]*clearDisplayHistory\(\)/u
+        .test(rendererSource)
   ));
   assert('draft postprocess disables bloom and glare shader taps', (
     rendererSource.includes('const effectiveBloomStrength = shouldBypassDraftPostProcess ? 0 : applicationState.bloomStrength;') &&
