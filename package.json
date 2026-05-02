@@ -2,11 +2,16 @@
   "name": "webgl-path-tracing",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
     "build:css": "tailwindcss -i ./src/tailwind.css -o ./dist/app.css --minify",
+    "check:syntax": "node scripts/smoke-check.mjs --syntax-only",
     "start": "electron .",
-    "start:b580": "electron ."
+    "start:b580": "electron .",
+    "test": "npm run test:smoke && npm run test:electron-smoke",
+    "test:smoke": "node scripts/smoke-check.mjs",
+    "test:electron-smoke": "node scripts/electron-smoke-check.mjs"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.2.4",
