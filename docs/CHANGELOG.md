@@ -4,6 +4,20 @@ Changes are grouped by commit date, newest first. Each bullet represents one com
 
 ## 2026-05-02
 
+- This commit - Render bundled reference mesh scene:
+  - Add generated Suzanne/Sponza reference metadata, including normalized low-triangle Suzanne triangle data and Sponza GLB triangle-count metadata.
+  - Add the `Suzanne Reference Mesh` Scene preset, renderable reference mesh scene-object support, menu/preset-panel entries, and Electron smoke coverage that compiles the new preset.
+  - Keep the full Sponza GLB as the benchmark reference asset while the default Sponza Atrium remains a deterministic primitive benchmark until the BVH/texture-atlas mesh path is ready.
+  - Fix Preact/legacy floating-window event overlap so reopened persisted panels do not immediately hide again.
+- This commit - Close WS9 validation and TODO audit:
+  - Move incomplete active-runtime performance work into a deferred follow-up section instead of marking it complete without code contracts.
+  - Add smoke checks for no unchecked WS9 TODOs, migration validation docs, GitHub Pages deploy smoke documentation, and CPU-side performance coverage notes.
+- This commit - Add bundled reference model assets:
+  - Add Khronos-derived Suzanne OBJ and low-triangle OBJ references with upstream CC0 license metadata.
+  - Pack the Khronos Sponza glTF sample into a self-contained GLB, keep the upstream CryEngine license notice beside it, and add smoke coverage for the bundled references.
+- This commit - Complete WS11 benchmark scenes and lighting tuning:
+  - Add the default Sponza Atrium benchmark with deterministic primitive atrium geometry, exact opening camera metadata, 8-bounce/16-ray target settings, and a glass Lissajous animation.
+  - Add Sponza and Particle Fluid entries to migrated benchmark menus, tune over-bright sky/fog/neon/caustic lighting, defer scene menu loads through renderer teardown and a browser-frame yield, show an offload/reload step dialog during scene changes, and expand smoke coverage for the new default benchmark.
 - This commit - Update changelog for grouped runtime work:
   - Record the grouped scene-store, runtime, verification, and TODO audit commits.
 - `e13cea8` - Refresh TODO audit and workstream notes:

@@ -35,7 +35,7 @@ You can:
 
 Supported extended geometry includes cylinders, cones/frustums, capsules, ellipsoids, toruses, rounded boxes, disks/planes, triangles/wedges/prisms, metaballs, CSG shapes, Mandelbulb/SDF fractals, and visible area light geometry.
 
-The asset-loader scaffold in `src/loaders` can parse OBJ/MTL, STL, PLY, glTF 2.0 JSON (`.gltf`), and binary GLB (`.glb`) files into flat triangle data for the upcoming mesh scene-object path. GLTF helpers are exposed as `GltfLoader`, `parseGltf()`, `loadGltfFromText()`, `loadGltfFromBinary()`, and `loadGltfFromUrl()`. The `src/importers` coordinator groups File-like drops such as OBJ+MTL pairs, `.gltf`+`.bin` pairs, and texture siblings, then routes OBJ, glTF, GLB, STL, and PLY inputs through smoke-tested parsers. Canvas or file-input handlers can pass a `DragEvent`, `DataTransfer`, `FileList`, or plain file array to `getDroppedFiles()` or `importDroppedSource()`. OBJ imports resolve dropped sibling diffuse texture files into cached texture assets; unresolved paths get neutral checker fallback metadata without requiring the renderer mesh path. Imports also create an isolated CPU-side `MeshRecord` with source-space bounds, material/object/group triangle summaries, estimated triangle payload bytes, and default unit-cube fitting metadata (`longestAxis = 1.0`) so scene insertion can consume a normalized transform later. The GLTF path handles GLB 2.0 chunks, supplied buffers, data URI buffers, fetched sibling buffers, triangle/strip/fan primitives, positions, normals, UVs, and PBR material metadata mapped to the closest current path-tracer material. Reference model source notes live in `assets/models/README.md`; Suzanne OBJ assets remain unbundled until a clearly compatible source is selected.
+The asset-loader scaffold in `src/loaders` can parse OBJ/MTL, STL, PLY, glTF 2.0 JSON (`.gltf`), and binary GLB (`.glb`) files into flat triangle data for the upcoming full mesh scene-object path. GLTF helpers are exposed as `GltfLoader`, `parseGltf()`, `loadGltfFromText()`, `loadGltfFromBinary()`, and `loadGltfFromUrl()`. The `src/importers` coordinator groups File-like drops such as OBJ+MTL pairs, `.gltf`+`.bin` pairs, and texture siblings, then routes OBJ, glTF, GLB, STL, and PLY inputs through smoke-tested parsers. Canvas or file-input handlers can pass a `DragEvent`, `DataTransfer`, `FileList`, or plain file array to `getDroppedFiles()` or `importDroppedSource()`. OBJ imports resolve dropped sibling diffuse texture files into cached texture assets; unresolved paths get neutral checker fallback metadata without requiring the renderer mesh path. Imports also create an isolated CPU-side `MeshRecord` with source-space bounds, material/object/group triangle summaries, estimated triangle payload bytes, and default unit-cube fitting metadata (`longestAxis = 1.0`) so scene insertion can consume a normalized transform later. The GLTF path handles GLB 2.0 chunks, supplied buffers, data URI buffers, fetched sibling buffers, triangle/strip/fan primitives, positions, normals, UVs, and PBR material metadata mapped to the closest current path-tracer material. Bundled reference assets now include Khronos-derived Suzanne OBJ files and a self-contained Khronos Sponza GLB; `Suzanne Reference Mesh` renders the generated 196-triangle Suzanne variant through the current shader path, and the Sponza benchmark tracks the GLB path and triangle count until the BVH/texture-atlas renderer can consume the full scene directly. Source and license notes live in `assets/models/README.md`.
 
 ## How To Use It
 
@@ -54,7 +54,7 @@ Useful controls:
 - `Pause Frames`: freezes the render loop without adding new frames.
 - `Pause Rays at Converged`: keeps rendering until the current scene reaches the convergence sample target, then stops adding new rays.
 - `Create` / `Add primitive`: exposes every primitive directly, including spheres, cubes, curved SDF shapes, flat primitives, implicit shapes, fractals, and visible area light panels.
-- `Scene`: loads core presets, shader/recursive presets, primitive and area-light showcases, demo scenes, and fixed benchmark scenes. Demo scenes include Corridor of Light, Depth-of-Field Portrait, Shadow Study, Mirror Room, Sky Sphere, Fog Corridor, Material Grid, and Neon Room. Benchmark scenes include the standard benchmark, shader gauntlet, physics chaos, SDF complexity, caustic pool, motion blur stress, and volumetric fog flythrough; `Run Benchmark Sequence` measures every registered benchmark scene in order.
+- `Scene`: loads core presets, shader/recursive presets, primitive and area-light showcases, reference models, demo scenes, and fixed benchmark scenes. Reference models include `Suzanne Reference Mesh`, which renders the low-triangle bundled Suzanne asset. Demo scenes include Corridor of Light, Depth-of-Field Portrait, Shadow Study, Mirror Room, Sky Sphere, Fog Corridor, Material Grid, and Neon Room. Benchmark scenes include the Sponza Atrium default, shader gauntlet, physics chaos, Particle Fluid, SDF complexity, caustic pool, motion blur stress, and volumetric fog flythrough; `Run Benchmark Sequence` measures every registered benchmark scene in order.
 - `Object`: shows the current selection, selects the light, deletes the selected item, and applies object shaders.
 - `Material`: changes the material used for new scene objects, including diffuse, mirror, glossy, glass, GGX PBR, spectral glass, subsurface, caustics, procedural, SDF fractal, volumetric shafts, bokeh, motion blur stress, fire plasma, thin film, retroreflector, velvet, Voronoi cracks, diffraction grating, anisotropic GGX, blackbody, emissive, toon, and X-Ray surfaces. Selected EMISSIVE objects expose emission intensity and color controls.
 - `Environment`: switches between Cornell boxes and the open-sky scene.
@@ -103,6 +103,16 @@ npm start
 
 The static web version can also be served from the repo root or from `/docs`.
 
+CPU-side performance work is tracked as WS9 in `TODOS.md`. The completed slice covers DOM write guards, scene-tree diffing, benchmark rolling-buffer reuse, uniform/program binding guards, Preact signal scaffolding, migrated UI components, and migration validation. Larger active-runtime changes such as moving all WebGL calls into `renderBridge.js` and worker-thread Rapier remain open under Deferred Performance And React Runtime Follow-Ups.
+
+Verification:
+
+```sh
+npm run test:smoke
+npm run test:pages-deploy
+npm run test:electron-smoke
+```
+
 ## GitHub Pages
 
 This repo includes a `/docs` directory for GitHub Pages. Configure Pages to deploy from the `main` branch and `/docs` folder.
@@ -112,6 +122,8 @@ After GitHub Pages is enabled, the site should be available at:
 ```text
 https://monstercameron.github.io/pathtracer/
 ```
+
+The local deploy smoke serves `docs/` at `/pathtracer/` to match the GitHub Pages project path and verifies importmap targets, static assets, dynamic module imports, CSS assets, and WASM references without allowing origin-root path masking.
 
 ## Notes
 

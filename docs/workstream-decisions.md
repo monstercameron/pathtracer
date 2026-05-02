@@ -65,6 +65,14 @@ The particle fluid benchmark uses only current primitives and Rapier rigid bodie
 
 The fallback benchmark panel owns the initial hot-reload controls for particle count, radius, and spring stiffness. These controls update application state and reload only `benchmarkParticleFluid`; they should move into the React benchmark panel when the React shell becomes the active entrypoint.
 
+## Sponza Atrium Benchmark
+
+`benchmarkSponzaAtrium` is the default benchmark key, but the active WebGL implementation is a deterministic primitive atrium until imported mesh rendering, SAH BVH upload, and full PBR texture atlases are available. It keeps the WS11 camera contract (`[0, 0.3, 0]` toward `[1, 0.2, 0]`, 65 degree FOV), 8-bounce/16-ray target settings, and animated glass Lissajous sphere so benchmark sequencing and scoring can stabilize without bundling the deferred Intel Sponza GLB.
+
+The primitive atrium stays under a small shader-object budget for laptop WebGL contexts. Scene menu loads now release the previous path-tracer program, flush the GL queue, cancel the pending render frame, and defer the new scene compile through a browser frame so rapid scene changes do not stack synchronous shader rebuilds in one click handler. The loading dialog shows that offload/reload checklist explicitly, including shader release, scene memory cleanup, the browser-frame yield, new asset/component loading, shader compile, physics rebuild, and first-frame scheduling.
+
+Benchmark and showcase scene lighting is tuned per scene. Open-sky, fog, caustic, and neon presets use lower sky/emissive/bloom/glare values than their first pass so they preserve the intended effect without washing out the canvas under the default tone mapping.
+
 ## Physics Spring Joints
 
 Fallback spring joints are runtime editor state on physics-capable scene objects. Exactly two selected, physics-enabled fallback objects expose `JointData.spring()` controls for rest length, stiffness, and damping; created joint records are mirrored on both endpoints and refreshed with new Rapier handles whenever the physics world rebuilds.
@@ -89,6 +97,14 @@ The keyboard checks intentionally validate the bundled handler selectors against
 
 The floating-window checks validate the component and fallback HTML contracts for persisted geometry, hidden/collapsed state, drag pointer capture, viewport clamping, close, collapse, and show behavior. They do not replace an end-to-end browser drag test.
 
+## WS9 Performance Closure
+
+WS9 now represents the completed, smoke-backed CPU-side hot-path work: guarded DOM writes, in-place scene-tree refreshes, benchmark throttling before formatting, reusable Rapier translation buffers, rolling benchmark sample reuse, uniform/program binding caches, constructor display-name lookup, Preact signal scaffolding, migrated component contracts, and documented migration validation.
+
+The TODO audit intentionally moved work without current code contracts into `Deferred Performance And React Runtime Follow-Ups` instead of marking it complete. That deferred section keeps active-runtime cleanup visible for Rapier worker threading, incremental physics rebuilds, full signal-owned state mutation, removal of legacy `BenchmarkDisplay`/input readers, and moving WebGL frame ownership into `renderBridge.js`.
+
+GitHub Pages deploy validation is local and deterministic: `npm run test:pages-deploy` serves `docs/` under `/pathtracer/`, resolves static HTML assets, importmap targets, dynamic module imports, CSS `url(...)` references, and WASM artifacts, then rejects origin-root serving so project-path regressions are not masked.
+
 ## React CSS Selector Audit
 
 The migrated React components intentionally preserve the dynamic selector contracts used by `src/app.css` and `docs/src/app.css`.
@@ -104,4 +120,10 @@ The remaining dynamic class selectors for `canvas.focus-pick-mode`, `.loading-ov
 
 `RenderCanvas` is the React-side owner for the canvas sizing CSS custom properties. Its mounted effect writes `--canvas-render-size`, `--canvas-render-width`, `--canvas-render-height`, and `--canvas-aspect-ratio` through one helper and restores previous root values on cleanup.
 
-The active `index.html` entrypoint still loads `webgl-path-tracing.js` against the static fallback `<canvas id="canvas">`; `src/main.jsx.js` mounts an inert scaffold by default. Because the legacy renderer also derives render dimensions from URL parameters before it creates WebGL resources, its document-root writes must remain until the active entrypoint mounts `RenderCanvas` and starts the render loop through `renderBridge`. The smoke runner now verifies that split: React owns the migrated document-root effect, while the legacy bundle only writes the same custom properties to `document.documentElement` for the fallback canvas and never to canvas inline style.
+The active `index.html` entrypoint still loads `webgl-path-tracing.js` against the static fallback `<canvas id="canvas">`; `src/main.jsx.js` mounts the React UI shell but keeps `RenderCanvas` opt-in until the renderer loop moves through `renderBridge`. Because the legacy renderer also derives render dimensions from URL parameters before it creates WebGL resources, its document-root writes must remain until the active entrypoint mounts `RenderCanvas` and starts the render loop through `renderBridge`. The smoke runner now verifies that split: React owns the migrated document-root effect, while the legacy bundle only writes the same custom properties to `document.documentElement` for the fallback canvas and never to canvas inline style.
+
+## React Static HTML Tombstones
+
+`index.html` now keeps only the `#app-shell`, `#ui-root`, and legacy renderer canvas/error compatibility DOM. The former inline menu, loading overlay, scene tree, inspector, and benchmark sections are represented by `data-migrated` comment tombstones. `src/main.jsx.js` mounts the active React shell from `#ui-root[data-react-app-shell="active"]` before the legacy renderer module runs, so the renderer still finds the same IDs through React-owned DOM.
+
+`src/components/migrationManifest.js` lists each tombstoned section, its component source, and the selectors the legacy runtime still expects. The smoke runner imports that manifest and validates every tombstone against the React component sources, including the compatibility IDs for menu shortcuts, floating windows, benchmark fields, loading overlay status/error nodes, and inspector panels.

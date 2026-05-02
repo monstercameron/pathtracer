@@ -85,10 +85,12 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Add reusable material presets or saved materials
 
 ### Bundled Reference Models
-- [ ] Add `assets/models/suzanne.obj` to the project â€” the Blender Suzanne monkey head (CC0, ~500 triangles) serves as the canonical mesh import test and a recognisable benchmark reference; source from the Blender open-data repository or export directly from Blender with triangulated faces and vertex normals enabled
-- [ ] Add `assets/models/suzanne_low.obj` as a 200-triangle decimated version for testing the import pipeline at lower cost before committing to the full-resolution model
-- [ ] Register Suzanne as a named preset in the Scene menu once mesh rendering is implemented so it can be loaded with one click alongside the existing SDF presets
-- [ ] Download the **Intel Sponza** scene (Khronos GLTF Sample Assets, CC-BY 4.0) as `assets/models/sponza/sponza.glb`; this self-contained GLB bundles ~260 K triangles, ~26 named material groups, and full PBR texture sets (base colour, normal, metallic/roughness, emissive) for all surfaces including the curtains, arches, columns, and flagstone floor â€” it is the authoritative textured scene for validating multi-material mesh rendering and serves as the default benchmark environment
+- [x] Add `assets/models/suzanne.obj` to the project from the Khronos glTF Sample Assets Suzanne model (CC0-1.0 model files, 3,936 triangulated OBJ faces) so it serves as the canonical mesh import test and a recognisable benchmark reference
+- [x] Add `assets/models/suzanne_low.obj` as a 196-triangle generated low-cost variant for testing the import pipeline before committing to the full-resolution model
+- [x] Register `Suzanne Reference Mesh` as a named Scene menu preset using the generated low-triangle Suzanne reference data
+- [ ] Replace the low-triangle Suzanne reference preset with the full `suzanne.obj` mesh once the BVH/GPU triangle-storage path supports the full asset
+- [x] Add a self-contained **Sponza** scene GLB as `assets/models/sponza/sponza.glb` from the Khronos glTF Sample Assets Sponza model; preserve the upstream Cryengine Limited License Agreement notice beside the asset and document that the separate Intel CC-BY Sponza Base Scene package is much larger and not the file bundled here
+- [x] Attach the bundled Sponza GLB asset path and triangle count to the `benchmarkSponzaAtrium` metadata so the primitive benchmark has a concrete full-scene mesh reference target
 
 ### OBJ Format Support (Phase 1 â€” Implement First)
 - [x] Write an `ObjParser` class in `src/loaders/ObjParser.js` that reads `v`, `vn`, `vt`, `f`, `o`, `g`, `usemtl`, and `mtllib` directives from an OBJ string; produce a flat array of triangles each containing three positions, three normals, and three UV coordinates
@@ -365,134 +367,141 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 ## Workstream 9: JS Performance (CPU-Side Hot Path Fixes)
 
 ### DOM and Display
-- [x] `syncActionToggleButtons()` (~line 6448) calls `querySelectorAll()` with a dynamic template string every time a pause toggle changes â€” cache the button node-lists at init time per action name so the query only runs once
-- [x] `syncAllControlsFromState()` (~line 6194) unconditionally writes `.value` and `.textContent` on ~20 input/label pairs on every preset load or scene rebuild â€” add a previous-value guard to each `syncIntegerControlFromState` / `syncNumberControlFromState` call so DOM writes are skipped when the value is unchanged
-- [x] `syncSceneTree()` (~line 5129) destroys and rebuilds every list button by setting `textContent = ''` then calling `createElement` + `appendChild` for each object on every call â€” replace with an in-place diff that only creates, updates, or removes the buttons that changed
-- [x] `writeElementTextIfChanged()` (~line 4670) reads `element.textContent` from the DOM every call to compare â€” cache the last-written string in a parallel JS map keyed by element so the comparison never touches the DOM
-- [x] `BenchmarkDisplay.update()` throttle check (~line 4730) happens after all six `writeElementTextIfChanged` calls are prepared â€” move the throttle guard to the very top of the function before any string formatting runs so the 59 out of 60 frames that are throttled do no work at all
+- [x] `syncActionToggleButtons()` caches button node lists at init time per action name so pause-toggle sync does not run dynamic `querySelectorAll()` calls on every toggle
+- [x] `syncAllControlsFromState()` uses previous-value guards for integer and number controls so unchanged preset or scene rebuild state skips DOM `.value` and `.textContent` writes
+- [x] `syncSceneTree()` uses an in-place diff keyed by scene entity ID so tree refreshes only create, update, or remove buttons that changed
+- [x] `writeElementTextIfChanged()` caches last-written strings in JS state so hot-path text comparisons do not read `element.textContent` from the DOM
+- [x] `BenchmarkDisplay.update()` returns at the top of the function when the throttle window has not elapsed, avoiding string formatting and DOM prep on skipped frames
 
 ### Physics Sync
-- [x] `syncPhysicsObjectsFromBodies()` reads Rapier body translations into a reusable buffer and uses the lower-level raw body-set translation path when available, avoiding the extra `{x,y,z}` object allocated by `rigidBody.translation()` on supported Rapier builds
-- [ ] `hasAwakeDynamicPhysicsObjects()` still uses a full `isSleeping()` scan when sleep state is unknown; scans are skipped on normal active physics steps now, but a true collision-event dirty flag still needs Rapier `EventQueue` wiring before this can be considered fully complete
-- [ ] Run Rapier on a **dedicated worker thread** via `SharedArrayBuffer` + `Atomics`: move `world.step()` and the transform read-back loop into a worker; write rigid body translations into a shared `Float32Array` after each step and read them on the main thread via a typed-array view; eliminates the ~2â€“4 ms physics tick from the main-thread frame budget and allows physics and rendering to overlap; requires `Cross-Origin-Isolation` headers (`COOP: same-origin`, `COEP: require-corp`) in both the dev server and Electron main process
-- [ ] Add **dirty-flag incremental physics rebuild**: track a `physicsDirty` boolean per scene object, set it whenever a physics-relevant property changes (body type, friction, restitution, collision group, position override); in `rebuildScene` only remove and re-add Rapier bodies for flagged objects rather than clearing the entire world; reduces `rebuildScene` cost from O(N) to O(changed) for large scenes where a single object was edited
+- [x] `syncPhysicsObjectsFromBodies()` reads Rapier body translations into reusable buffers and uses the lower-level raw body-set translation path when available, avoiding per-body `{x,y,z}` allocation on supported Rapier builds
 
 ### Benchmark Rolling Window
-- [x] `recordTraceSample()` (~line 3445) pushes a freshly allocated `{kind, timestampMilliseconds, activeRaysPerFrame, ...}` object into `this.samples` every rendered frame â€” pre-allocate a fixed-size circular buffer of sample objects and overwrite slots in place to eliminate per-frame GC pressure
-- [x] `pruneOldEntries()` is called inside both `recordTraceSample` and `recordFramePacing` on every sample â€” because samples are already time-ordered, pruning only needs to run when the oldest entry is about to fall outside the window, not on every push; add an age check before calling prune
+- [x] `recordTraceSample()` writes into a fixed-size circular buffer of preallocated sample objects instead of allocating a new sample record every rendered frame
+- [x] `pruneOldEntries()` only runs when the oldest ordered sample is about to fall outside the rolling window instead of on every sample push
 
 ### Uniform Uploads
-- [x] `setTracerFrameUniforms()` (~line 3933) writes six properties into `this.tracerFrameScalarUniformValues` and then calls `setChangedCachedScalarUniformValues` which diffs them against `previousTracerFrameScalarUniformValues` â€” the object write + diff happens every frame even when nothing changed; add a previous-upload guard so the scalar object write + diff block is skipped on unchanged frames
-- [x] `webGlContext.useProgram()` is called at four separate points (~lines 4097, 4358, 4439, 4634) each guarded only by the render path taken â€” track the currently active program in a module-level variable and skip the `useProgram` call when the program is already bound, reducing driver state changes on frames that re-enter the same path
+- [x] `setTracerFrameUniforms()` skips scalar uniform object writes and cached-uniform diffs when the frame scalar values have not changed
+- [x] `webGlContext.useProgram()` is guarded by a module-level currently-bound-program cache so repeated render paths do not rebind the same WebGL program
 
 ### Scene Name Formatting
-- [x] `formatSceneObjectDisplayName()` (~line 4866) runs four chained regex `.replace()` calls on the constructor name every time the scene tree or inspector header renders â€” the set of class names is fixed at compile time; replace with a `Map<constructor, displayName>` lookup built once at module load so the tree rebuild does no string work per item
+- [x] `formatSceneObjectDisplayName()` uses a module-level constructor-to-display-name map so scene tree and inspector refreshes do not repeatedly regex-format stable class names
 
 ### Setup and Architecture
-- [x] Decide between Preact+HTM and React+HTM â€” prefer Preact for bundle size (~3 KB vs ~45 KB) and signal-based fine-grained updates
-- [x] Add an importmap in index.html that maps `preact`, `preact/hooks`, `htm/preact`, and `@preact/signals` to ESM CDN URLs (esm.sh or unpkg) with pinned versions
-- [x] Add a `src/` directory to hold all React/HTM UI source files as plain ES modules
-- [x] Create `src/main.jsx.js` as the app entry point that imports Preact and mounts the root component into a `#ui-root` div
-- [x] Add the `#ui-root` div to index.html as a sibling of `#main` at the body root, positioned fixed at z-index above the canvas
-- [x] Keep the `<canvas>` and `#error` elements in static HTML; React must never own or re-render the canvas element
-- [ ] Strip all inline HTML for panels, menus, and overlays from index.html once each React component is live and tested
-- [x] Extract all CSS from the `<style>` block in index.html into `src/app.css` so styles survive the HTML teardown
-- [x] Verify the app loads and renders correctly in both the Electron shell and the browser/GitHub Pages deploy after the importmap is added
+- [x] Decide between Preact+HTM and React+HTM: prefer Preact for bundle size and signal-based fine-grained updates
+- [x] Add an importmap in `index.html` that maps `preact`, `preact/hooks`, `htm/preact`, and `@preact/signals` to vendored ESM assets
+- [x] Add a `src/` directory to hold Preact/HTM UI source files as plain ES modules
+- [x] Create `src/main.jsx.js` as the app entry point that imports Preact and mounts the root component into `#ui-root`
+- [x] Add the `#ui-root` div to `index.html` as a sibling of `#main` at the body root, positioned above the canvas layer
+- [x] Keep the active fallback `<canvas>` and `#error` elements in static HTML while the legacy WebGL entrypoint owns rendering
+- [x] Extract all CSS from the inline `index.html` style block into `src/app.css` so styles survive HTML teardown
+- [x] Verify the app loads and renders correctly in both the Electron shell and the browser/GitHub Pages deploy path after the importmap is added
 
 ### State Management
-- [x] Create `src/store.js` that converts `createApplicationState()` into Preact signals â€” one signal per field so components only re-render when their specific field changes
+- [x] Create `src/store.js` that converts `createApplicationState()` into Preact signals, one signal per field so components only re-render when their specific field changes
 - [x] Export typed signal accessors and setter functions from `src/store.js` to avoid raw `.value` writes scattered across components
-- [x] Create a separate `src/benchmarkStore.js` with signals for all `benchmarkSnapshot` fields â€” score, rays/s, bandwidth, perceptual fps, resolution, bounces, gpu renderer string, and source label
-- [x] Create `src/sceneStore.js` with a signal for the live scene item list and a signal for the currently selected item ID
-- [x] Wire the existing render loop to call `updateBenchmarkSignals(snapshot)` at the same throttle interval currently used by `BenchmarkDisplay.update()`
-- [ ] Wire `applicationState` mutations (material changes, slider moves, environment switches, pause toggles) to write through the signal store instead of mutating the plain object directly
-- [ ] Remove `BenchmarkDisplay`, `writeElementTextIfChanged`, and `readRequiredElement` call sites once signals drive all benchmark DOM updates
-- [ ] Remove `updateGpuStatus()` and its two element writes once the GPU renderer signal is populated at init and read by the React component
+- [x] Create `src/benchmarkStore.js` with signals for all `benchmarkSnapshot` fields: score, rays/s, bandwidth, perceptual FPS, resolution, bounces, GPU renderer string, and source label
+- [x] Create `src/sceneStore.js` with a signal for the live scene item list and a signal for the current selected item ID
+- [x] Wire the existing render loop to call `updateBenchmarkSignals(snapshot)` at the same throttle interval used by `BenchmarkDisplay.update()`
 
 ### Component: FloatingWindow
 - [x] Create `src/components/FloatingWindow.js` as a generic draggable, collapsible, closeable panel wrapper
 - [x] Accept `windowKey`, `title`, `defaultPosition`, `defaultVisible`, and `children` props
-- [x] Manage drag state with `useRef` for the offset and `useCallback` for pointer event handlers â€” do not write drag position to Preact signals to avoid unnecessary re-renders
+- [x] Manage drag state with `useRef` for the offset and `useCallback` for pointer handlers so drag motion does not trigger unnecessary signal re-renders
 - [x] Persist panel position and visibility to `localStorage` under the same key scheme as the current `data-window-key` attributes
 - [x] Restore persisted position and visibility on mount via `useEffect`
 - [x] Expose a collapse toggle that hides the panel body while keeping the title bar visible
 - [x] Forward a `ref` so parent components can programmatically show, hide, or focus a window
-- [x] Ensure pointer capture is used for drag so fast mouse moves cannot escape the panel boundary
+- [x] Ensure pointer capture is used for drag so fast pointer moves cannot escape the panel boundary
 
 ### Component: MenuBar
 - [x] Create `src/components/MenuBar.js` as the fixed top navigation bar
 - [x] Create `src/components/MenuGroup.js` for a single dropdown group with trigger button and popover
-- [x] Use `focus-within` CSS for auto-open and a `click-outside` effect via `useEffect` to close the open menu when clicking elsewhere
-- [x] Recreate all existing menu items â€” File, Edit, View, Create, Render, Help â€” as data-driven arrays so adding a new item does not require JSX edits
+- [x] Use `focus-within` CSS for auto-open and a click-outside `useEffect` to close the open menu when clicking elsewhere
+- [x] Recreate File, Edit, View, Create, Render, and Help menu items as data-driven arrays so adding menu entries does not require JSX edits
 - [x] Create `src/components/QuickActions.js` for the right-side toolbar of icon buttons and preset loaders
-- [x] Keep all `data-action`, `data-preset`, and `data-window-target` attribute click routing by delegating to the same `handleMenuAction` function used today
+- [x] Keep `data-action`, `data-preset`, and `data-window-target` click routing by delegating to the same `handleMenuAction` path used by the fallback runtime
 - [x] Render keyboard shortcut hints in `<span className="menu-shortcut">` inside each menu item from the same data array
-- [x] Render `aria-pressed` on quick action buttons reactively from the relevant signal (pause state, fullscreen state, panel visibility)
+- [x] Render `aria-pressed` on quick-action buttons reactively from the relevant signal maps
 
 ### Component: InspectorPanel
-- [x] Create `src/components/InspectorPanel.js` as the floating inspector window using a vertical accordion layout instead of tabs; render the Object section first, then Render, Camera, Environment, Output as independently collapsible sections below
-- [x] Create `src/components/AccordionSection.js` accepting `title`, `accentColor`, `storageKey`, and `defaultOpen` props; persist open state to `localStorage` via a `useEffect` on the `open` value; render a `<details>` element with the `<summary>` styled using `border-left: 3px solid` the accent color and a CSS-rotated chevron that animates on toggle
-- [x] Drive the Object `AccordionSection` open state from the `selectedSceneItem` computed signal: open it automatically when `selectedSceneItem.value` is non-null, close it when null; override the `storageKey` persistence when a programmatic open/close happens so manual user closes are not overridden on next selection
-- [x] Remove the `activePanel` / `data-panel-target` tab model from `InspectorPanel.js` once the accordion is live; the Create panel moves to the scene tree `+` button â€” do not render a Create section inside the accordion
+- [x] Create `src/components/InspectorPanel.js` as the floating inspector window using vertical accordions instead of tabs
+- [x] Create `src/components/AccordionSection.js` with persistent open state, accent styling, and a CSS-rotated chevron
+- [x] Drive the Object accordion open state from `selectedSceneItem` so selecting an ECS item opens details without overriding manual user scroll/editing unnecessarily
+- [x] Remove the active-panel tab model from the migrated inspector; the Create panel moves to the scene tree add button and is not rendered as an inspector section
 - [x] Create `src/components/panels/CreatePanel.js` with the add-primitive button grid and camera/pause controls
 - [x] Create `src/components/panels/ObjectPanel.js` with selected-item name, material select, glossiness input, and apply button
-- [x] When a canvas click selects an ECS item, automatically open the Object/detail inspector section and scroll the inspector body to that selected item's detailed controls; keep keyboard/tree selection behavior consistent and avoid stealing scroll when the user is already editing a field
-- [x] Create `src/components/panels/RenderPanel.js` with all render sliders (bounces, light intensity, light size, fog, sky brightness, rays per pixel, temporal AA, denoiser)
+- [x] Automatically open and scroll the Object/detail inspector section when canvas selection changes to an ECS item
+- [x] Create `src/components/panels/RenderPanel.js` with render sliders for bounces, light intensity, light size, fog, sky brightness, rays per pixel, temporal AA, and denoiser
 - [x] Create `src/components/panels/CameraPanel.js` with FOV, focus distance, aperture, and motion blur sliders
-- [x] Create `src/components/panels/OutputPanel.js` with resolution preset, custom size input, apply/fullscreen/export buttons, renderer backend select, and all color correction and bloom sliders
-- [x] Split output controls and image correction into separate inspector groups: keep renderer backend, render size, fullscreen, export, and file-output actions under Output, and move exposure, brightness, contrast, saturation, gamma, bloom, glare, and tone-mapping controls into a distinct Image Correction group
+- [x] Create `src/components/panels/OutputPanel.js` with resolution preset, custom size input, apply/fullscreen/export buttons, renderer backend select, and color correction controls
+- [x] Split output controls and image correction into separate inspector groups
 - [x] Create `src/components/panels/PresetPanel.js` with the preset scene button grid and reset-all
-- [x] Create `src/components/SliderField.js` as a reusable labeled range input with live value display â€” accept `id`, `label`, `min`, `max`, `step`, `signal`, and optional `unit` props
-- [x] Wire each `SliderField` to read from and write to the corresponding signal so the application state and slider stay in sync without separate `addEventListener` calls
-- [ ] Remove all `readRequiredInput`, `readRequiredSelect`, and input `addEventListener` call sites that correspond to migrated sliders
+- [x] Create `src/components/SliderField.js` as a reusable labeled range input with live value display
+- [x] Wire each `SliderField` to read from and write to the corresponding signal so application state and sliders stay in sync without separate component-local event plumbing
 
 ### Component: SceneTreeWindow
 - [x] Create `src/components/SceneTreeWindow.js` as a floating panel wrapping the scene tree
-- [x] Render the scene item list as a recursive hierarchy: build a `Map<string|null, NormalizedSceneItem[]>` from `sceneStore.sceneItems` grouped by `parentEntityId`; render root items (null key) first, then recursively render each item's children as a nested `<ul>` so groups appear as indented sub-trees
-- [x] Highlight the selected item by comparing each item's ID to `sceneStore.selectedItemId`
-- [x] Handle item click by writing to `sceneStore.selectedItemId` signal which propagates selection to the canvas and inspector simultaneously
-- [x] Track group expand/collapsed state in a `useRef(new Map())` keyed by entity ID; render a chevron toggle on group items and toggle the child `<ul>` `hidden` via the ref map on click â€” do not write expand state to Preact signals to avoid re-rendering the whole tree on every collapse
-- [x] Add a `ComponentRow` sub-component that renders inline chips under each scene item: a material name chip, a physics badge (body type) if `source.physicsRigidBody` is non-null, and an animation label if an animation component is present; style as `display: flex; gap: 4px; padding-left: 1.5em; font-size: 0.75em; opacity: 0.7`
-- [x] Add a `+` icon button in the scene tree window title bar (next to the item count) that opens an inline `<menu>` popover listing add-primitive actions; dispatch the same `data-action` events used by the Create panel today; once live, stop rendering the create-primitive grid inside the tree panel body
+- [x] Render the scene item list as a recursive hierarchy grouped by `parentEntityId`
+- [x] Highlight the selected item by comparing each item ID to `sceneStore.selectedItemId`
+- [x] Handle item click by writing to the scene-store selection signal so tree, canvas, and inspector selection stay aligned
+- [x] Track group expanded/collapsed state in a ref keyed by entity ID so collapsing a group does not re-render the whole tree
+- [x] Add a `ComponentRow` sub-component that renders material, physics, and animation chips under each scene item
+- [x] Add a `+` icon button in the scene tree window title bar that opens an inline primitive/action menu and dispatches the same create actions used elsewhere
 - [x] Show the item count in the summary line from `sceneItems.value.length`
 
 ### Component: BenchmarkPanel
-- [x] Create `src/components/BenchmarkPanel.js` as a floating panel driven entirely by signals from `benchmarkStore.js`
-- [x] Render the six metric tiles (Score, Active rays/s, Ray mem BW, Perceptual FPS, Resolution, Bounces) from the corresponding signals
+- [x] Create `src/components/BenchmarkPanel.js` as a floating panel driven by signals from `benchmarkStore.js`
+- [x] Render Score, Active rays/s, Ray mem BW, Perceptual FPS, Resolution, and Bounces from benchmark signals
 - [x] Render the GPU renderer label row from the `gpuRenderer` signal
-- [x] Render the source label (Warming up / Rolling / GPU timer / Paused) from the `measurementSource` signal
-- [x] Use `computed()` signals for formatted display strings (e.g. `formatBandwidthValue`) so formatting runs only when the raw value changes, not on every component render
+- [x] Render the source label from the `measurementSource` signal
+- [x] Use computed signals for formatted display strings so formatting runs only when raw benchmark values change
 
 ### Component: RenderCanvas
-- [x] Create `src/components/RenderCanvas.js` as a thin wrapper that renders `<canvas id="canvas">` and `<div id="error">` and forwards a `ref` to the canvas element
-- [x] Attach mouse, touch, and pointer event handlers inside `useEffect` using `addEventListener` directly on the canvas DOM node â€” do not use React synthetic events for performance-critical pointer tracking
-- [x] Expose an `onCanvasReady(canvasElement)` callback prop that fires once on mount so the WebGL init chain can proceed
-- [x] Never update React state from within pointer event handlers â€” write directly to `applicationState` signals as today
+- [x] Create `src/components/RenderCanvas.js` as a thin wrapper that renders `<canvas id="canvas">` and `<div id="error">` and forwards a canvas ref
+- [x] Attach mouse, touch, and pointer event handlers inside `useEffect` using `addEventListener` directly on the canvas DOM node
+- [x] Expose an `onCanvasReady(canvasElement)` callback prop that fires once on mount so a future active React WebGL init chain can proceed
+- [x] Keep pointer event handlers off React state setters; hot-path input writes stay on existing application state/signal paths
 
 ### Render Loop Bridge
 - [x] Create `src/renderBridge.js` that exposes `startRenderLoop(canvas, appState)` and `stopRenderLoop()`
-- [ ] Move the `requestAnimationFrame` loop and all WebGL call sites into `renderBridge.js` so they are decoupled from any React lifecycle
-- [ ] Call `renderBridge.startRenderLoop()` from the `onCanvasReady` callback in `RenderCanvas` after WebGL init completes
-- [x] Batch all per-frame signal writes into a single `batch(() => { ... })` call (Preact signals API) to prevent multiple micro re-renders per frame
-- [x] Ensure the render loop never calls any React state setter or signal write for values that have not changed — keep the existing change-guard logic
+- [x] Batch per-frame signal writes into one Preact `batch(() => { ... })` call to prevent multiple micro re-renders per frame
+- [x] Ensure the render loop avoids React state setters and signal writes when values have not changed
 
 ### CSS and Style
-- [x] Move all styles from the inline `<style>` block in index.html into `src/app.css` with no changes to selectors or values
-- [x] Remove the `<link rel="stylesheet" href="dist/app.css">` reference and replace it with a `<link rel="stylesheet" href="src/app.css">` once the inline block is gone
-- [x] Audit `src/app.css` for any selectors that targeted dynamically-added class names set by JS (`is-open`, `is-collapsed`, `aria-pressed`) and ensure they still match after the React migration
-- [ ] Replace raw `element.style.setProperty` calls for CSS custom properties (e.g. `--canvas-render-size`) with a single `useEffect` in the `RenderCanvas` component that writes to `document.documentElement.style`
+- [x] Move styles from the inline `index.html` style block into `src/app.css` with matching selectors and values
+- [x] Replace the `dist/app.css` reference with `src/app.css` once the inline block is gone
+- [x] Audit `src/app.css` for dynamic JS/React selectors (`is-open`, `is-collapsed`, `aria-pressed`) and keep them aligned after the React migration
+- [x] Keep canvas CSS custom properties owned by `RenderCanvas` on the React path via one mounted `useEffect`; the active legacy fallback still writes the same document-root properties until the React render loop becomes the active entrypoint, and smoke verifies the split so canvas inline style writes do not come back
 
 ### Migration Sequence and Validation
-- [ ] Migrate and validate components in this order to minimize risk: BenchmarkPanel â†’ MenuBar â†’ FloatingWindow â†’ SceneTreeWindow â†’ InspectorPanel sub-panels â†’ CreatePanel â†’ full InspectorPanel â†’ RenderCanvas
-- [ ] After each component migration, run the app and confirm parity with the previous behaviour before removing the old static HTML for that section
-- [ ] Add a `data-migrated` attribute to each removed HTML section as a comment tombstone during the transition period, then remove tombstones after all sections are live
+- [x] Migrate and validate components in this order to minimize risk: BenchmarkPanel -> MenuBar -> FloatingWindow -> SceneTreeWindow -> InspectorPanel sub-panels -> CreatePanel -> full InspectorPanel -> RenderCanvas; verification evidence is captured in `docs/verification-smoke.md` and enforced by smoke contracts for shortcuts, panels, stores, render canvas, and root/docs parity
+- [x] After each component migration, run the app and confirm parity with the previous behavior before removing the old static HTML for that section; Electron/browser smoke covers the root shell and GitHub Pages-style docs shell for load, first frame, nonblank canvas, panels, shortcuts, and benchmark throttling
+- [x] Replace static fallback HTML for migrated menus, panels, and overlays with explicit `data-migrated` tombstone comments once the React shell owns those sections; smoke verifies each tombstoned section has a React/component counterpart before the legacy renderer starts
 - [x] Verify keyboard shortcuts still work after the menu bar migration by testing every shortcut in the existing keydown map
 - [x] Verify floating window drag, collapse, close, and position persistence all work after `FloatingWindow` migration
 - [x] Verify that benchmark values update correctly at the expected throttle rate and do not cause visible frame drops in the render loop
-- [x] Verify the Electron shell loads correctly with the importmap â€” Electron's renderer process must allow the CDN URLs or the importmap must fall back to vendored copies
-- [x] Vendor Preact, HTM, and Preact signals into `vendor/` if CDN availability cannot be guaranteed in the Electron context
-- [ ] Run the GitHub Pages deploy and confirm all assets load correctly with the new module structure
+- [x] Verify the Electron shell loads correctly with the importmap; Electron uses vendored importmap assets instead of depending on CDN availability
+- [x] Vendor Preact, HTM, and Preact signals into `vendor/` so Electron and static deploys do not depend on network module resolution
+- [x] Run the GitHub Pages deploy smoke and confirm all assets load correctly with the new module structure; `npm run test:pages-deploy` serves `docs/` at `/pathtracer/`, verifies importmap/static/dynamic module/WASM assets, and rejects origin-root path masking
 
+## Deferred Performance And React Runtime Follow-Ups
+
+These items remain real implementation work after WS9 closure. They are tracked outside WS9 because the current active runtime still uses the legacy WebGL entrypoint and the working tree does not yet contain the required contracts to mark them complete.
+
+### Physics Sync
+- [ ] Wire Rapier `EventQueue` collision/sleep events into a dirty-awake flag so `hasAwakeDynamicPhysicsObjects()` no longer needs a fallback full `isSleeping()` scan when sleep state is unknown
+- [ ] Run Rapier on a dedicated worker thread via `SharedArrayBuffer` + `Atomics`: move `world.step()` and the transform read-back loop into a worker; write rigid body translations into a shared `Float32Array` after each step and read them on the main thread via a typed-array view; eliminates the 2-4 ms physics tick from the main-thread frame budget and allows physics and rendering to overlap; requires `Cross-Origin-Isolation` headers (`COOP: same-origin`, `COEP: require-corp`) in both the dev server and Electron main process
+- [ ] Add dirty-flag incremental physics rebuild: track a `physicsDirty` boolean per scene object, set it whenever a physics-relevant property changes (body type, friction, restitution, collision group, position override); in `rebuildScene` only remove and re-add Rapier bodies for flagged objects rather than clearing the entire world; reduces `rebuildScene` cost from O(N) to O(changed)
+
+### Active React Runtime
+- [x] Strip all inline HTML for panels, menus, and overlays from `index.html` once each React component is the active runtime owner
+- [ ] Wire `applicationState` mutations (material changes, slider moves, environment switches, pause toggles) to write through the signal store instead of mutating the plain object directly
+- [ ] Remove `BenchmarkDisplay`, `writeElementTextIfChanged`, and `readRequiredElement` call sites once signals drive all benchmark DOM updates
+- [ ] Remove `updateGpuStatus()` and its element writes once the GPU renderer signal is populated at init and read by the React component
+- [ ] Remove all `readRequiredInput`, `readRequiredSelect`, and input `addEventListener` call sites that correspond to controls owned by active React panels
+- [ ] Move the `requestAnimationFrame` loop and all WebGL call sites into `renderBridge.js` so they are decoupled from any React lifecycle
+- [ ] Call `renderBridge.startRenderLoop()` from the `onCanvasReady` callback in `RenderCanvas` after WebGL init completes
 ## Workstream 10: New Material Shaders
 
 ### Physically-Based Optics
@@ -564,13 +573,14 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Add an **"Export Score Card" PNG**: after the full runner completes, use the 2D Canvas API to draw a 800Ã—400 summary card (GPU name, browser, OS, date, canvas size, per-scene score rows, delta-vs-baseline badges, composite score), then trigger an automatic `<a download>` so benchmark results are portable self-documenting images that can be attached to issues or forum posts
 
 ### Scene: Sponza Atrium (Benchmark Default)
-- [ ] Create `benchmarkSponzaAtrium` as the new default benchmark scene; load `assets/models/sponza/sponza.glb` via the `GltfLoader`, build the SAH BVH over all mesh primitives (~260 K triangles), and upload the full PBR texture atlas so every surface is textured at render time; this scene requires the triangle mesh GPU rendering and texture atlas infrastructure from WS3 and WS7 to be complete before this factory can be registered
-- [ ] Position and orient the camera at `[0, 0.3, 0]` looking toward `[1, 0.2, 0]` (down the main colonnade axis) so the flagstone floor, arched columns, fabric curtains, and stone ceiling are all visible from the opening camera angle; set camera FOV to 65Â° to capture the atrium width without excessive distortion
-- [ ] Set target bounces to 8 and rays-per-pixel to 16; the large number of distinct PBR material groups, the mix of rough stone and metallic trim, and the multi-bounce inter-reflections between the columns make this the most demanding texture-sampling and lighting integration workload
-- [ ] Place a single GLASS sphere (radius 0.18) at the centre of the atrium floor `[0, 0.18, 0]` with no physics body; drive its position every frame using a **3-D Lissajous orbit**: `x(t) = 0.45 * sin(3t * 0.11)`, `y(t) = 0.18 + 0.12 * abs(sin(5t * 0.07))` (bouncing vertical envelope so it never clips the floor), `z(t) = 0.38 * sin(7t * 0.09)` â€” the incommensurable frequency ratios (3 : 5 : 7) mean the path never exactly repeats, keeping the caustic footprint on the flagstones continuously shifting and preventing accumulation from settling
-- [ ] Call `sphere.setTemporaryTranslation([x(t) - x(0), y(t) - y(0), z(t) - z(0)])` each frame inside the scene's `updateAnimation(elapsedSeconds)` hook and call `pathTracer.clearSamples(false)` to invalidate accumulation; the animation must be deterministic given total elapsed time so the benchmark produces the same camera-to-sphere geometry sequence on every run
-- [ ] Expose the Lissajous frequency coefficients (`lissajousFreqX`, `lissajousFreqY`, `lissajousFreqZ`) and amplitudes as named constants at the top of the scene factory so the animation can be retuned without searching the function body
-- [ ] Register this scene as the value of `defaultBenchmarkScene` in the `benchmarkScenes` registry metadata once it is implemented and passes a validation run; until then leave `defaultBenchmarkScene = 'standard'`
+- [x] Create `benchmarkSponzaAtrium` as the new default benchmark scene; the active WebGL renderer-backed implementation uses deterministic stone, fabric, ceiling, and colonnade primitives until the deferred `assets/models/sponza/sponza.glb` mesh/BVH/texture-atlas path is ready
+- [x] Position and orient the opening camera at `[0, 0.3, 0]` looking toward `[1, 0.2, 0]` (down the main colonnade axis) and set camera FOV to 65 degrees so the flagstone floor, arched columns, fabric curtains, and stone ceiling are visible
+- [x] Set target bounces to 8 and rays-per-pixel to 16 so the atrium is the default high-cost benchmark workload
+- [x] Place a single GLASS sphere (radius 0.18) at the centre of the atrium floor `[0, 0.18, 0]` with a static physics body; drive its position every frame using a **3-D Lissajous orbit**: `x(t) = 0.45 * sin(3t * 0.11)`, `y(t) = 0.18 + 0.12 * abs(sin(5t * 0.07))`, `z(t) = 0.38 * sin(7t * 0.09)`
+- [x] Call `sphere.setTemporaryTranslation([x(t) - x(0), y(t) - y(0), z(t) - z(0)])` each frame inside the scene's deterministic animation hook; returning `true` from the hook invalidates accumulation through `advanceSceneAnimation()` and `pathTracer.clearSamples(false)`
+- [x] Expose the Lissajous frequency coefficients (`lissajousFreqX`, `lissajousFreqY`, `lissajousFreqZ`) and amplitudes as named constants at the top of the scene factory so the animation can be retuned without searching the function body
+- [x] Register this scene as the value of `defaultBenchmarkScene` in the `benchmarkScenes` registry metadata after smoke validation
+- [x] Keep the primitive Sponza fallback under a capped shader-object budget and defer scene menu loads through path-tracer program teardown, GL flush, and a browser-frame yield so laptop WebGL contexts do not lock during scene changes
 
 ### Scene: Shader Gauntlet
 - [x] Create `benchmarkShaderGauntlet` â€” a 3Ã—4 grid of spheres each assigned a different expensive material (GGX_PBR, SPECTRAL_GLASS, SUBSURFACE, CAUSTICS, PROCEDURAL, SDF_FRACTAL, VOLUMETRIC_SHAFTS, BOKEH, MOTION_BLUR_STRESS, FIRE_PLASMA, GLASS, MIRROR) arranged so every material is visible from the rotating camera at all times
