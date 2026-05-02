@@ -26,6 +26,10 @@ const argumentValue = (name) => {
 
 const outputPath = argumentValue('--out');
 
+app.on('window-all-closed', (event) => {
+  event.preventDefault();
+});
+
 const record = (name, passed, detail = '') => {
   checks.push({ name, passed: Boolean(passed), detail });
   if (!passed) {
@@ -733,7 +737,6 @@ const runSmoke = async () => {
     await runKeyboardSmoke(rootWindow);
     await runBenchmarkThrottleSmoke(rootWindow);
     await runFloatingSmoke(rootWindow);
-    rootWindow.destroy();
   }
 
   const staticServer = await startStaticServer(path.join(repoRoot, 'docs'));
@@ -753,6 +756,10 @@ const runSmoke = async () => {
     }
   } finally {
     await closeServer(staticServer.server);
+  }
+
+  if (rootWindow) {
+    rootWindow.destroy();
   }
 
   assert('runtime made no external network requests', externalRequests.length === 0, JSON.stringify(externalRequests));
