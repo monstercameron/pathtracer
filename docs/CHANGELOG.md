@@ -4,12 +4,12 @@ Changes are grouped by commit date, newest first. Each bullet represents one com
 
 ## 2026-05-02
 
-- This commit - Stabilize temporal history across camera pause:
+- `9fd2764` - Stabilize temporal history and accumulation behavior:
   - Preserve valid temporal display history when camera playback is paused or the scene is grabbed without actual camera movement.
-  - Keep accumulated samples when leaving the interactive one-ray drag throttle, since only rays-per-frame changes and the camera-change path already invalidates stale samples.
+  - Clear the one-ray interactive camera seed when drag throttle ends after real camera motion so stale drag samples cannot bias settled frames.
   - Ramp temporal history confidence over the configured blend window and preserve luminance while history is mixed back into the display pass.
-- This commit - Refine benchmark UI and scoring:
-  - Convert the benchmark from a floating window to a standing panel with collapse/close controls while keeping scene tree and inspector floating-window persistence.
+- `600d29d` - Make benchmark panel draggable and persist position:
+  - Convert the benchmark from a floating window to a draggable standing panel with collapse/close controls while keeping scene tree and inspector floating-window persistence.
   - Add nested menu submenus for grouped scene, benchmark, panel, render, and export actions, with README and smoke coverage aligned to the migrated controls.
   - Normalize frame-estimated benchmark scores to a fixed 512 x 512 reference target and add smoke coverage for environment switching after signal sync.
 - This commit - Render bundled reference mesh scene:
