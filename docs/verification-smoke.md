@@ -18,6 +18,21 @@ The smoke runner checks:
 - Import coordinator smoke coverage for grouped OBJ/MTL/texture drops, glTF JSON/GLB/STL/PLY drops, texture fallback metadata, mesh records, fitted triangle arrays, bounds, fit data, memory estimates, and captured `assetPipeline` model import logs for every imported model format.
 - Documentation evidence for the TODO audit decisions.
 
+The default test command also runs a live Electron/browser smoke harness:
+
+```powershell
+npm run test:electron-smoke
+```
+
+That harness launches Electron with an isolated temporary profile, loads the root `index.html` through the Electron `loadFile` path, and serves `docs/` through a loopback HTTP server to simulate the GitHub Pages/browser deploy without external network access. It verifies:
+
+- First-frame app load, dismissed loading overlay, required floating panels, and nonblank WebGL canvas readback in both Electron and the HTTP-served `docs/` build.
+- Runtime importmap resolution for the vendored Preact, HTM, and Preact Signals modules.
+- Every shortcut in the legacy keydown shortcut maps dispatches to the expected button target.
+- Benchmark metric DOM updates arrive at the expected throttled cadence while `requestAnimationFrame` remains active.
+- Floating benchmark window drag, collapse, close, localStorage persistence, reload restore, and reopen behavior.
+- No non-local HTTP or HTTPS requests are made during the smoke run.
+
 For syntax-only checks:
 
 ```powershell

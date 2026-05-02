@@ -12,6 +12,7 @@ const smokeMainPath = path.join(repoRoot, 'scripts', 'electron-smoke-main.cjs');
 const tempDirectory = mkdtempSync(path.join(tmpdir(), 'pathtracer-electron-smoke-'));
 const outputPath = path.join(tempDirectory, 'result.json');
 const timeoutMilliseconds = 90000;
+const verbose = process.argv.includes('--verbose');
 
 const printProcessOutput = (result) => {
   if (result.stdout) {
@@ -33,20 +34,23 @@ try {
     timeout: timeoutMilliseconds
   });
 
-  printProcessOutput(result);
-
   if (result.error) {
+    printProcessOutput(result);
     console.error(`Electron smoke failed to launch: ${result.error.message}`);
     process.exit(1);
   }
 
   if (!existsSync(outputPath)) {
+    printProcessOutput(result);
     console.error('Electron smoke did not write a result file.');
     console.error(`Electron exit status: ${result.status ?? 'null'}, signal: ${result.signal ?? 'null'}`);
     process.exit(result.status || 1);
   }
 
   const smokeResult = JSON.parse(readFileSync(outputPath, 'utf8'));
+  if (verbose || result.status !== 0 || (Array.isArray(smokeResult.failures) && smokeResult.failures.length > 0)) {
+    printProcessOutput(result);
+  }
   for (const check of smokeResult.checks || []) {
     const detail = check.detail ? `: ${check.detail}` : '';
     console.log(`${check.passed ? 'ok' : 'not ok'} - ${check.name}${detail}`);
@@ -66,7 +70,11 @@ try {
     }
   }
 
-  if (Array.isArray(smokeResult.staticServerRequests) && smokeResult.staticServerRequests.length > 0) {
+  if (
+    verbose &&
+    Array.isArray(smokeResult.staticServerRequests) &&
+    smokeResult.staticServerRequests.length > 0
+  ) {
     console.error(`\nLocal browser-smoke requests: ${smokeResult.staticServerRequests.join(', ')}`);
   }
 

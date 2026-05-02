@@ -409,6 +409,39 @@ const checkBenchmarkSignalContracts = () => {
   );
 };
 
+const checkBenchmarkSceneContracts = () => {
+  const legacyRendererSource = readUtf8('webgl-path-tracing.js');
+  const html = readUtf8('index.html');
+
+  assert('particle fluid benchmark factory exists', legacyRendererSource.includes('const createBenchmarkParticleFluidSceneObjects'));
+  assert('particle fluid benchmark registered', legacyRendererSource.includes('benchmarkParticleFluid: Object.freeze({'));
+  assert(
+    'particle fluid benchmark uses Rapier spring joints',
+    legacyRendererSource.includes('JointData.spring') && legacyRendererSource.includes('createImpulseJoint')
+  );
+  assert('particle fluid benchmark exposes particle count constant', legacyRendererSource.includes('DEFAULT_PARTICLE_FLUID_PARTICLE_COUNT = 24'));
+  assert('particle fluid benchmark exposes radius constant', legacyRendererSource.includes('DEFAULT_PARTICLE_FLUID_RADIUS = 0.06'));
+  assert('particle fluid benchmark exposes stiffness constant', legacyRendererSource.includes('DEFAULT_PARTICLE_FLUID_SPRING_STIFFNESS = 120'));
+  assert(
+    'particle fluid benchmark target settings',
+    /benchmarkParticleFluid:[\s\S]*targetBounces:\s*6,[\s\S]*targetRaysPerPixel:\s*8/u.test(legacyRendererSource)
+  );
+  assert(
+    'particle fluid benchmark has subsurface particles and glass container',
+    legacyRendererSource.includes('MATERIAL.SUBSURFACE') &&
+      legacyRendererSource.includes('Particle Fluid Glass Container') &&
+      legacyRendererSource.includes('MATERIAL.GLASS')
+  );
+  assert('particle fluid benchmark menu button exists', htmlHasButtonSelector(html, 'button[data-benchmark-scene="benchmarkParticleFluid"]'));
+  assert('particle fluid benchmark controls exist', (
+    html.includes('id="particle-fluid-controls"') &&
+    html.includes('id="particle-fluid-count"') &&
+    html.includes('id="particle-fluid-radius"') &&
+    html.includes('id="particle-fluid-stiffness"') &&
+    htmlHasButtonSelector(html, 'button[data-action="apply-particle-fluid-settings"]')
+  ));
+};
+
 const checkEmissionModifierContracts = () => {
   const rendererSource = readUtf8('webgl-path-tracing.js');
   const objectPanelSource = readUtf8('src', 'components', 'panels', 'ObjectPanel.js');
@@ -590,6 +623,7 @@ if (!syntaxOnly) {
   checkFloatingWindowContracts();
   checkReactCanvasCssContracts();
   checkBenchmarkSignalContracts();
+  checkBenchmarkSceneContracts();
   checkEmissionModifierContracts();
   checkTodoEvidence();
   checkEditorGroupingContracts();
