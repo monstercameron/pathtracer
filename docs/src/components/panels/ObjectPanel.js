@@ -1,12 +1,30 @@
 import { html } from 'htm/preact';
 import {
+  activeMaterialPresetId,
+  applyMaterialPreset,
+  clearMaterialTextureAssignment,
   glossiness,
   lightColor,
   lightIntensity,
   lightSize,
   material,
+  materialUvBlendSharpness,
+  materialUvProjectionMode,
+  materialUvScale,
+  MATERIAL_TEXTURE_CHANNELS,
+  MATERIAL_UV_PROJECTION_MODES,
+  materialTextureAssignments,
+  savedMaterialPresets,
+  saveMaterialPreset,
   setLightColor,
-  setMaterial
+  setMaterial,
+  setMaterialUvBlendSharpness,
+  setMaterialUvProjectionMode,
+  setMaterialUvScale,
+  selectedMaterialTextureChannel,
+  setMaterialTextureAssignment,
+  setSelectedMaterialTextureChannel,
+  swapMaterialTextureAssignments
 } from '../../store.js';
 import { selectedSceneItem, selectedSceneItemComponentRows, isSceneItemLight } from '../../sceneStore.js';
 import { SliderField } from '../SliderField.js';
@@ -78,6 +96,38 @@ const readEmissionEnabled = (item) => {
   }
   return Number(item.material) === MATERIAL_EMISSIVE;
 };
+
+const textureChannelOptions = MATERIAL_TEXTURE_CHANNELS.map((channel) => ({
+  value: channel.key,
+  label: channel.label
+}));
+const uvProjectionModeOptions = MATERIAL_UV_PROJECTION_MODES.map((mode) => ({
+  value: mode.key,
+  label: mode.label
+}));
+
+const readElementValueById = (event, elementId) => {
+  const element = event.currentTarget?.ownerDocument?.getElementById(elementId);
+  return element && 'value' in element ? element.value : '';
+};
+
+const readMaterialPresetNameInput = (event) => (
+  readElementValueById(event, 'material-preset-name').trim() || 'Saved material'
+);
+
+const createTextureDescriptorFromFile = (file, channelKey) => ({
+  id: `${channelKey}:${file.name}:${file.size}:${file.lastModified || 0}`,
+  name: file.name,
+  source: 'local-file',
+  mimeType: file.type || null,
+  size: file.size,
+  lastModified: file.lastModified || null,
+  status: 'assigned'
+});
+
+const readTextureAssignmentName = (assignments, channelKey) => (
+  assignments[channelKey]?.name || 'Unassigned'
+);
 
 const DEFAULT_PHYSICS_MASS = 1;
 const MIN_PHYSICS_MASS = 0.1;
@@ -296,6 +346,26 @@ export function ObjectPanel({ id = 'object-panel' }) {
   const areEmissionSettingsDisabled = areEmissionControlsDisabled || !isEmissionEnabled;
   const emissiveColor = readEmissiveColor(selectedItem);
   const emissiveIntensity = readEmissiveIntensity(selectedItem);
+  const materialPresets = savedMaterialPresets.value;
+  const materialPresetOptions = materialPresets.map((preset) => ({ value: preset.id, label: preset.label }));
+  const selectedTextureChannel = selectedMaterialTextureChannel.value;
+  const textureAssignments = materialTextureAssignments.value;
+  const swapTextureChannel = MATERIAL_TEXTURE_CHANNELS.find((channel) => channel.key !== selectedTextureChannel)?.key ??
+    selectedTextureChannel;
+  const handleMaterialTextureFileChange = (event) => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) {
+      return;
+    }
+    setMaterialTextureAssignment(selectedTextureChannel, createTextureDescriptorFromFile(file, selectedTextureChannel));
+    event.currentTarget.value = '';
+  };
+  const handleMaterialTextureSwap = (event) => {
+    swapMaterialTextureAssignments(
+      selectedTextureChannel,
+      readElementValueById(event, 'material-texture-swap-channel') || swapTextureChannel
+    );
+  };
 
   return html`
     <div id=${id} className="control-panel" data-control-panel>
@@ -455,6 +525,97 @@ export function ObjectPanel({ id = 'object-panel' }) {
             />
           </div>
         </${SelectField}>
+      </div>
+
+      <div className="control-section" data-material-preset-controls hidden=${isLightSelection}>
+        <div className="section-title">Saved materials</div>
+        <${SelectField}
+          id="material-preset"
+          label="Preset"
+          value=${activeMaterialPresetId.value}
+          options=${materialPresetOptions}
+          onChange=${(event) => applyMaterialPreset(event.currentTarget.value)}
+        >
+          <div className="button-row two-up">
+            <button type="button" data-action="apply-material-preset" onClick=${() => applyMaterialPreset(activeMaterialPresetId.value)}>Load Preset</button>
+            <button
+              type="button"
+              data-action="save-material-preset"
+              onClick=${(event) => saveMaterialPreset({ label: readMaterialPresetNameInput(event) })}
+            >
+              Save Current
+            </button>
+          </div>
+          <input id="material-preset-name" type="text" placeholder="Preset name" aria-label="Material preset name" />
+        </${SelectField}>
+      </div>
+
+      <div className="control-section" data-material-texture-controls hidden=${isLightSelection}>
+        <div className="section-title">Textures</div>
+        <${SelectField}
+          id="material-texture-channel"
+          label="Channel"
+          value=${selectedTextureChannel}
+          options=${textureChannelOptions}
+          onChange=${(event) => setSelectedMaterialTextureChannel(event.currentTarget.value)}
+        >
+          <input
+            id="material-texture-file"
+            type="file"
+            accept="image/*"
+            data-action="assign-material-texture"
+            data-texture-channel=${selectedTextureChannel}
+            onChange=${handleMaterialTextureFileChange}
+          />
+        </${SelectField}>
+        <${SelectField}
+          id="material-uv-projection-mode"
+          label="Projection"
+          value=${materialUvProjectionMode.value}
+          options=${uvProjectionModeOptions}
+          onChange=${(event) => setMaterialUvProjectionMode(event.currentTarget.value)}
+        />
+        <${SliderField}
+          id="material-uv-scale"
+          label="UV Scale"
+          min=${0.05}
+          max=${64}
+          step=${0.05}
+          signal=${materialUvScale}
+          formatter=${fixed2}
+        />
+        <${SliderField}
+          id="material-uv-blend-sharpness"
+          label="Tri-planar Blend"
+          min=${1}
+          max=${12}
+          step=${0.25}
+          signal=${materialUvBlendSharpness}
+          formatter=${fixed2}
+        />
+        <${SelectField}
+          id="material-texture-swap-channel"
+          label="Swap with"
+          value=${swapTextureChannel}
+          options=${textureChannelOptions}
+        >
+          <button type="button" data-action="swap-material-textures" onClick=${handleMaterialTextureSwap}>Swap</button>
+        </${SelectField}>
+        ${MATERIAL_TEXTURE_CHANNELS.map((channel) => html`
+          <div key=${channel.key} className="field material-texture-row" data-texture-channel=${channel.key}>
+            <span>${channel.label}</span>
+            <strong>${readTextureAssignmentName(textureAssignments, channel.key)}</strong>
+            <button
+              type="button"
+              data-action="clear-material-texture"
+              data-texture-channel=${channel.key}
+              disabled=${!textureAssignments[channel.key]}
+              onClick=${() => clearMaterialTextureAssignment(channel.key)}
+            >
+              Clear
+            </button>
+          </div>
+        `)}
       </div>
     </div>
   `;

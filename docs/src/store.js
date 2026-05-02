@@ -1,5 +1,16 @@
 import { batch, signal } from '@preact/signals';
 import { uiLogger } from './logger.js';
+import {
+  DEFAULT_MATERIAL_UV_BLEND_SHARPNESS,
+  DEFAULT_MATERIAL_UV_PROJECTION_MODE,
+  DEFAULT_MATERIAL_UV_SCALE,
+  MATERIAL_UV_PROJECTION_MODES,
+  normalizeMaterialUvBlendSharpness,
+  normalizeMaterialUvProjectionMode,
+  normalizeMaterialUvScale
+} from './components/MaterialComponent.js';
+
+export { MATERIAL_UV_PROJECTION_MODES };
 
 const cloneSignalValue = (value) => {
   if (Array.isArray(value)) {
@@ -118,6 +129,170 @@ const readDefaultRenderDimensions = () => {
 
 const DEFAULT_RENDER_DIMENSIONS = readDefaultRenderDimensions();
 
+export const MATERIAL_TEXTURE_CHANNELS = Object.freeze([
+  Object.freeze({ key: 'albedo', label: 'Albedo', accept: 'image/*' }),
+  Object.freeze({ key: 'normal', label: 'Normal', accept: 'image/*' }),
+  Object.freeze({ key: 'metallicRoughness', label: 'Metallic/Roughness', accept: 'image/*' }),
+  Object.freeze({ key: 'emissive', label: 'Emissive', accept: 'image/*' }),
+  Object.freeze({ key: 'ambientOcclusion', label: 'AO', accept: 'image/*' })
+]);
+
+export const DEFAULT_MATERIAL_TEXTURE_CHANNEL = MATERIAL_TEXTURE_CHANNELS[0].key;
+const MATERIAL_TEXTURE_CHANNEL_KEYS = new Set(MATERIAL_TEXTURE_CHANNELS.map((channel) => channel.key));
+
+export const normalizeMaterialTextureChannel = (
+  channel,
+  fallbackChannel = DEFAULT_MATERIAL_TEXTURE_CHANNEL
+) => {
+  const normalizedChannel = String(channel || '').trim();
+  return MATERIAL_TEXTURE_CHANNEL_KEYS.has(normalizedChannel) ? normalizedChannel : fallbackChannel;
+};
+
+const normalizeOptionalMaterialText = (value) => {
+  const text = String(value ?? '').trim();
+  return text || null;
+};
+
+const normalizeOptionalMaterialNumber = (value) => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+};
+
+const normalizeMaterialTextureDescriptor = (descriptor) => {
+  if (!descriptor) {
+    return null;
+  }
+
+  if (typeof descriptor === 'string') {
+    const name = normalizeOptionalMaterialText(descriptor);
+    return name ? Object.freeze({
+      id: name,
+      name,
+      source: 'path',
+      path: name,
+      mimeType: null,
+      size: null,
+      lastModified: null,
+      status: 'assigned'
+    }) : null;
+  }
+
+  if (typeof descriptor !== 'object') {
+    return null;
+  }
+
+  const name = normalizeOptionalMaterialText(
+    descriptor.name ?? descriptor.fileName ?? descriptor.path ?? descriptor.id ?? descriptor.cacheKey
+  );
+  if (!name) {
+    return null;
+  }
+
+  return Object.freeze({
+    id: normalizeOptionalMaterialText(descriptor.id ?? descriptor.cacheKey ?? descriptor.path) ?? name,
+    name,
+    source: normalizeOptionalMaterialText(descriptor.source ?? descriptor.kind) ?? 'editor',
+    path: normalizeOptionalMaterialText(descriptor.path),
+    mimeType: normalizeOptionalMaterialText(descriptor.mimeType ?? descriptor.type),
+    size: normalizeOptionalMaterialNumber(descriptor.size),
+    lastModified: normalizeOptionalMaterialNumber(descriptor.lastModified),
+    status: normalizeOptionalMaterialText(descriptor.status) ?? 'assigned'
+  });
+};
+
+export const normalizeMaterialTextureAssignments = (assignments = {}) => Object.freeze(
+  Object.fromEntries(MATERIAL_TEXTURE_CHANNELS.map((channel) => [
+    channel.key,
+    normalizeMaterialTextureDescriptor(assignments && assignments[channel.key])
+  ]))
+);
+
+export const DEFAULT_MATERIAL_TEXTURE_ASSIGNMENTS = normalizeMaterialTextureAssignments();
+export const DEFAULT_MATERIAL_EMISSION_SETTINGS = Object.freeze({
+  enabled: false,
+  color: Object.freeze([0.64, 0.92, 1]),
+  intensity: 1.65
+});
+
+const normalizeMaterialEmissionSettings = (settings = {}) => {
+  const sourceSettings = settings && typeof settings === 'object' ? settings : {};
+  return Object.freeze({
+    enabled: Boolean(sourceSettings.enabled),
+    color: Object.freeze(Array.isArray(sourceSettings.color) || ArrayBuffer.isView(sourceSettings.color)
+      ? [0, 1, 2].map((index) => {
+        const value = Number(sourceSettings.color[index]);
+        return Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : DEFAULT_MATERIAL_EMISSION_SETTINGS.color[index];
+      })
+      : Array.from(DEFAULT_MATERIAL_EMISSION_SETTINGS.color)),
+    intensity: Number.isFinite(Number(sourceSettings.intensity))
+      ? Math.min(Math.max(Number(sourceSettings.intensity), 0), 6)
+      : DEFAULT_MATERIAL_EMISSION_SETTINGS.intensity
+  });
+};
+
+const normalizeMaterialPreset = (preset) => {
+  const label = normalizeOptionalMaterialText(preset && preset.label) ?? 'Saved material';
+  const generatedId = label.toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '');
+  const explicitId = normalizeOptionalMaterialText(preset && preset.id);
+  const id = explicitId ?? (generatedId || 'saved-material');
+  const materialValue = Number(preset && preset.material);
+  const glossinessValue = Number(preset && preset.glossiness);
+  return Object.freeze({
+    id,
+    label,
+    material: Number.isFinite(materialValue) ? Math.trunc(materialValue) : 0,
+    glossiness: Number.isFinite(glossinessValue) ? Math.min(Math.max(glossinessValue, 0), 1) : 0.6,
+    textureAssignments: normalizeMaterialTextureAssignments(preset && preset.textureAssignments),
+    uvProjectionMode: normalizeMaterialUvProjectionMode(
+      preset && (preset.uvProjectionMode ?? preset.textureProjectionMode),
+      DEFAULT_MATERIAL_UV_PROJECTION_MODE
+    ),
+    uvScale: normalizeMaterialUvScale(
+      preset && (preset.uvScale ?? preset.textureProjectionScale),
+      DEFAULT_MATERIAL_UV_SCALE
+    ),
+    uvBlendSharpness: normalizeMaterialUvBlendSharpness(
+      preset && (preset.uvBlendSharpness ?? preset.textureProjectionBlendSharpness),
+      DEFAULT_MATERIAL_UV_BLEND_SHARPNESS
+    ),
+    emission: normalizeMaterialEmissionSettings((preset && preset.emission) || DEFAULT_MATERIAL_EMISSION_SETTINGS),
+    userDefined: Boolean(preset && preset.userDefined)
+  });
+};
+
+export const DEFAULT_MATERIAL_PRESET_ID = 'matte-clay';
+export const DEFAULT_SAVED_MATERIAL_PRESETS = Object.freeze([
+  normalizeMaterialPreset({
+    id: DEFAULT_MATERIAL_PRESET_ID,
+    label: 'Matte Clay',
+    material: 0,
+    glossiness: 0.25
+  }),
+  normalizeMaterialPreset({
+    id: 'polished-ggx',
+    label: 'Polished GGX',
+    material: 4,
+    glossiness: 0.82
+  }),
+  normalizeMaterialPreset({
+    id: 'clear-glass',
+    label: 'Clear Glass',
+    material: 3,
+    glossiness: 0.95
+  }),
+  normalizeMaterialPreset({
+    id: 'cyan-neon',
+    label: 'Cyan Neon',
+    material: 21,
+    glossiness: 0.2,
+    emission: {
+      enabled: true,
+      color: [0.36, 0.92, 1],
+      intensity: 2.8
+    }
+  })
+]);
+
 export const DEFAULT_APPLICATION_STATE = Object.freeze({
   cameraAngleX: 0,
   cameraAngleY: 0,
@@ -128,6 +303,14 @@ export const DEFAULT_APPLICATION_STATE = Object.freeze({
   nextObjectId: 0,
   material: 0,
   glossiness: 0.6,
+  activeMaterialPresetId: DEFAULT_MATERIAL_PRESET_ID,
+  savedMaterialPresets: DEFAULT_SAVED_MATERIAL_PRESETS,
+  materialTextureAssignments: DEFAULT_MATERIAL_TEXTURE_ASSIGNMENTS,
+  selectedMaterialTextureChannel: DEFAULT_MATERIAL_TEXTURE_CHANNEL,
+  materialUvProjectionMode: DEFAULT_MATERIAL_UV_PROJECTION_MODE,
+  materialUvScale: DEFAULT_MATERIAL_UV_SCALE,
+  materialUvBlendSharpness: DEFAULT_MATERIAL_UV_BLEND_SHARPNESS,
+  materialEmissionSettings: DEFAULT_MATERIAL_EMISSION_SETTINGS,
   environment: 0,
   lightIntensity: 0.5,
   lightSize: 0.1,
@@ -503,6 +686,14 @@ export const lightColor = applicationStateSignals.lightColor;
 export const nextObjectId = applicationStateSignals.nextObjectId;
 export const material = applicationStateSignals.material;
 export const glossiness = applicationStateSignals.glossiness;
+export const activeMaterialPresetId = applicationStateSignals.activeMaterialPresetId;
+export const savedMaterialPresets = applicationStateSignals.savedMaterialPresets;
+export const materialTextureAssignments = applicationStateSignals.materialTextureAssignments;
+export const selectedMaterialTextureChannel = applicationStateSignals.selectedMaterialTextureChannel;
+export const materialUvProjectionMode = applicationStateSignals.materialUvProjectionMode;
+export const materialUvScale = applicationStateSignals.materialUvScale;
+export const materialUvBlendSharpness = applicationStateSignals.materialUvBlendSharpness;
+export const materialEmissionSettings = applicationStateSignals.materialEmissionSettings;
 export const environment = applicationStateSignals.environment;
 export const lightIntensity = applicationStateSignals.lightIntensity;
 export const lightSize = applicationStateSignals.lightSize;
@@ -562,6 +753,35 @@ export const setLightColor = (value) => setApplicationValue('lightColor', value)
 export const setNextObjectId = (value) => setApplicationValue('nextObjectId', value);
 export const setMaterial = (value) => setApplicationValue('material', value);
 export const setGlossiness = (value) => setApplicationValue('glossiness', value);
+export const setActiveMaterialPresetId = (value) => setApplicationValue('activeMaterialPresetId', value);
+export const setSavedMaterialPresets = (value) => setApplicationValue(
+  'savedMaterialPresets',
+  Array.isArray(value) ? value.map(normalizeMaterialPreset) : DEFAULT_SAVED_MATERIAL_PRESETS
+);
+export const setMaterialTextureAssignments = (value) => setApplicationValue(
+  'materialTextureAssignments',
+  normalizeMaterialTextureAssignments(value)
+);
+export const setSelectedMaterialTextureChannel = (value) => setApplicationValue(
+  'selectedMaterialTextureChannel',
+  normalizeMaterialTextureChannel(value)
+);
+export const setMaterialUvProjectionMode = (value) => setApplicationValue(
+  'materialUvProjectionMode',
+  normalizeMaterialUvProjectionMode(value)
+);
+export const setMaterialUvScale = (value) => setApplicationValue(
+  'materialUvScale',
+  normalizeMaterialUvScale(value)
+);
+export const setMaterialUvBlendSharpness = (value) => setApplicationValue(
+  'materialUvBlendSharpness',
+  normalizeMaterialUvBlendSharpness(value)
+);
+export const setMaterialEmissionSettings = (value) => setApplicationValue(
+  'materialEmissionSettings',
+  normalizeMaterialEmissionSettings(value)
+);
 export const setEnvironment = (value) => setApplicationValue('environment', value);
 export const setLightIntensity = (value) => setApplicationValue('lightIntensity', value);
 export const setLightSize = (value) => setApplicationValue('lightSize', value);
@@ -616,6 +836,117 @@ export const toggleFramePaused = () => toggleApplicationBoolean('isFramePaused')
 export const toggleConvergencePauseEnabled = () => toggleApplicationBoolean('isConvergencePauseEnabled');
 export const toggleLightIntensityCycling = () => toggleApplicationBoolean('isLightIntensityCycling');
 export const togglePickingFocus = () => toggleApplicationBoolean('isPickingFocus');
+
+export const setMaterialTextureAssignment = (channel, descriptor) => {
+  const channelKey = normalizeMaterialTextureChannel(channel);
+  return setMaterialTextureAssignments({
+    ...materialTextureAssignments.value,
+    [channelKey]: normalizeMaterialTextureDescriptor(descriptor)
+  });
+};
+
+export const clearMaterialTextureAssignment = (channel) => setMaterialTextureAssignment(channel, null);
+
+export const swapMaterialTextureAssignments = (firstChannel, secondChannel) => {
+  const firstChannelKey = normalizeMaterialTextureChannel(firstChannel);
+  const secondChannelKey = normalizeMaterialTextureChannel(secondChannel, firstChannelKey);
+  if (firstChannelKey === secondChannelKey) {
+    return materialTextureAssignments.value;
+  }
+  const assignments = materialTextureAssignments.value;
+  return setMaterialTextureAssignments({
+    ...assignments,
+    [firstChannelKey]: assignments[secondChannelKey],
+    [secondChannelKey]: assignments[firstChannelKey]
+  });
+};
+
+export const readSavedMaterialPreset = (presetId) => {
+  const normalizedPresetId = String(presetId || '').trim();
+  return savedMaterialPresets.value.find((preset) => preset.id === normalizedPresetId) || null;
+};
+
+export const applyMaterialPreset = (presetId) => {
+  const preset = readSavedMaterialPreset(presetId);
+  if (!preset) {
+    uiLogger.warn('state:material-preset-unknown', {
+      presetId,
+      availablePresets: savedMaterialPresets.value.map((entry) => entry.id)
+    });
+    return false;
+  }
+
+  uiLogger.info('state:material-preset', {
+    presetId: preset.id,
+    material: preset.material,
+    textureChannels: Object.keys(preset.textureAssignments)
+  });
+  patchApplicationState({
+    activeMaterialPresetId: preset.id,
+    material: preset.material,
+    glossiness: preset.glossiness,
+    materialTextureAssignments: preset.textureAssignments,
+    materialUvProjectionMode: preset.uvProjectionMode,
+    materialUvScale: preset.uvScale,
+    materialUvBlendSharpness: preset.uvBlendSharpness,
+    materialEmissionSettings: preset.emission
+  });
+  return true;
+};
+
+const createSavedMaterialPresetId = (label, existingPresets) => {
+  const baseId = String(label || 'saved-material')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-|-$/gu, '') || 'saved-material';
+  const existingPresetIds = new Set(existingPresets.map((preset) => preset.id));
+  if (!existingPresetIds.has(baseId)) {
+    return baseId;
+  }
+
+  let suffix = 2;
+  let nextId = `${baseId}-${suffix}`;
+  while (existingPresetIds.has(nextId)) {
+    suffix += 1;
+    nextId = `${baseId}-${suffix}`;
+  }
+  return nextId;
+};
+
+export const saveMaterialPreset = (presetInput = {}) => {
+  const existingPresets = savedMaterialPresets.value;
+  const label = normalizeOptionalMaterialText(presetInput.label) || 'Saved material';
+  const presetId = normalizeOptionalMaterialText(presetInput.id) || createSavedMaterialPresetId(label, existingPresets);
+  const preset = normalizeMaterialPreset({
+    id: presetId,
+    label,
+    material: presetInput.material ?? material.value,
+    glossiness: presetInput.glossiness ?? glossiness.value,
+    textureAssignments: presetInput.textureAssignments ?? materialTextureAssignments.value,
+    uvProjectionMode: presetInput.uvProjectionMode ?? materialUvProjectionMode.value,
+    uvScale: presetInput.uvScale ?? materialUvScale.value,
+    uvBlendSharpness: presetInput.uvBlendSharpness ?? materialUvBlendSharpness.value,
+    emission: presetInput.emission ?? materialEmissionSettings.value,
+    userDefined: presetInput.userDefined ?? true
+  });
+  const nextPresets = existingPresets.some((entry) => entry.id === preset.id)
+    ? existingPresets.map((entry) => (entry.id === preset.id ? preset : entry))
+    : [...existingPresets, preset];
+
+  batch(() => {
+    setSavedMaterialPresets(nextPresets);
+    setActiveMaterialPresetId(preset.id);
+  });
+  uiLogger.info('state:material-preset-save', {
+    presetId: preset.id,
+    material: preset.material,
+    textureChannels: Object.entries(preset.textureAssignments)
+      .filter(([, assignment]) => Boolean(assignment))
+      .map(([channel]) => channel)
+  });
+  return preset;
+};
 
 export const applyQualityPreset = (presetName) => {
   const preset = QUALITY_PRESETS[presetName];

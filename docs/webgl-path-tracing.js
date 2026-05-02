@@ -8,8 +8,23 @@
 
 import { updateBenchmarkSignals } from './src/benchmarkStore.js';
 import { captureLoggerEntry } from './src/logger.js';
-import { DEFAULT_MATERIAL_GLOSSINESS, MaterialComponent } from './src/components/MaterialComponent.js';
+import {
+  DEFAULT_MATERIAL_GLOSSINESS,
+  DEFAULT_MATERIAL_UV_BLEND_SHARPNESS,
+  DEFAULT_MATERIAL_UV_PROJECTION_MODE,
+  DEFAULT_MATERIAL_UV_SCALE,
+  MaterialComponent,
+  normalizeMaterialUvBlendSharpness,
+  normalizeMaterialUvProjectionMode,
+  normalizeMaterialUvScale
+} from './src/components/MaterialComponent.js';
 import { PhysicsComponent } from './src/components/PhysicsComponent.js';
+import {
+  selectedItemId as sceneStoreSelectedItemId,
+  selectedItemIds as sceneStoreSelectedItemIds,
+  setSceneItems as setSceneStoreSceneItems,
+  setSelectedItemIds as setSceneStoreSelectedItemIds
+} from './src/sceneStore.js';
 
 'use strict';
 
@@ -279,6 +294,15 @@ const MIN_PARTICLE_FLUID_SPRING_STIFFNESS = 40;
 const MAX_PARTICLE_FLUID_SPRING_STIFFNESS = 240;
 const DEFAULT_PARTICLE_FLUID_SPRING_REST_LENGTH = 0.14;
 const PARTICLE_FLUID_NEIGHBOR_COUNT = 5;
+const DEFAULT_PHYSICS_SPRING_REST_LENGTH = DEFAULT_PARTICLE_FLUID_SPRING_REST_LENGTH;
+const MIN_PHYSICS_SPRING_REST_LENGTH = 0.02;
+const MAX_PHYSICS_SPRING_REST_LENGTH = 1;
+const DEFAULT_PHYSICS_SPRING_STIFFNESS = DEFAULT_PARTICLE_FLUID_SPRING_STIFFNESS;
+const MIN_PHYSICS_SPRING_STIFFNESS = MIN_PARTICLE_FLUID_SPRING_STIFFNESS;
+const MAX_PHYSICS_SPRING_STIFFNESS = MAX_PARTICLE_FLUID_SPRING_STIFFNESS;
+const DEFAULT_PHYSICS_SPRING_DAMPING = 8;
+const MIN_PHYSICS_SPRING_DAMPING = 0;
+const MAX_PHYSICS_SPRING_DAMPING = 80;
 // Rapier collision group masks: high 16 bits = memberships, low 16 bits = filter
 // GROUP_FLOOR=0x0001, GROUP_OBJECTS=0x0002, GROUP_GHOST=0x0004
 const PHYSICS_COLLISION_MASK_FLOOR = (0x0001 << 16) | 0xFFFF;    // floor collides with everything
@@ -322,12 +346,10 @@ const DEFAULT_RAYS_PER_PIXEL = 12;
 const MIN_RAYS_PER_PIXEL = 1;
 const MAX_RAYS_PER_PIXEL = 64;
 const INTERACTIVE_QUALITY_RAYS_PER_PIXEL = 1;
-const INTERACTIVE_QUALITY_LIGHT_BOUNCE_COUNT = 2;
 const CONVERGED_SAMPLE_COUNT = 2048;
 const DEFAULT_TEMPORAL_BLEND_FRAMES = 16;
 const MIN_TEMPORAL_BLEND_FRAMES = 1;
 const MAX_TEMPORAL_BLEND_FRAMES = 32;
-const TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR = 128;
 const DEFAULT_COLOR_EXPOSURE = 0;
 const MIN_COLOR_EXPOSURE = -4;
 const MAX_COLOR_EXPOSURE = 4;
@@ -438,6 +460,7 @@ const NANOSECONDS_PER_MILLISECOND = 1000000;
 const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
 const SKY_TEXTURE_WIDTH = 256;
 const SKY_TEXTURE_HEIGHT = 128;
+const MATERIAL_ALBEDO_TEXTURE_SIZE = 64;
 const BYTES_PER_RGBA_PIXEL = 4;
 const BYTES_PER_HALF_FLOAT_RGBA_PIXEL = 8;
 const BYTES_PER_FLOAT_RGBA_PIXEL = 16;
@@ -826,6 +849,7 @@ const tracerFragmentSourceHeader = [
   'uniform float cameraFocusDistance;',
   'uniform float cameraAperture;',
   'uniform sampler2D skyTexture;',
+  'uniform sampler2D materialAlbedoTexture;',
   'vec3 roomCubeMin = vec3(-1.0, -1.0, -1.0);',
   'vec3 roomCubeMax = vec3(1.0, 1.0, 1.0);'
 ].join('');
@@ -1032,6 +1056,18 @@ const surfaceShaderUtilitySource = [
   'vec3 shaderStableTangent(vec3 normal) {',
   '  vec3 axis = abs(normal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);',
   '  return normalize(cross(normal, axis));',
+  '}',
+  'vec3 shaderTriplanarWeights(vec3 normal, float blendSharpness) {',
+  '  vec3 axisWeights = pow(max(abs(normal), vec3(0.0001)), vec3(max(blendSharpness, 0.0001)));',
+  '  return axisWeights / max(axisWeights.x + axisWeights.y + axisWeights.z, 0.0001);',
+  '}',
+  'vec3 sampleTriplanarAlbedo(sampler2D textureSampler, vec3 point, vec3 normal, float scale, float blendSharpness) {',
+  '  vec3 projectedPoint = point * max(scale, 0.0001);',
+  '  vec3 axisWeights = shaderTriplanarWeights(normal, blendSharpness);',
+  '  vec3 xProjection = texture2D(textureSampler, projectedPoint.yz).rgb;',
+  '  vec3 yProjection = texture2D(textureSampler, projectedPoint.xz).rgb;',
+  '  vec3 zProjection = texture2D(textureSampler, projectedPoint.xy).rgb;',
+  '  return xProjection * axisWeights.x + yProjection * axisWeights.y + zProjection * axisWeights.z;',
   '}',
   'float shaderVoronoiEdge(vec3 point) {',
   '  vec3 baseCell = floor(point);',
@@ -1735,6 +1771,49 @@ const xRaySurfaceShaderSource = [
   'ray = normalize(mix(ray, cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, normal), 0.28));'
 ].join('');
 
+const createMaterialTextureShaderSource = (sceneObject) => {
+  if (!sceneObjectUsesTriplanarProjection(sceneObject)) {
+    return '';
+  }
+  return [
+    `const float materialUvScale = ${formatShaderFloat(readSceneObjectUvScale(sceneObject))};`,
+    `const float materialUvBlendSharpness = ${formatShaderFloat(readSceneObjectUvBlendSharpness(sceneObject))};`,
+    'vec3 materialTextureColor = sampleTriplanarAlbedo(',
+    '  materialAlbedoTexture,',
+    '  surfaceObjectPoint,',
+    '  normal,',
+    '  materialUvScale,',
+    '  materialUvBlendSharpness',
+    ');'
+  ].join('');
+};
+
+const applyMaterialTextureShaderSource = 'surfaceColor *= materialTextureColor;';
+
+const composeObjectSurfaceShaderSource = (baseSurfaceShaderSource, materialTextureShaderSource) => {
+  if (!materialTextureShaderSource) {
+    return baseSurfaceShaderSource;
+  }
+
+  let surfaceShaderSource = baseSurfaceShaderSource;
+  let didInlineMaterialTexture = false;
+  if (surfaceShaderSource.includes('colorMask *= surfaceColor;')) {
+    surfaceShaderSource = surfaceShaderSource.replaceAll(
+      'colorMask *= surfaceColor;',
+      `${applyMaterialTextureShaderSource}colorMask *= surfaceColor;`
+    );
+    didInlineMaterialTexture = true;
+  }
+  if (surfaceShaderSource.includes('continue;')) {
+    return didInlineMaterialTexture
+      ? surfaceShaderSource
+      : surfaceShaderSource.replaceAll('continue;', `${applyMaterialTextureShaderSource}continue;`);
+  }
+  return didInlineMaterialTexture
+    ? surfaceShaderSource
+    : `${surfaceShaderSource}${applyMaterialTextureShaderSource}`;
+};
+
 const createBaseObjectSurfaceShaderSource = (material, sceneObject = null) => {
   const normalizedMaterial = normalizeMaterial(material);
   if (normalizedMaterial === MATERIAL.MIRROR) {
@@ -1881,10 +1960,17 @@ const createBaseObjectSurfaceShaderSource = (material, sceneObject = null) => {
   return newDiffuseRaySource;
 };
 
-const createObjectSurfaceShaderSource = (material, sceneObject = null) => [
-  createEmissionModifierShaderSource(sceneObject),
-  createBaseObjectSurfaceShaderSource(material, sceneObject)
-].join('');
+const createObjectSurfaceShaderSource = (material, sceneObject = null) => {
+  const materialTextureShaderSource = createMaterialTextureShaderSource(sceneObject);
+  return [
+    materialTextureShaderSource,
+    createEmissionModifierShaderSource(sceneObject),
+    composeObjectSurfaceShaderSource(
+      createBaseObjectSurfaceShaderSource(material, sceneObject),
+      materialTextureShaderSource
+    )
+  ].join('');
+};
 
 const yellowBlueCornellBoxSource = [
   'if(hit.x < -0.9999) surfaceColor = vec3(0.1, 0.5, 1.0);',
@@ -2333,6 +2419,28 @@ const isTransparentMaterial = (material) => (
   material === MATERIAL.ICE_FROSTED_GLASS
 );
 
+const readSceneObjectUvProjectionMode = (sceneObject) => (
+  normalizeMaterialUvProjectionMode(sceneObject && sceneObject.uvProjectionMode)
+);
+
+const readSceneObjectUvScale = (sceneObject) => (
+  normalizeMaterialUvScale(sceneObject && sceneObject.uvScale)
+);
+
+const readSceneObjectUvBlendSharpness = (sceneObject) => (
+  normalizeMaterialUvBlendSharpness(sceneObject && sceneObject.uvBlendSharpness)
+);
+
+const sceneObjectUsesTriplanarProjection = (sceneObject) => (
+  readSceneObjectUvProjectionMode(sceneObject) === 'tri-planar'
+);
+
+const hasSceneObjectCustomUvProjectionSettings = (sceneObject) => (
+  readSceneObjectUvProjectionMode(sceneObject) !== DEFAULT_MATERIAL_UV_PROJECTION_MODE ||
+  readSceneObjectUvScale(sceneObject) !== DEFAULT_MATERIAL_UV_SCALE ||
+  readSceneObjectUvBlendSharpness(sceneObject) !== DEFAULT_MATERIAL_UV_BLEND_SHARPNESS
+);
+
 const materialUsesSurfaceShaderUtilities = (material) => {
   const normalizedMaterial = normalizeMaterial(material);
   return (
@@ -2374,9 +2482,32 @@ const materialUsesSurfaceShaderUtilities = (material) => {
   );
 };
 
+const sceneObjectUsesSurfaceShaderUtilities = (sceneObject) => (
+  Boolean(sceneObject) &&
+  (
+    sceneObjectUsesTriplanarProjection(sceneObject) ||
+    materialUsesSurfaceShaderUtilities(sceneObject.material)
+  )
+);
+
 const sceneUsesSurfaceShaderUtilities = (sceneObjects) => {
   for (const sceneObject of sceneObjects) {
-    if (materialUsesSurfaceShaderUtilities(sceneObject.material)) {
+    if (!isRenderableSceneObject(sceneObject) || !Number.isFinite(Number(sceneObject.material))) {
+      continue;
+    }
+    if (sceneObjectUsesSurfaceShaderUtilities(sceneObject)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const sceneUsesMaterialTextureProjection = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    if (!isRenderableSceneObject(sceneObject) || !Number.isFinite(Number(sceneObject.material))) {
+      continue;
+    }
+    if (sceneObjectUsesTriplanarProjection(sceneObject)) {
       return true;
     }
   }
@@ -2386,6 +2517,9 @@ const sceneUsesSurfaceShaderUtilities = (sceneObjects) => {
 const sceneUsesMaterial = (sceneObjects, material) => {
   const normalizedMaterial = normalizeMaterial(material);
   for (const sceneObject of sceneObjects) {
+    if (!isRenderableSceneObject(sceneObject) || !Number.isFinite(Number(sceneObject.material))) {
+      continue;
+    }
     if (normalizeMaterial(sceneObject.material) === normalizedMaterial) {
       return true;
     }
@@ -2643,6 +2777,28 @@ const copySceneObjectEmissiveSettings = (sourceObject, targetObject) => {
   return targetObject;
 };
 
+const copySceneObjectMaterialProjectionSettings = (sourceObject, targetObject) => {
+  targetObject.uvProjectionMode = readSceneObjectUvProjectionMode(sourceObject);
+  targetObject.uvScale = readSceneObjectUvScale(sourceObject);
+  targetObject.uvBlendSharpness = readSceneObjectUvBlendSharpness(sourceObject);
+  return targetObject;
+};
+
+const writeSceneObjectMaterialProjectionSettings = (
+  sceneObject,
+  uvProjectionMode,
+  uvScale,
+  uvBlendSharpness
+) => {
+  if (!sceneObject || !Number.isFinite(Number(sceneObject.material))) {
+    return returnSuccess(undefined);
+  }
+  sceneObject.uvProjectionMode = normalizeMaterialUvProjectionMode(uvProjectionMode);
+  sceneObject.uvScale = normalizeMaterialUvScale(uvScale);
+  sceneObject.uvBlendSharpness = normalizeMaterialUvBlendSharpness(uvBlendSharpness);
+  return returnSuccess(undefined);
+};
+
 const writeSceneObjectEmissiveSettings = (
   sceneObject,
   emissiveColor,
@@ -2708,6 +2864,22 @@ const createSceneObjectMaterialComponent = (material = MATERIAL.DIFFUSE, glossin
   })
 );
 
+const createSceneObjectMaterialComponentFromValues = ({
+  material = MATERIAL.DIFFUSE,
+  glossiness = DEFAULT_MATERIAL_GLOSSINESS,
+  uvProjectionMode = DEFAULT_MATERIAL_UV_PROJECTION_MODE,
+  uvScale = DEFAULT_MATERIAL_UV_SCALE,
+  uvBlendSharpness = DEFAULT_MATERIAL_UV_BLEND_SHARPNESS
+} = {}) => (
+  new MaterialComponent({
+    material: normalizeMaterial(material),
+    glossiness: normalizeSceneObjectMaterialGlossiness(glossiness),
+    uvProjectionMode: normalizeMaterialUvProjectionMode(uvProjectionMode),
+    uvScale: normalizeMaterialUvScale(uvScale),
+    uvBlendSharpness: normalizeMaterialUvBlendSharpness(uvBlendSharpness)
+  })
+);
+
 const createSceneObjectPhysicsComponent = ({
   enabled = true,
   bodyType = PHYSICS_BODY_TYPE.STATIC,
@@ -2750,10 +2922,28 @@ const ensureSceneObjectMaterialComponent = (sceneObject) => {
   const existingComponent = sceneObject.materialComponent && typeof sceneObject.materialComponent === 'object'
     ? sceneObject.materialComponent
     : {};
-  sceneObject.materialComponent = createSceneObjectMaterialComponent(
-    existingComponent.material ?? readOwnDataProperty(sceneObject, 'material') ?? MATERIAL.DIFFUSE,
-    existingComponent.glossiness ?? readOwnDataProperty(sceneObject, 'glossiness') ?? DEFAULT_MATERIAL_GLOSSINESS
-  );
+  sceneObject.materialComponent = createSceneObjectMaterialComponentFromValues({
+    material: existingComponent.material ?? readOwnDataProperty(sceneObject, 'material') ?? MATERIAL.DIFFUSE,
+    glossiness: existingComponent.glossiness ?? readOwnDataProperty(sceneObject, 'glossiness') ?? DEFAULT_MATERIAL_GLOSSINESS,
+    uvProjectionMode: (
+      existingComponent.uvProjectionMode ??
+      existingComponent.textureProjectionMode ??
+      readOwnDataProperty(sceneObject, 'uvProjectionMode') ??
+      DEFAULT_MATERIAL_UV_PROJECTION_MODE
+    ),
+    uvScale: (
+      existingComponent.uvScale ??
+      existingComponent.textureProjectionScale ??
+      readOwnDataProperty(sceneObject, 'uvScale') ??
+      DEFAULT_MATERIAL_UV_SCALE
+    ),
+    uvBlendSharpness: (
+      existingComponent.uvBlendSharpness ??
+      existingComponent.textureProjectionBlendSharpness ??
+      readOwnDataProperty(sceneObject, 'uvBlendSharpness') ??
+      DEFAULT_MATERIAL_UV_BLEND_SHARPNESS
+    )
+  });
   return sceneObject.materialComponent;
 };
 
@@ -2808,6 +2998,38 @@ const defineSceneObjectMaterialAccessors = (sceneObject) => {
       },
       set(glossiness) {
         ensureSceneObjectMaterialComponent(this).setGlossiness(normalizeSceneObjectMaterialGlossiness(glossiness));
+      }
+    },
+    uvProjectionMode: {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return ensureSceneObjectMaterialComponent(this).uvProjectionMode;
+      },
+      set(mode) {
+        ensureSceneObjectMaterialComponent(this).setUvProjectionMode(normalizeMaterialUvProjectionMode(mode));
+      }
+    },
+    uvScale: {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return ensureSceneObjectMaterialComponent(this).uvScale;
+      },
+      set(scale) {
+        ensureSceneObjectMaterialComponent(this).setUvScale(normalizeMaterialUvScale(scale));
+      }
+    },
+    uvBlendSharpness: {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return ensureSceneObjectMaterialComponent(this).uvBlendSharpness;
+      },
+      set(blendSharpness) {
+        ensureSceneObjectMaterialComponent(this).setUvBlendSharpness(
+          normalizeMaterialUvBlendSharpness(blendSharpness)
+        );
       }
     }
   });
@@ -3105,6 +3327,7 @@ const calculateRenderTextureBytes = (webGlContext, textureType) => {
 const calculateEstimatedGpuBufferMemoryBytes = (webGlContext, textureType) => (
   calculateRenderTextureBytes(webGlContext, textureType) * PATH_TRACER_RENDER_TEXTURE_COUNT +
   SKY_TEXTURE_WIDTH * SKY_TEXTURE_HEIGHT * BYTES_PER_RGBA_PIXEL +
+  MATERIAL_ALBEDO_TEXTURE_SIZE * MATERIAL_ALBEDO_TEXTURE_SIZE * BYTES_PER_RGBA_PIXEL +
   PATH_TRACER_VERTEX_BUFFER_BYTES
 );
 
@@ -3443,6 +3666,9 @@ const writeRayJitterUniformValues = (uniformValues, sampleSequence) => {
 const joinObjectShaderCode = (sceneObjects, readShaderCode) => {
   const shaderParts = [];
   for (const sceneObject of sceneObjects) {
+    if (!isRenderableSceneObject(sceneObject)) {
+      continue;
+    }
     shaderParts.push(readShaderCode(sceneObject));
   }
   return shaderParts.join('');
@@ -3920,6 +4146,48 @@ const createProceduralSkyTexture = (webGlContext) => {
   return returnSuccess(texture);
 };
 
+const createProceduralMaterialAlbedoTexture = (webGlContext) => {
+  const texture = webGlContext.createTexture();
+  if (!texture) {
+    return returnFailure('texture-create-failed', 'Material albedo texture could not be created.');
+  }
+
+  const texturePixels = new Uint8Array(
+    MATERIAL_ALBEDO_TEXTURE_SIZE * MATERIAL_ALBEDO_TEXTURE_SIZE * BYTES_PER_RGBA_PIXEL
+  );
+  for (let y = 0; y < MATERIAL_ALBEDO_TEXTURE_SIZE; y += 1) {
+    for (let x = 0; x < MATERIAL_ALBEDO_TEXTURE_SIZE; x += 1) {
+      const checker = (Math.floor(x / 8) + Math.floor(y / 8)) % 2;
+      const fineNoise = ((x * 17 + y * 31) % 23) / 22;
+      const pixelOffset = (y * MATERIAL_ALBEDO_TEXTURE_SIZE + x) * BYTES_PER_RGBA_PIXEL;
+      const warmTile = checker === 0;
+      texturePixels[pixelOffset] = clampInteger((warmTile ? 225 : 72) + fineNoise * 18, 0, 255);
+      texturePixels[pixelOffset + 1] = clampInteger((warmTile ? 202 : 118) + fineNoise * 14, 0, 255);
+      texturePixels[pixelOffset + 2] = clampInteger((warmTile ? 154 : 178) + fineNoise * 20, 0, 255);
+      texturePixels[pixelOffset + 3] = 255;
+    }
+  }
+
+  webGlContext.bindTexture(webGlContext.TEXTURE_2D, texture);
+  webGlContext.texParameteri(webGlContext.TEXTURE_2D, webGlContext.TEXTURE_MAG_FILTER, webGlContext.LINEAR);
+  webGlContext.texParameteri(webGlContext.TEXTURE_2D, webGlContext.TEXTURE_MIN_FILTER, webGlContext.LINEAR);
+  webGlContext.texParameteri(webGlContext.TEXTURE_2D, webGlContext.TEXTURE_WRAP_S, webGlContext.REPEAT);
+  webGlContext.texParameteri(webGlContext.TEXTURE_2D, webGlContext.TEXTURE_WRAP_T, webGlContext.REPEAT);
+  webGlContext.texImage2D(
+    webGlContext.TEXTURE_2D,
+    0,
+    webGlContext.RGBA,
+    MATERIAL_ALBEDO_TEXTURE_SIZE,
+    MATERIAL_ALBEDO_TEXTURE_SIZE,
+    0,
+    webGlContext.RGBA,
+    webGlContext.UNSIGNED_BYTE,
+    texturePixels
+  );
+
+  return returnSuccess(texture);
+};
+
 const createUniformLocationCache = () => new Map();
 
 const readUniformLocation = (webGlContext, program, uniformLocationCache, uniformName) => {
@@ -4108,7 +4376,7 @@ class SphereSceneObject {
     return [
       `else if(t == ${this.intersectionName}) {`,
       `normal = normalForSphere(hit, ${this.centerUniformName}, ${this.radiusUniformName});`,
-      materialUsesSurfaceShaderUtilities(this.material) ? `surfaceObjectPoint = hit - ${this.centerUniformName};` : '',
+      sceneObjectUsesSurfaceShaderUtilities(this) ? `surfaceObjectPoint = hit - ${this.centerUniformName};` : '',
       createObjectSurfaceShaderSource(this.material, this),
       '}'
     ].join('');
@@ -4127,6 +4395,7 @@ class SphereSceneObject {
     duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
     duplicateObject.glossiness = this.glossiness;
     copySceneObjectEmissiveSettings(this, duplicateObject);
+    copySceneObjectMaterialProjectionSettings(this, duplicateObject);
     duplicateObject.isPhysicsEnabled = this.isPhysicsEnabled;
     duplicateObject.physicsBodyType = this.physicsBodyType;
     duplicateObject.physicsFriction = this.physicsFriction;
@@ -4293,7 +4562,7 @@ class CubeSceneObject {
     return [
       `else if(t == ${this.intersectionDistanceName}) {`,
       `normal = normalForCube(hit, ${this.minUniformName}, ${this.maxUniformName});`,
-      materialUsesSurfaceShaderUtilities(this.material)
+      sceneObjectUsesSurfaceShaderUtilities(this)
         ? `surfaceObjectPoint = hit - (${this.minUniformName} + ${this.maxUniformName}) * 0.5;`
         : '',
       createObjectSurfaceShaderSource(this.material, this),
@@ -4314,6 +4583,7 @@ class CubeSceneObject {
     duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
     duplicateObject.glossiness = this.glossiness;
     copySceneObjectEmissiveSettings(this, duplicateObject);
+    copySceneObjectMaterialProjectionSettings(this, duplicateObject);
     duplicateObject.isPhysicsEnabled = this.isPhysicsEnabled;
     duplicateObject.physicsBodyType = this.physicsBodyType;
     duplicateObject.physicsFriction = this.physicsFriction;
@@ -4545,7 +4815,7 @@ class SdfSceneObject {
     return [
       `else if(t == ${this.intersectionName}) {`,
       `normal = ${this.normalFunctionName}(hit);`,
-      materialUsesSurfaceShaderUtilities(this.material) ? `surfaceObjectPoint = hit - ${this.centerUniformName};` : '',
+      sceneObjectUsesSurfaceShaderUtilities(this) ? `surfaceObjectPoint = hit - ${this.centerUniformName};` : '',
       createObjectSurfaceShaderSource(this.material, this),
       '}'
     ].join('');
@@ -4572,6 +4842,7 @@ class SdfSceneObject {
     duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
     duplicateObject.glossiness = this.glossiness;
     copySceneObjectEmissiveSettings(this, duplicateObject);
+    copySceneObjectMaterialProjectionSettings(this, duplicateObject);
     return duplicateObject;
   }
 
@@ -4960,6 +5231,12 @@ class LightSceneObject {
     this.selectionHalfExtentVector = createVec3(0, 0, 0);
     this.boundsMinCorner = createVec3(0, 0, 0);
     this.boundsMaxCorner = createVec3(0, 0, 0);
+    this.components = Object.freeze({
+      light: Object.freeze({
+        label: 'Light',
+        summary: 'Scene light'
+      })
+    });
     this.lightUniformLocation = null;
   }
 
@@ -5026,6 +5303,238 @@ class LightSceneObject {
     writeVec3(this.selectionHalfExtentVector, selectionHalfExtent, selectionHalfExtent, selectionHalfExtent);
     writeAddVec3(this.translatedLightPosition, this.applicationState.lightPosition, this.temporaryTranslation);
     return writeAddVec3(this.boundsMaxCorner, this.translatedLightPosition, this.selectionHalfExtentVector);
+  }
+
+  intersectRay() {
+    return returnSuccess(MAX_INTERSECTION_DISTANCE);
+  }
+}
+
+const normalizeGroupEntityId = (entityId) => {
+  if (entityId === null || entityId === undefined || entityId === '') {
+    return null;
+  }
+  return String(entityId);
+};
+
+const normalizeGroupEntityIdList = (entityIds) => {
+  const normalizedEntityIds = [];
+  const seenEntityIds = new Set();
+  for (const entityId of Array.isArray(entityIds) ? entityIds : []) {
+    const normalizedEntityId = normalizeGroupEntityId(entityId);
+    if (normalizedEntityId !== null && !seenEntityIds.has(normalizedEntityId)) {
+      seenEntityIds.add(normalizedEntityId);
+      normalizedEntityIds.push(normalizedEntityId);
+    }
+  }
+  return Object.freeze(normalizedEntityIds);
+};
+
+const createGroupEntityComponentMap = (childEntityIds) => {
+  const childCount = childEntityIds.length;
+  return Object.freeze({
+    group: Object.freeze({
+      label: 'Group',
+      summary: `${childCount} ${childCount === 1 ? 'child' : 'children'}`
+    })
+  });
+};
+
+const readGroupEntityVector = (vector, fallbackVector) => {
+  const sourceVector = Array.isArray(vector) || ArrayBuffer.isView(vector) ? vector : [];
+  return createVec3(
+    Number.isFinite(Number(sourceVector[0])) ? Number(sourceVector[0]) : fallbackVector[0],
+    Number.isFinite(Number(sourceVector[1])) ? Number(sourceVector[1]) : fallbackVector[1],
+    Number.isFinite(Number(sourceVector[2])) ? Number(sourceVector[2]) : fallbackVector[2]
+  );
+};
+
+class GroupEntity {
+  constructor(options = {}) {
+    const entityId = normalizeGroupEntityId(options.entityId ?? options.id ?? options.objectId) ?? 'group';
+    const childEntityIds = normalizeGroupEntityIdList(options.childEntityIds);
+    this.objectId = entityId;
+    this.entityId = entityId;
+    this.parentEntityId = normalizeGroupEntityId(options.parentEntityId);
+    this.displayName = typeof options.name === 'string'
+      ? options.name.trim().slice(0, 96)
+      : (typeof options.displayName === 'string' ? options.displayName.trim().slice(0, 96) : 'Group');
+    this.sceneItemKind = 'group';
+    this.kind = 'group';
+    this.type = 'group';
+    this.isGroup = true;
+    this.childEntityIds = childEntityIds;
+    this.centerPosition = readGroupEntityVector(
+      options.centerPosition ?? options.position ?? options.translation,
+      ORIGIN_VECTOR
+    );
+    this.rotation = readGroupEntityVector(options.rotation, ORIGIN_VECTOR);
+    this.scale = readGroupEntityVector(options.scale, createVec3(1, 1, 1));
+    this.temporaryTranslation = createVec3(0, 0, 0);
+    this.boundsMinCorner = createVec3(0, 0, 0);
+    this.boundsMaxCorner = createVec3(0, 0, 0);
+    this.emptyBoundsHalfExtents = createVec3(0.05, 0.05, 0.05);
+    this.sceneObjects = Object.freeze([]);
+    this.components = createGroupEntityComponentMap(this.childEntityIds);
+    this._isHidden = Boolean(options.isHidden ?? options.hidden);
+    this._isLocked = Boolean(options.isLocked ?? options.locked);
+  }
+
+  get isHidden() {
+    return this._isHidden;
+  }
+
+  set isHidden(isHidden) {
+    this._isHidden = Boolean(isHidden);
+    for (const childObject of this.resolveChildObjects()) {
+      childObject.isHidden = this._isHidden;
+    }
+  }
+
+  get isLocked() {
+    return this._isLocked;
+  }
+
+  set isLocked(isLocked) {
+    this._isLocked = Boolean(isLocked);
+    for (const childObject of this.resolveChildObjects()) {
+      childObject.isLocked = this._isLocked;
+    }
+  }
+
+  syncChildEntityIds(childEntityIds) {
+    this.childEntityIds = normalizeGroupEntityIdList(childEntityIds);
+    this.components = createGroupEntityComponentMap(this.childEntityIds);
+    return returnSuccess(undefined);
+  }
+
+  setSceneObjects(sceneObjects) {
+    this.sceneObjects = Object.freeze(Array.isArray(sceneObjects) ? sceneObjects.slice() : []);
+    return returnSuccess(undefined);
+  }
+
+  resolveChildObjects() {
+    const childEntityIdSet = new Set(this.childEntityIds);
+    return this.sceneObjects.filter((sceneObject) => (
+      sceneObject !== this &&
+      childEntityIdSet.has(readSceneObjectEntityId(sceneObject))
+    ));
+  }
+
+  addChild(sceneObject) {
+    const childEntityId = readSceneObjectEntityId(sceneObject);
+    if (childEntityId === null || childEntityId === this.entityId) {
+      return returnSuccess(false);
+    }
+    sceneObject.parentEntityId = this.entityId;
+    return this.syncChildEntityIds([...this.childEntityIds, childEntityId]);
+  }
+
+  removeChild(sceneObject) {
+    const childEntityId = readSceneObjectEntityId(sceneObject);
+    if (childEntityId === null) {
+      return returnSuccess(false);
+    }
+    if (sceneObject.parentEntityId === this.entityId) {
+      sceneObject.parentEntityId = null;
+    }
+    return this.syncChildEntityIds(this.childEntityIds.filter((entityId) => entityId !== childEntityId));
+  }
+
+  getGlobalCode() {
+    return '';
+  }
+
+  getIntersectCode() {
+    return '';
+  }
+
+  getShadowTestCode() {
+    return '';
+  }
+
+  getMinimumIntersectCode() {
+    return '';
+  }
+
+  getNormalCalculationCode() {
+    return '';
+  }
+
+  cacheUniformLocations() {
+    return returnSuccess(undefined);
+  }
+
+  setUniforms() {}
+
+  setTemporaryTranslation(translationVector) {
+    writeVec3(this.temporaryTranslation, translationVector[0], translationVector[1], translationVector[2]);
+    for (const childObject of this.resolveChildObjects()) {
+      if (typeof childObject.setTemporaryTranslation === 'function') {
+        const [, childError] = childObject.setTemporaryTranslation(translationVector);
+        if (childError) {
+          return returnFailure(childError.code, childError.message, childError.details);
+        }
+      }
+    }
+    return returnSuccess(undefined);
+  }
+
+  commitTranslation(translationVector) {
+    writeAddVec3(this.centerPosition, this.centerPosition, translationVector);
+    writeVec3(this.temporaryTranslation, 0, 0, 0);
+    for (const childObject of this.resolveChildObjects()) {
+      if (typeof childObject.commitTranslation === 'function') {
+        const [, childError] = childObject.commitTranslation(translationVector);
+        if (childError) {
+          return returnFailure(childError.code, childError.message, childError.details);
+        }
+      }
+    }
+    return returnSuccess(undefined);
+  }
+
+  setCenterPositionComponents(xPosition, yPosition, zPosition) {
+    const translationVector = createVec3(
+      xPosition - this.centerPosition[0],
+      yPosition - this.centerPosition[1],
+      zPosition - this.centerPosition[2]
+    );
+    return this.commitTranslation(translationVector);
+  }
+
+  getMinCorner() {
+    const childObjects = this.resolveChildObjects().filter((childObject) => typeof childObject.getMinCorner === 'function');
+    if (childObjects.length === 0) {
+      const translatedCenter = writeAddVec3(this.boundsMinCorner, this.centerPosition, this.temporaryTranslation);
+      return writeSubtractVec3(this.boundsMinCorner, translatedCenter, this.emptyBoundsHalfExtents);
+    }
+
+    writeVec3(this.boundsMinCorner, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+    for (const childObject of childObjects) {
+      const childMinCorner = childObject.getMinCorner();
+      this.boundsMinCorner[0] = Math.min(this.boundsMinCorner[0], childMinCorner[0]);
+      this.boundsMinCorner[1] = Math.min(this.boundsMinCorner[1], childMinCorner[1]);
+      this.boundsMinCorner[2] = Math.min(this.boundsMinCorner[2], childMinCorner[2]);
+    }
+    return this.boundsMinCorner;
+  }
+
+  getMaxCorner() {
+    const childObjects = this.resolveChildObjects().filter((childObject) => typeof childObject.getMaxCorner === 'function');
+    if (childObjects.length === 0) {
+      const translatedCenter = writeAddVec3(this.boundsMaxCorner, this.centerPosition, this.temporaryTranslation);
+      return writeAddVec3(this.boundsMaxCorner, translatedCenter, this.emptyBoundsHalfExtents);
+    }
+
+    writeVec3(this.boundsMaxCorner, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+    for (const childObject of childObjects) {
+      const childMaxCorner = childObject.getMaxCorner();
+      this.boundsMaxCorner[0] = Math.max(this.boundsMaxCorner[0], childMaxCorner[0]);
+      this.boundsMaxCorner[1] = Math.max(this.boundsMaxCorner[1], childMaxCorner[1]);
+      this.boundsMaxCorner[2] = Math.max(this.boundsMaxCorner[2], childMaxCorner[2]);
+    }
+    return this.boundsMaxCorner;
   }
 
   intersectRay() {
@@ -5139,7 +5648,7 @@ const calculateSceneComplexity = (sceneObjects) => {
   let complexityScore = 0;
 
   for (const sceneObject of sceneObjects) {
-    if (sceneObject instanceof LightSceneObject) {
+    if (sceneObject instanceof LightSceneObject || isGroupEntitySceneObject(sceneObject)) {
       continue;
     }
 
@@ -5306,6 +5815,254 @@ const readSceneObjectPhysicsGravityScale = (sceneObject) => normalizeBoundedNumb
   MAX_PHYSICS_GRAVITY_SCALE
 );
 
+const isPhysicsSpringJointSelectableSceneObject = (sceneObject) => (
+  isPhysicsSupportedSceneObject(sceneObject) &&
+  sceneObject.isPhysicsEnabled !== false &&
+  !sceneObject.isHidden
+);
+
+const normalizePhysicsSpringRestLength = (restLength) => normalizeBoundedNumber(
+  Number(restLength),
+  DEFAULT_PHYSICS_SPRING_REST_LENGTH,
+  MIN_PHYSICS_SPRING_REST_LENGTH,
+  MAX_PHYSICS_SPRING_REST_LENGTH
+);
+
+const normalizePhysicsSpringStiffness = (stiffness) => normalizeBoundedNumber(
+  Number(stiffness),
+  DEFAULT_PHYSICS_SPRING_STIFFNESS,
+  MIN_PHYSICS_SPRING_STIFFNESS,
+  MAX_PHYSICS_SPRING_STIFFNESS
+);
+
+const normalizePhysicsSpringDamping = (damping) => normalizeBoundedNumber(
+  Number(damping),
+  DEFAULT_PHYSICS_SPRING_DAMPING,
+  MIN_PHYSICS_SPRING_DAMPING,
+  MAX_PHYSICS_SPRING_DAMPING
+);
+
+const readSceneObjectPhysicsJointId = (sceneObject) => (
+  sceneObject && sceneObject.entityId !== undefined
+    ? String(sceneObject.entityId)
+    : String(sceneObject && sceneObject.objectId)
+);
+
+const createPhysicsSpringJointPairKey = (firstObject, secondObject) => {
+  const firstId = readSceneObjectPhysicsJointId(firstObject);
+  const secondId = readSceneObjectPhysicsJointId(secondObject);
+  return firstId < secondId ? `${firstId}:${secondId}` : `${secondId}:${firstId}`;
+};
+
+const allocatePhysicsSpringJointId = (applicationState, firstObject, secondObject) => {
+  const nextJointId = Number.isInteger(applicationState.nextPhysicsJointId)
+    ? applicationState.nextPhysicsJointId
+    : 0;
+  applicationState.nextPhysicsJointId = nextJointId + 1;
+  return `spring-${createPhysicsSpringJointPairKey(firstObject, secondObject)}-${nextJointId}`;
+};
+
+const readPhysicsSpringJointRecords = (sceneObject) => (
+  Array.isArray(sceneObject && sceneObject.physicsSpringJoints)
+    ? sceneObject.physicsSpringJoints
+    : []
+);
+
+const ensurePhysicsSpringJointRecords = (sceneObject) => {
+  if (!Array.isArray(sceneObject.physicsSpringJoints)) {
+    sceneObject.physicsSpringJoints = [];
+  }
+  return sceneObject.physicsSpringJoints;
+};
+
+const readPhysicsSpringJointRecordId = (jointRecord, sourceObject, targetObject) => {
+  const rawJointId = jointRecord && typeof jointRecord.id === 'string'
+    ? jointRecord.id.trim()
+    : '';
+  return rawJointId || createPhysicsSpringJointPairKey(sourceObject, targetObject);
+};
+
+const readRapierImpulseJointHandle = (impulseJoint) => (
+  impulseJoint && Number.isFinite(Number(impulseJoint.handle))
+    ? Number(impulseJoint.handle)
+    : null
+);
+
+const createPhysicsSpringJointRecord = (
+  jointId,
+  targetObject,
+  restLength,
+  stiffness,
+  damping
+) => ({
+  type: 'spring',
+  id: jointId,
+  targetObject,
+  restLength: normalizePhysicsSpringRestLength(restLength),
+  stiffness: normalizePhysicsSpringStiffness(stiffness),
+  damping: normalizePhysicsSpringDamping(damping),
+  jointHandle: null,
+  impulseJoint: null,
+  isUserJoint: true
+});
+
+const hasPhysicsSpringJointBetweenObjects = (firstObject, secondObject) => (
+  readPhysicsSpringJointRecords(firstObject).some((jointRecord) => (
+    jointRecord && jointRecord.targetObject === secondObject
+  )) ||
+  readPhysicsSpringJointRecords(secondObject).some((jointRecord) => (
+    jointRecord && jointRecord.targetObject === firstObject
+  ))
+);
+
+const writePhysicsSpringJointHandleToObjectRecord = (
+  ownerObject,
+  partnerObject,
+  jointId,
+  jointRecord,
+  impulseJoint
+) => {
+  const records = ensurePhysicsSpringJointRecords(ownerObject);
+  let recordIndex = records.findIndex((candidateRecord) => (
+    candidateRecord &&
+    (
+      (typeof candidateRecord.id === 'string' && candidateRecord.id === jointId) ||
+      (!candidateRecord.id && candidateRecord.targetObject === partnerObject)
+    )
+  ));
+  if (recordIndex < 0) {
+    if (!jointRecord || jointRecord.isUserJoint !== true) {
+      return null;
+    }
+    records.push(createPhysicsSpringJointRecord(
+      jointId,
+      partnerObject,
+      jointRecord.restLength,
+      jointRecord.stiffness,
+      jointRecord.damping
+    ));
+    recordIndex = records.length - 1;
+  }
+
+  const existingRecord = records[recordIndex];
+  const nextRecord = Object.isFrozen(existingRecord)
+    ? { ...existingRecord }
+    : existingRecord;
+  nextRecord.id = jointId;
+  nextRecord.targetObject = partnerObject;
+  nextRecord.jointHandle = readRapierImpulseJointHandle(impulseJoint);
+  nextRecord.impulseJoint = impulseJoint || null;
+  records[recordIndex] = nextRecord;
+  return nextRecord;
+};
+
+const clearScenePhysicsSpringJointHandles = (sceneObjects) => {
+  for (const sceneObject of sceneObjects) {
+    const records = readPhysicsSpringJointRecords(sceneObject);
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      const jointRecord = records[recordIndex];
+      if (!jointRecord) {
+        continue;
+      }
+      const nextRecord = Object.isFrozen(jointRecord)
+        ? { ...jointRecord }
+        : jointRecord;
+      nextRecord.jointHandle = null;
+      nextRecord.impulseJoint = null;
+      records[recordIndex] = nextRecord;
+    }
+  }
+};
+
+const removePhysicsSpringJointRecordsById = (sceneObjects, jointId) => {
+  let removedRecordCount = 0;
+  for (const sceneObject of sceneObjects) {
+    const records = readPhysicsSpringJointRecords(sceneObject);
+    if (records.length === 0) {
+      continue;
+    }
+
+    for (let recordIndex = records.length - 1; recordIndex >= 0; recordIndex -= 1) {
+      const jointRecord = records[recordIndex];
+      if (
+        jointRecord &&
+        readPhysicsSpringJointRecordId(jointRecord, sceneObject, jointRecord.targetObject) === jointId
+      ) {
+        records.splice(recordIndex, 1);
+        removedRecordCount += 1;
+      }
+    }
+  }
+  return removedRecordCount;
+};
+
+const removePhysicsSpringJointRecordsForObject = (sceneObjects, removedObject) => {
+  const jointIdsToRemove = new Set();
+  for (const sceneObject of sceneObjects) {
+    for (const jointRecord of readPhysicsSpringJointRecords(sceneObject)) {
+      if (!jointRecord) {
+        continue;
+      }
+      if (sceneObject === removedObject || jointRecord.targetObject === removedObject) {
+        jointIdsToRemove.add(readPhysicsSpringJointRecordId(jointRecord, sceneObject, jointRecord.targetObject));
+      }
+    }
+  }
+
+  let removedRecordCount = 0;
+  for (const jointId of jointIdsToRemove) {
+    removedRecordCount += removePhysicsSpringJointRecordsById(sceneObjects, jointId);
+  }
+  return removedRecordCount;
+};
+
+const findScenePhysicsSpringJointRecordById = (sceneObjects, jointId) => {
+  for (const sceneObject of sceneObjects) {
+    for (const jointRecord of readPhysicsSpringJointRecords(sceneObject)) {
+      if (jointRecord && jointRecord.id === jointId) {
+        return Object.freeze({ ownerObject: sceneObject, jointRecord });
+      }
+    }
+  }
+  return null;
+};
+
+const readUniquePhysicsSpringJointRecords = (sceneObject) => {
+  const uniqueJointRecords = [];
+  const seenJointIds = new Set();
+  for (const jointRecord of readPhysicsSpringJointRecords(sceneObject)) {
+    if (!jointRecord || !jointRecord.targetObject) {
+      continue;
+    }
+    const jointId = readPhysicsSpringJointRecordId(jointRecord, sceneObject, jointRecord.targetObject);
+    if (seenJointIds.has(jointId)) {
+      continue;
+    }
+    seenJointIds.add(jointId);
+    uniqueJointRecords.push(jointRecord);
+  }
+  return uniqueJointRecords;
+};
+
+const readSceneObjectPhysicsJointCenter = (sceneObject) => {
+  if (sceneObject instanceof CubeSceneObject) {
+    return sceneObject.getCenterPosition();
+  }
+  if (sceneObject instanceof SphereSceneObject) {
+    return sceneObject.getTranslatedCenter();
+  }
+  return ORIGIN_VECTOR;
+};
+
+const measurePhysicsSpringRestLengthBetweenObjects = (firstObject, secondObject) => {
+  const firstCenter = readSceneObjectPhysicsJointCenter(firstObject);
+  const secondCenter = readSceneObjectPhysicsJointCenter(secondObject);
+  const deltaX = secondCenter[0] - firstCenter[0];
+  const deltaY = secondCenter[1] - firstCenter[1];
+  const deltaZ = secondCenter[2] - firstCenter[2];
+  return normalizePhysicsSpringRestLength(Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ));
+};
+
 const writeSceneObjectAuthoredTransform = (sceneObject, shouldOverwrite = false) => {
   if (sceneObject instanceof SphereSceneObject) {
     if (shouldOverwrite || !sceneObject.authoredCenterPosition) {
@@ -5381,6 +6138,7 @@ class RapierPhysicsWorld {
   constructor(rapierRuntime, world) {
     this.rapierRuntime = rapierRuntime;
     this.world = world;
+    this.physicsBodies = new Map();
     this.dynamicPhysicsBodies = new Map();
     this.dynamicPhysicsObjects = [];
     this.dynamicPhysicsRigidBodies = [];
@@ -5399,12 +6157,14 @@ class RapierPhysicsWorld {
     const previousDynamicBodyCount = this.dynamicPhysicsObjects.length;
     this.rebuildSceneCallCount += 1;
     this.world = createRapierWorld(this.rapierRuntime);
+    this.physicsBodies = new Map();
     this.dynamicPhysicsBodies = new Map();
     this.dynamicPhysicsObjects = [];
     this.dynamicPhysicsRigidBodies = [];
     this.physicsAccumulatorSeconds = 0;
     this.sleepCheckCooldownSeconds = 0;
     this.shouldCheckDynamicPhysicsSleep = true;
+    clearScenePhysicsSpringJointHandles(sceneObjects);
     const [, gravityError] = this.applyGlobalGravity(applicationState);
     if (gravityError) {
       return returnDiagnosticFailure(
@@ -5773,39 +6533,33 @@ class RapierPhysicsWorld {
         continue;
       }
 
-      const sourceBody = this.dynamicPhysicsBodies.get(sourceObject);
+      const sourceBody = this.physicsBodies.get(sourceObject);
       if (!sourceBody) {
         continue;
       }
 
       for (const springJointSpec of springJointSpecs) {
         const targetObject = springJointSpec && springJointSpec.targetObject;
-        const targetBody = this.dynamicPhysicsBodies.get(targetObject);
+        const targetBody = this.physicsBodies.get(targetObject);
         if (!targetBody) {
           continue;
         }
 
-        const sourceId = String(sourceObject.objectId);
-        const targetId = String(targetObject.objectId);
-        const jointKey = sourceId < targetId ? `${sourceId}:${targetId}` : `${targetId}:${sourceId}`;
+        const jointKey = readPhysicsSpringJointRecordId(springJointSpec, sourceObject, targetObject);
         if (createdJointKeys.has(jointKey)) {
           continue;
         }
 
         const jointData = this.rapierRuntime.JointData.spring(
-          normalizeBoundedNumber(springJointSpec.restLength, DEFAULT_PARTICLE_FLUID_SPRING_REST_LENGTH, 0.02, 1),
-          normalizeBoundedNumber(
-            springJointSpec.stiffness,
-            DEFAULT_PARTICLE_FLUID_SPRING_STIFFNESS,
-            MIN_PARTICLE_FLUID_SPRING_STIFFNESS,
-            MAX_PARTICLE_FLUID_SPRING_STIFFNESS
-          ),
-          normalizeBoundedNumber(springJointSpec.damping, 8, 0, 80),
+          normalizePhysicsSpringRestLength(springJointSpec.restLength),
+          normalizePhysicsSpringStiffness(springJointSpec.stiffness),
+          normalizePhysicsSpringDamping(springJointSpec.damping),
           { x: 0, y: 0, z: 0 },
           { x: 0, y: 0, z: 0 }
         );
+        let impulseJoint = null;
         try {
-          this.world.createImpulseJoint(jointData, sourceBody, targetBody, true);
+          impulseJoint = this.world.createImpulseJoint(jointData, sourceBody, targetBody, true);
         } catch (errorValue) {
           return returnFailure(
             'rapier-spring-joint-create-failed',
@@ -5813,6 +6567,20 @@ class RapierPhysicsWorld {
             readErrorDetails(errorValue)
           );
         }
+        writePhysicsSpringJointHandleToObjectRecord(
+          sourceObject,
+          targetObject,
+          jointKey,
+          springJointSpec,
+          impulseJoint
+        );
+        writePhysicsSpringJointHandleToObjectRecord(
+          targetObject,
+          sourceObject,
+          jointKey,
+          springJointSpec,
+          impulseJoint
+        );
         createdJointKeys.add(jointKey);
         createdJointCount += 1;
       }
@@ -5822,6 +6590,35 @@ class RapierPhysicsWorld {
       logDiagnostic('debug', 'physics', 'Rapier spring joints created.', Object.freeze({ createdJointCount }));
     }
     return returnSuccess(createdJointCount);
+  }
+
+  removeSpringJoint(jointRecord) {
+    if (!jointRecord) {
+      return returnSuccess(false);
+    }
+    if (!this.world || typeof this.world.removeImpulseJoint !== 'function') {
+      return returnFailure('rapier-spring-joint-removal-unavailable', 'Rapier spring joint removal is not available.');
+    }
+
+    const jointRemovalTarget = jointRecord.impulseJoint || (
+      Number.isFinite(Number(jointRecord.jointHandle))
+        ? Number(jointRecord.jointHandle)
+        : null
+    );
+    if (jointRemovalTarget === null) {
+      return returnSuccess(false);
+    }
+
+    try {
+      this.world.removeImpulseJoint(jointRemovalTarget, true);
+    } catch (errorValue) {
+      return returnFailure(
+        'rapier-spring-joint-remove-failed',
+        'Spring joint could not be removed from the Rapier world.',
+        readErrorDetails(errorValue)
+      );
+    }
+    return returnSuccess(true);
   }
 
   createKinematicBodyDescription(centerPosition) {
@@ -5842,10 +6639,58 @@ class RapierPhysicsWorld {
     return bodyDescription;
   }
 
+  createFixedBodyDescription(centerPosition) {
+    const rigidBodyDescriptionFactory = this.rapierRuntime.RigidBodyDesc;
+    if (
+      !rigidBodyDescriptionFactory ||
+      typeof rigidBodyDescriptionFactory.fixed !== 'function'
+    ) {
+      return null;
+    }
+
+    return rigidBodyDescriptionFactory
+      .fixed()
+      .setTranslation(centerPosition[0], centerPosition[1], centerPosition[2]);
+  }
+
   addFixedCube(cubeObject) {
+    const centerPosition = cubeObject.getCenterPosition();
+    const bodyDescription = this.createFixedBodyDescription(centerPosition);
+    if (bodyDescription) {
+      let rigidBody = null;
+      try {
+        rigidBody = this.world.createRigidBody(bodyDescription);
+      } catch (errorValue) {
+        return returnDiagnosticFailure(
+          'error',
+          'physics',
+          'Rapier fixed cube body create call failed.',
+          Object.freeze({
+            code: 'rapier-fixed-cube-body-create-failed',
+            message: 'Fixed cube body could not be created.',
+            details: readErrorDetails(errorValue)
+          }),
+          Object.freeze({
+            objectId: cubeObject.objectId,
+            entityId: cubeObject.entityId,
+            details: readErrorDetails(errorValue)
+          })
+        );
+      }
+
+      const bodyColliderDescription = this.rapierRuntime.ColliderDesc
+        .cuboid(cubeObject.getHalfExtents()[0], cubeObject.getHalfExtents()[1], cubeObject.getHalfExtents()[2])
+        .setFriction(readSceneObjectPhysicsFriction(cubeObject))
+        .setRestitution(readSceneObjectPhysicsRestitution(cubeObject))
+        .setCollisionGroups(cubeObject.collideWithObjects !== false
+          ? PHYSICS_COLLISION_MASK_OBJECTS
+          : PHYSICS_COLLISION_MASK_GHOST);
+      return this.attachFixedPhysicsBody(cubeObject, rigidBody, bodyColliderDescription);
+    }
+
     const colliderDescription = createRapierCuboidCollider(
       this.rapierRuntime,
-      cubeObject.getCenterPosition(),
+      centerPosition,
       cubeObject.getHalfExtents(),
       readSceneObjectPhysicsFriction(cubeObject),
       readSceneObjectPhysicsRestitution(cubeObject)
@@ -5957,6 +6802,39 @@ class RapierPhysicsWorld {
 
   addFixedSphere(sphereObject) {
     const centerPosition = sphereObject.getTranslatedCenter();
+    const bodyDescription = this.createFixedBodyDescription(centerPosition);
+    if (bodyDescription) {
+      let rigidBody = null;
+      try {
+        rigidBody = this.world.createRigidBody(bodyDescription);
+      } catch (errorValue) {
+        return returnDiagnosticFailure(
+          'error',
+          'physics',
+          'Rapier fixed sphere body create call failed.',
+          Object.freeze({
+            code: 'rapier-fixed-sphere-body-create-failed',
+            message: 'Fixed sphere body could not be created.',
+            details: readErrorDetails(errorValue)
+          }),
+          Object.freeze({
+            objectId: sphereObject.objectId,
+            entityId: sphereObject.entityId,
+            details: readErrorDetails(errorValue)
+          })
+        );
+      }
+
+      const bodyColliderDescription = this.rapierRuntime.ColliderDesc
+        .ball(sphereObject.radius)
+        .setFriction(readSceneObjectPhysicsFriction(sphereObject))
+        .setRestitution(readSceneObjectPhysicsRestitution(sphereObject))
+        .setCollisionGroups(sphereObject.collideWithObjects !== false
+          ? PHYSICS_COLLISION_MASK_OBJECTS
+          : PHYSICS_COLLISION_MASK_GHOST);
+      return this.attachFixedPhysicsBody(sphereObject, rigidBody, bodyColliderDescription);
+    }
+
     const colliderDescription = this.rapierRuntime.ColliderDesc
       .ball(sphereObject.radius)
       .setTranslation(centerPosition[0], centerPosition[1], centerPosition[2])
@@ -6093,6 +6971,7 @@ class RapierPhysicsWorld {
     }
 
     this.dynamicPhysicsBodies.set(sceneObject, rigidBody);
+    this.physicsBodies.set(sceneObject, rigidBody);
     this.dynamicPhysicsObjects.push(sceneObject);
     this.dynamicPhysicsRigidBodies.push(rigidBody);
     this.shouldCheckDynamicPhysicsSleep = true;
@@ -6124,6 +7003,36 @@ class RapierPhysicsWorld {
       return returnFailure(attachError.code, attachError.message, attachError.details);
     }
 
+    this.physicsBodies.set(sceneObject, rigidBody);
+    return returnSuccess(undefined);
+  }
+
+  attachFixedPhysicsBody(sceneObject, rigidBody, colliderDescription) {
+    try {
+      this.world.createCollider(colliderDescription, rigidBody);
+    } catch (errorValue) {
+      return returnDiagnosticFailure(
+        'error',
+        'physics',
+        'Rapier fixed body collider attach failed.',
+        Object.freeze({
+          code: 'rapier-fixed-body-collider-attach-failed',
+          message: 'Fixed body collider could not be attached.',
+          details: readErrorDetails(errorValue)
+        }),
+        Object.freeze({
+          objectId: sceneObject.objectId,
+          entityId: sceneObject.entityId,
+          details: readErrorDetails(errorValue)
+        })
+      );
+    }
+    const [, attachError] = sceneObject.attachPhysicsRigidBody(rigidBody);
+    if (attachError) {
+      return returnFailure(attachError.code, attachError.message, attachError.details);
+    }
+
+    this.physicsBodies.set(sceneObject, rigidBody);
     return returnSuccess(undefined);
   }
 
@@ -6154,6 +7063,7 @@ class RapierPhysicsWorld {
     }
 
     sceneObject.isPhysicsEnabled = false;
+    this.physicsBodies.delete(sceneObject);
     this.dynamicPhysicsBodies.delete(sceneObject);
     this.dynamicPhysicsObjects.splice(bodyIndex, 1);
     this.dynamicPhysicsRigidBodies.splice(bodyIndex, 1);
@@ -6835,11 +7745,17 @@ const readEffectiveRenderQuality = (applicationState) => {
     raysPerPixel: isInteractiveQualityThrottleActive
       ? Math.min(configuredRaysPerPixel, INTERACTIVE_QUALITY_RAYS_PER_PIXEL)
       : configuredRaysPerPixel,
-    lightBounceCount: isInteractiveQualityThrottleActive
-      ? Math.min(configuredLightBounceCount, INTERACTIVE_QUALITY_LIGHT_BOUNCE_COUNT)
-      : configuredLightBounceCount
+    lightBounceCount: configuredLightBounceCount
   });
 };
+
+const isDraftQualityPresetState = (applicationState) => (
+  QUALITY_PRESET_STATE_KEYS.every((stateKey) => applicationState[stateKey] === QUALITY_PRESETS.draft[stateKey])
+);
+
+const shouldUseDraftPostProcessBypass = (applicationState) => (
+  isDraftQualityPresetState(applicationState)
+);
 
 class PathTracer {
   constructor(
@@ -6850,6 +7766,7 @@ class PathTracer {
     textures,
     displayTextures,
     skyTexture,
+    materialAlbedoTexture,
     textureType,
     renderTextureTypes,
     renderProgram,
@@ -6870,6 +7787,7 @@ class PathTracer {
       returnSuccess(displayTextures[1])
     ]);
     this.skyTexture = skyTexture;
+    this.materialAlbedoTexture = materialAlbedoTexture;
     this.textureType = textureType;
     this.renderTextureTypes = renderTextureTypes;
     this.textureTypeIndex = 0;
@@ -6897,6 +7815,7 @@ class PathTracer {
     this.currentRaysPerPixel = DEFAULT_RAYS_PER_PIXEL;
     this.lastRenderedSampleCount = 0;
     this.wasInteractiveQualityThrottleActive = false;
+    this.usesMaterialAlbedoTexture = false;
     this.hasLoggedAccumulationPhase = false;
     this.hasLoggedTemporalDisplayPhase = false;
     this.hasLoggedDisplayCompositePhase = false;
@@ -7048,6 +7967,15 @@ class PathTracer {
       return returnFailure(skyTextureError.code, skyTextureError.message, skyTextureError.details);
     }
 
+    const [materialAlbedoTexture, materialAlbedoTextureError] = createProceduralMaterialAlbedoTexture(webGlContext);
+    if (materialAlbedoTextureError) {
+      return returnFailure(
+        materialAlbedoTextureError.code,
+        materialAlbedoTextureError.message,
+        materialAlbedoTextureError.details
+      );
+    }
+
     webGlContext.bindTexture(webGlContext.TEXTURE_2D, null);
     webGlContext.bindFramebuffer(webGlContext.FRAMEBUFFER, null);
 
@@ -7095,6 +8023,7 @@ class PathTracer {
       [firstTexture, secondTexture],
       [firstDisplayTexture, secondDisplayTexture],
       skyTexture,
+      materialAlbedoTexture,
       textureType,
       renderTextureTypes,
       renderProgram,
@@ -7130,6 +8059,7 @@ class PathTracer {
       return returnFailure(staticBenchmarkError.code, staticBenchmarkError.message, staticBenchmarkError.details);
     }
     this.usesSkyTexture = renderSettingsUseSkyTexture(renderSettings);
+    this.usesMaterialAlbedoTexture = sceneUsesMaterialTextureProjection(this.sceneObjects);
     this.tracerProgram = nextTracerProgram;
     this.tracerVertexAttribute = nextTracerVertexAttribute;
     this.tracerUniformLocations = createUniformLocationCache();
@@ -7568,12 +8498,29 @@ class PathTracer {
         }
       }
 
+      if (this.usesMaterialAlbedoTexture) {
+        const [, materialSamplerError] = setSamplerUniform(
+          webGlContext,
+          this.tracerProgram,
+          this.tracerUniformLocations,
+          'materialAlbedoTexture',
+          2
+        );
+        if (materialSamplerError) {
+          return returnFailure(materialSamplerError.code, materialSamplerError.message, materialSamplerError.details);
+        }
+      }
+
       this.hasSetTracerSamplerUniforms = true;
     }
 
     if (this.usesSkyTexture) {
       webGlContext.activeTexture(webGlContext.TEXTURE1);
       webGlContext.bindTexture(webGlContext.TEXTURE_2D, this.skyTexture);
+    }
+    if (this.usesMaterialAlbedoTexture) {
+      webGlContext.activeTexture(webGlContext.TEXTURE2);
+      webGlContext.bindTexture(webGlContext.TEXTURE_2D, this.materialAlbedoTexture);
     }
     webGlContext.activeTexture(webGlContext.TEXTURE0);
     webGlContext.bindBuffer(webGlContext.ARRAY_BUFFER, this.vertexBuffer);
@@ -7760,19 +8707,12 @@ class PathTracer {
     );
   }
 
-  shouldBypassSettledTemporalDisplay(temporalBlendFrames, motionBlurStrength) {
-    if (motionBlurStrength > MIN_MOTION_BLUR_STRENGTH) {
-      return false;
+  readRenderTexture(applicationState) {
+    if (shouldUseDraftPostProcessBypass(applicationState)) {
+      this.hasDisplayHistory = false;
+      return this.textureSuccessResults[this.currentTextureIndex];
     }
 
-    const settledSampleCount = Math.max(
-      TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR,
-      temporalBlendFrames * this.currentRaysPerPixel
-    );
-    return this.sampleCount >= settledSampleCount;
-  }
-
-  readRenderTexture(applicationState) {
     const temporalBlendFrames = normalizeBoundedInteger(
       applicationState.temporalBlendFrames,
       DEFAULT_TEMPORAL_BLEND_FRAMES,
@@ -7791,11 +8731,6 @@ class PathTracer {
     );
 
     if (!this.shouldUseTemporalDisplayPass(temporalBlendFrames, motionBlurStrength, denoiserStrength)) {
-      this.hasDisplayHistory = false;
-      return this.textureSuccessResults[this.currentTextureIndex];
-    }
-
-    if (this.shouldBypassSettledTemporalDisplay(temporalBlendFrames, motionBlurStrength)) {
       this.hasDisplayHistory = false;
       return this.textureSuccessResults[this.currentTextureIndex];
     }
@@ -7908,6 +8843,9 @@ class PathTracer {
     }
 
     const webGlContext = this.webGlContext;
+    const shouldBypassDraftPostProcess = shouldUseDraftPostProcessBypass(applicationState);
+    const effectiveBloomStrength = shouldBypassDraftPostProcess ? 0 : applicationState.bloomStrength;
+    const effectiveGlareStrength = shouldBypassDraftPostProcess ? 0 : applicationState.glareStrength;
     useWebGlProgramIfNeeded(webGlContext, this.renderProgram);
     webGlContext.activeTexture(webGlContext.TEXTURE0);
     webGlContext.bindTexture(webGlContext.TEXTURE_2D, renderTexture);
@@ -7939,9 +8877,9 @@ class PathTracer {
     renderUniformValues.colorSaturation = applicationState.colorSaturation;
     renderUniformValues.colorGamma = applicationState.colorGamma;
     renderUniformValues.toneMappingMode = applicationState.toneMappingMode;
-    renderUniformValues.bloomStrength = applicationState.bloomStrength;
+    renderUniformValues.bloomStrength = effectiveBloomStrength;
     renderUniformValues.bloomThreshold = applicationState.bloomThreshold;
-    renderUniformValues.glareStrength = applicationState.glareStrength;
+    renderUniformValues.glareStrength = effectiveGlareStrength;
 
     setChangedCachedScalarUniformValues(
       webGlContext,
@@ -7955,9 +8893,10 @@ class PathTracer {
     if (!this.hasLoggedDisplayCompositePhase) {
       this.hasLoggedDisplayCompositePhase = true;
       logDiagnostic('debug', 'renderer', 'Display composite pass completed.', Object.freeze({
-        bloomStrength: applicationState.bloomStrength,
+        postProcessMode: shouldBypassDraftPostProcess ? 'draft-bypass' : 'full',
+        bloomStrength: effectiveBloomStrength,
         bloomThreshold: applicationState.bloomThreshold,
-        glareStrength: applicationState.glareStrength,
+        glareStrength: effectiveGlareStrength,
         durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - phaseStartMilliseconds)
       }));
     }
@@ -7984,6 +8923,293 @@ class PathTracer {
   }
 }
 
+const normalizeSceneEntityId = (entityId) => {
+  if (entityId === null || entityId === undefined) {
+    return null;
+  }
+  const normalizedEntityId = String(entityId);
+  return normalizedEntityId.length > 0 ? normalizedEntityId : null;
+};
+
+const normalizeSceneEntityIdList = (entityIds) => {
+  if (!Array.isArray(entityIds)) {
+    return Object.freeze([]);
+  }
+  const seenEntityIds = new Set();
+  const normalizedEntityIds = [];
+  for (const entityId of entityIds) {
+    const normalizedEntityId = normalizeSceneEntityId(entityId);
+    if (normalizedEntityId === null || seenEntityIds.has(normalizedEntityId)) {
+      continue;
+    }
+    seenEntityIds.add(normalizedEntityId);
+    normalizedEntityIds.push(normalizedEntityId);
+  }
+  return Object.freeze(normalizedEntityIds);
+};
+
+const areSceneEntityIdListsEqual = (leftEntityIds, rightEntityIds) => (
+  leftEntityIds.length === rightEntityIds.length &&
+  leftEntityIds.every((entityId, entityIndex) => entityId === rightEntityIds[entityIndex])
+);
+
+const mergeSceneEntityIdLists = (...entityIdLists) => (
+  normalizeSceneEntityIdList(entityIdLists.flat())
+);
+
+const readSceneObjectEntityId = (sceneObject) => {
+  if (!sceneObject || typeof sceneObject !== 'object') {
+    return null;
+  }
+  return normalizeSceneEntityId(sceneObject.entityId ?? sceneObject.objectId);
+};
+
+const readSceneObjectParentEntityId = (sceneObject) => (
+  normalizeSceneEntityId(sceneObject && sceneObject.parentEntityId)
+);
+
+const isGroupEntitySceneObject = (sceneObject) => (
+  Boolean(sceneObject) &&
+  typeof sceneObject === 'object' &&
+  (
+    sceneObject instanceof GroupEntity ||
+    sceneObject.isGroup === true ||
+    sceneObject.sceneItemKind === 'group' ||
+    sceneObject.kind === 'group' ||
+    sceneObject.type === 'group' ||
+    Array.isArray(sceneObject.childEntityIds)
+  )
+);
+
+const isRenderableSceneObject = (sceneObject) => (
+  Boolean(sceneObject) &&
+  typeof sceneObject === 'object' &&
+  !isGroupEntitySceneObject(sceneObject) &&
+  typeof sceneObject.getGlobalCode === 'function' &&
+  typeof sceneObject.getIntersectCode === 'function' &&
+  typeof sceneObject.getShadowTestCode === 'function' &&
+  typeof sceneObject.getMinimumIntersectCode === 'function' &&
+  typeof sceneObject.getNormalCalculationCode === 'function' &&
+  typeof sceneObject.cacheUniformLocations === 'function' &&
+  typeof sceneObject.setUniforms === 'function'
+);
+
+const syncSceneGroupEntityChildren = (sceneObjects) => {
+  const objectByEntityId = new Map();
+  for (const sceneObject of sceneObjects) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    if (entityId !== null && !objectByEntityId.has(entityId)) {
+      objectByEntityId.set(entityId, sceneObject);
+    }
+  }
+
+  const groupObjects = sceneObjects.filter(isGroupEntitySceneObject);
+  for (const sceneObject of sceneObjects) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    const parentEntityId = readSceneObjectParentEntityId(sceneObject);
+    if (parentEntityId === null) {
+      continue;
+    }
+    const parentObject = objectByEntityId.get(parentEntityId);
+    if (parentEntityId === entityId || !isGroupEntitySceneObject(parentObject)) {
+      sceneObject.parentEntityId = null;
+    }
+  }
+
+  for (const groupObject of groupObjects) {
+    const groupEntityId = readSceneObjectEntityId(groupObject);
+    if (groupEntityId === null) {
+      continue;
+    }
+    for (const childEntityId of normalizeSceneEntityIdList(groupObject.childEntityIds)) {
+      const childObject = objectByEntityId.get(childEntityId);
+      if (childObject && childObject !== groupObject) {
+        childObject.parentEntityId = groupEntityId;
+      }
+    }
+  }
+
+  for (const sceneObject of sceneObjects) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    let parentEntityId = readSceneObjectParentEntityId(sceneObject);
+    const visitedParentIds = new Set([entityId]);
+    while (parentEntityId !== null) {
+      if (visitedParentIds.has(parentEntityId)) {
+        sceneObject.parentEntityId = null;
+        break;
+      }
+      visitedParentIds.add(parentEntityId);
+      parentEntityId = readSceneObjectParentEntityId(objectByEntityId.get(parentEntityId));
+    }
+  }
+
+  for (const groupObject of groupObjects) {
+    const groupEntityId = readSceneObjectEntityId(groupObject);
+    if (groupEntityId === null) {
+      continue;
+    }
+    const childEntityIds = sceneObjects
+      .filter((sceneObject) => sceneObject !== groupObject && readSceneObjectParentEntityId(sceneObject) === groupEntityId)
+      .map(readSceneObjectEntityId)
+      .filter((entityId) => entityId !== null);
+    if (typeof groupObject.syncChildEntityIds === 'function') {
+      const [, syncError] = groupObject.syncChildEntityIds(childEntityIds);
+      if (syncError) {
+        return returnFailure(syncError.code, syncError.message, syncError.details);
+      }
+    } else {
+      groupObject.childEntityIds = normalizeSceneEntityIdList(childEntityIds);
+    }
+    if (typeof groupObject.setSceneObjects === 'function') {
+      const [, sceneObjectsError] = groupObject.setSceneObjects(sceneObjects);
+      if (sceneObjectsError) {
+        return returnFailure(sceneObjectsError.code, sceneObjectsError.message, sceneObjectsError.details);
+      }
+    }
+    if (groupObject.isHidden) {
+      for (const childEntityId of groupObject.childEntityIds) {
+        const childObject = objectByEntityId.get(childEntityId);
+        if (childObject) {
+          childObject.isHidden = true;
+        }
+      }
+    }
+    if (groupObject.isLocked) {
+      for (const childEntityId of groupObject.childEntityIds) {
+        const childObject = objectByEntityId.get(childEntityId);
+        if (childObject) {
+          childObject.isLocked = true;
+        }
+      }
+    }
+  }
+
+  return returnSuccess(undefined);
+};
+
+const findSceneObjectByEntityId = (sceneObjects, entityId) => {
+  const normalizedEntityId = normalizeSceneEntityId(entityId);
+  if (normalizedEntityId === null) {
+    return null;
+  }
+  return sceneObjects.find((sceneObject) => readSceneObjectEntityId(sceneObject) === normalizedEntityId) || null;
+};
+
+const createSceneObjectSourceIndexMap = (sceneObjects) => {
+  const sourceIndexByEntityId = new Map();
+  sceneObjects.forEach((sceneObject, sceneObjectIndex) => {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    if (entityId !== null && !sourceIndexByEntityId.has(entityId)) {
+      sourceIndexByEntityId.set(entityId, sceneObjectIndex);
+    }
+  });
+  return sourceIndexByEntityId;
+};
+
+const createSceneTreeDisplayEntries = (sceneObjects) => {
+  const objectByEntityId = new Map();
+  const sourceIndexByEntityId = createSceneObjectSourceIndexMap(sceneObjects);
+  for (const sceneObject of sceneObjects) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    if (entityId !== null && !objectByEntityId.has(entityId)) {
+      objectByEntityId.set(entityId, sceneObject);
+    }
+  }
+
+  const childrenByParentEntityId = new Map();
+  const rootObjects = [];
+  for (const sceneObject of sceneObjects) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    const parentEntityId = readSceneObjectParentEntityId(sceneObject);
+    if (
+      entityId === null ||
+      parentEntityId === null ||
+      parentEntityId === entityId ||
+      !objectByEntityId.has(parentEntityId)
+    ) {
+      rootObjects.push(sceneObject);
+      continue;
+    }
+
+    const childObjects = childrenByParentEntityId.get(parentEntityId) || [];
+    childObjects.push(sceneObject);
+    childrenByParentEntityId.set(parentEntityId, childObjects);
+  }
+
+  const sortSceneObjectsForParent = (parentObject, childObjects) => {
+    const childEntityIds = Array.isArray(parentObject && parentObject.childEntityIds)
+      ? parentObject.childEntityIds.map(normalizeSceneEntityId)
+      : [];
+    const childOrderByEntityId = new Map();
+    childEntityIds.forEach((childEntityId, childIndex) => {
+      if (childEntityId !== null && !childOrderByEntityId.has(childEntityId)) {
+        childOrderByEntityId.set(childEntityId, childIndex);
+      }
+    });
+    return childObjects.slice().sort((leftObject, rightObject) => {
+      const leftEntityId = readSceneObjectEntityId(leftObject);
+      const rightEntityId = readSceneObjectEntityId(rightObject);
+      const leftChildOrder = childOrderByEntityId.has(leftEntityId)
+        ? childOrderByEntityId.get(leftEntityId)
+        : Number.POSITIVE_INFINITY;
+      const rightChildOrder = childOrderByEntityId.has(rightEntityId)
+        ? childOrderByEntityId.get(rightEntityId)
+        : Number.POSITIVE_INFINITY;
+      if (leftChildOrder !== rightChildOrder) {
+        return leftChildOrder - rightChildOrder;
+      }
+      return (sourceIndexByEntityId.get(leftEntityId) ?? 0) - (sourceIndexByEntityId.get(rightEntityId) ?? 0);
+    });
+  };
+
+  const displayEntries = [];
+  const visitedEntityIds = new Set();
+  const appendSceneObjectSubtree = (sceneObject, depth) => {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    if (entityId === null || visitedEntityIds.has(entityId)) {
+      return;
+    }
+    visitedEntityIds.add(entityId);
+    displayEntries.push(Object.freeze({ sceneObject, depth }));
+    const childObjects = sortSceneObjectsForParent(sceneObject, childrenByParentEntityId.get(entityId) || []);
+    for (const childObject of childObjects) {
+      appendSceneObjectSubtree(childObject, depth + 1);
+    }
+  };
+
+  const sortedRootObjects = rootObjects.slice().sort((leftObject, rightObject) => {
+    const leftEntityId = readSceneObjectEntityId(leftObject);
+    const rightEntityId = readSceneObjectEntityId(rightObject);
+    return (sourceIndexByEntityId.get(leftEntityId) ?? 0) - (sourceIndexByEntityId.get(rightEntityId) ?? 0);
+  });
+  for (const rootObject of sortedRootObjects) {
+    appendSceneObjectSubtree(rootObject, 0);
+  }
+  for (const sceneObject of sceneObjects) {
+    appendSceneObjectSubtree(sceneObject, 0);
+  }
+  return Object.freeze(displayEntries);
+};
+
+const readSceneTreeSelectionRangeIds = (displayEntries, anchorEntityId, targetEntityId) => {
+  const normalizedAnchorEntityId = normalizeSceneEntityId(anchorEntityId);
+  const normalizedTargetEntityId = normalizeSceneEntityId(targetEntityId);
+  if (normalizedTargetEntityId === null) {
+    return Object.freeze([]);
+  }
+  const displayEntityIds = displayEntries
+    .map((displayEntry) => readSceneObjectEntityId(displayEntry.sceneObject))
+    .filter((entityId) => entityId !== null);
+  const targetIndex = displayEntityIds.indexOf(normalizedTargetEntityId);
+  const anchorIndex = displayEntityIds.indexOf(normalizedAnchorEntityId);
+  if (targetIndex < 0 || anchorIndex < 0) {
+    return Object.freeze([normalizedTargetEntityId]);
+  }
+  const rangeStartIndex = Math.min(anchorIndex, targetIndex);
+  const rangeEndIndex = Math.max(anchorIndex, targetIndex);
+  return Object.freeze(displayEntityIds.slice(rangeStartIndex, rangeEndIndex + 1));
+};
+
 class SelectionRenderer {
   constructor(webGlContext, vertexBuffer, indexBuffer, lineProgram, vertexAttribute, pathTracer) {
     this.webGlContext = webGlContext;
@@ -8003,7 +9229,8 @@ class SelectionRenderer {
       ? readUniformLocation(webGlContext, lineProgram, this.lineUniformLocations, 'modelviewProjection')
       : null;
     this.sceneObjects = [];
-    this.selectedObject = null;
+    this.selectedEntityId = null;
+    this.selectedEntityIds = Object.freeze([]);
     this.modelviewProjectionMatrix = createIdentityMat4();
     this.previousLineMinCorner = createVec3(Number.NaN, Number.NaN, Number.NaN);
     this.previousLineMaxCorner = createVec3(Number.NaN, Number.NaN, Number.NaN);
@@ -8074,18 +9301,99 @@ class SelectionRenderer {
   }
 
   setObjects(sceneObjects, renderSettings) {
-    const visibleSceneObjects = sceneObjects.filter((sceneObject) => !sceneObject.isHidden);
+    const visibleSceneObjects = sceneObjects.filter((sceneObject) => (
+      !sceneObject.isHidden &&
+      isRenderableSceneObject(sceneObject)
+    ));
     const [, tracerError] = this.pathTracer.setObjects(visibleSceneObjects, renderSettings);
     if (tracerError) {
       return returnFailure(tracerError.code, tracerError.message, tracerError.details);
     }
 
     this.sceneObjects = sceneObjects.slice();
-    if (!this.sceneObjects.includes(this.selectedObject)) {
-      this.selectedObject = null;
-    }
+    this.pruneSelectionToSceneObjects();
 
     return returnSuccess(undefined);
+  }
+
+  resolveSelectedObject(sceneObjects = this.sceneObjects) {
+    return findSceneObjectByEntityId(sceneObjects, this.selectedEntityId);
+  }
+
+  resolveSelectedObjects(sceneObjects = this.sceneObjects) {
+    if (this.selectedEntityIds.length === 0) {
+      return Object.freeze([]);
+    }
+    const selectedObjects = this.selectedEntityIds
+      .map((entityId) => findSceneObjectByEntityId(sceneObjects, entityId))
+      .filter(Boolean);
+    return Object.freeze(selectedObjects);
+  }
+
+  setSelectedEntityIds(entityIds, primaryEntityId = null, options = {}) {
+    const normalizedEntityIds = [...normalizeSceneEntityIdList(entityIds)];
+    let normalizedPrimaryEntityId = normalizeSceneEntityId(primaryEntityId);
+    if (normalizedPrimaryEntityId !== null && !normalizedEntityIds.includes(normalizedPrimaryEntityId)) {
+      normalizedEntityIds.unshift(normalizedPrimaryEntityId);
+    }
+    if (normalizedPrimaryEntityId === null && normalizedEntityIds.length > 0) {
+      normalizedPrimaryEntityId = normalizedEntityIds[0];
+    }
+    const nextEntityIds = Object.freeze(normalizedEntityIds);
+    const didSelectionChange = (
+      this.selectedEntityId !== normalizedPrimaryEntityId ||
+      !areSceneEntityIdListsEqual(this.selectedEntityIds, nextEntityIds)
+    );
+
+    this.selectedEntityId = normalizedPrimaryEntityId;
+    this.selectedEntityIds = nextEntityIds;
+    if (didSelectionChange && !options.skipSceneStoreSync) {
+      setSceneStoreSelectedItemIds(this.selectedEntityIds, this.selectedEntityId);
+    }
+    return this.resolveSelectedObject();
+  }
+
+  selectObject(sceneObject, options = {}) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    return this.setSelectedEntityIds(entityId === null ? [] : [entityId], entityId, options);
+  }
+
+  clearSelection(options = {}) {
+    return this.setSelectedEntityIds([], null, options);
+  }
+
+  syncSelectionFromSceneStore() {
+    const sceneStorePrimaryEntityId = normalizeSceneEntityId(sceneStoreSelectedItemId.value);
+    const sceneStoreEntityIds = normalizeSceneEntityIdList(sceneStoreSelectedItemIds.value);
+    const nextEntityIds = sceneStoreEntityIds.length > 0
+      ? sceneStoreEntityIds
+      : (sceneStorePrimaryEntityId === null ? Object.freeze([]) : Object.freeze([sceneStorePrimaryEntityId]));
+    if (
+      this.selectedEntityId === sceneStorePrimaryEntityId &&
+      areSceneEntityIdListsEqual(this.selectedEntityIds, nextEntityIds)
+    ) {
+      return this.resolveSelectedObject();
+    }
+    return this.setSelectedEntityIds(nextEntityIds, sceneStorePrimaryEntityId, { skipSceneStoreSync: true });
+  }
+
+  pruneSelectionToSceneObjects() {
+    const liveEntityIds = new Set(
+      this.sceneObjects
+        .map(readSceneObjectEntityId)
+        .filter((entityId) => entityId !== null)
+    );
+    const nextEntityIds = this.selectedEntityIds.filter((entityId) => liveEntityIds.has(entityId));
+    const nextPrimaryEntityId = liveEntityIds.has(this.selectedEntityId)
+      ? this.selectedEntityId
+      : nextEntityIds[0] ?? null;
+    if (
+      this.selectedEntityId === nextPrimaryEntityId &&
+      areSceneEntityIdListsEqual(this.selectedEntityIds, nextEntityIds)
+    ) {
+      return this.resolveSelectedObject();
+    }
+    return this.setSelectedEntityIds(nextEntityIds, nextPrimaryEntityId);
   }
 
   update(modelviewProjectionMatrix, inverseCameraMatrix, applicationState, didCameraChange, cameraRight, cameraUp) {
@@ -8104,6 +9412,8 @@ class SelectionRenderer {
   }
 
   render(applicationState, shouldDrawSelectionOutline = true) {
+    this.syncSelectionFromSceneStore();
+    const selectedObject = this.resolveSelectedObject();
     const [, pathTracerError] = this.pathTracer.render(applicationState);
     if (pathTracerError) {
       return returnFailure(pathTracerError.code, pathTracerError.message, pathTracerError.details);
@@ -8111,8 +9421,8 @@ class SelectionRenderer {
 
     if (
       !shouldDrawSelectionOutline ||
-      !this.selectedObject ||
-      this.selectedObject.isHidden ||
+      !selectedObject ||
+      selectedObject.isHidden ||
       !this.lineProgram ||
       this.vertexAttribute < 0
     ) {
@@ -8130,7 +9440,7 @@ class SelectionRenderer {
       setChangedCachedVec3UniformValue(
         webGlContext,
         this.lineCubeMinUniformLocation,
-        this.selectedObject.getMinCorner(),
+        selectedObject.getMinCorner(),
         this.previousLineMinCorner
       );
     }
@@ -8138,7 +9448,7 @@ class SelectionRenderer {
       setChangedCachedVec3UniformValue(
         webGlContext,
         this.lineCubeMaxUniformLocation,
-        this.selectedObject.getMaxCorner(),
+        selectedObject.getMaxCorner(),
         this.previousLineMaxCorner
       );
     }
@@ -9805,6 +11115,21 @@ const formatSceneObjectDisplayName = (sceneObject, lightObject) => {
   return readSceneObjectDisplayName(sceneObject);
 };
 
+const formatSceneObjectSpringJointSceneTreeAnnotation = (sceneObject, lightObject) => {
+  const connectedJointRecords = readUniquePhysicsSpringJointRecords(sceneObject)
+    .filter((jointRecord) => jointRecord.targetObject);
+  if (connectedJointRecords.length === 0) {
+    return '';
+  }
+
+  const partnerLabels = connectedJointRecords
+    .slice(0, 2)
+    .map((jointRecord) => formatSceneObjectDisplayName(jointRecord.targetObject, lightObject));
+  const remainingCount = connectedJointRecords.length - partnerLabels.length;
+  const suffix = remainingCount > 0 ? ` +${remainingCount}` : '';
+  return ` -- spring: ${partnerLabels.join(', ')}${suffix}`;
+};
+
 const isSceneLightInspectorObject = (sceneObject, lightObject) => (
   sceneObject === lightObject ||
   sceneObject instanceof AreaLightSceneObject
@@ -9906,6 +11231,20 @@ class UserInterfaceController {
     this.focusPickButton = focusPickButton;
     this.glossinessContainer = glossinessContainer;
     this.materialSelect = materialSelect;
+    this.materialUvProjectionModeSelect = readOptionalElement(
+      canvasElement.ownerDocument,
+      'material-uv-projection-mode'
+    );
+    this.materialUvScaleInput = readOptionalElement(canvasElement.ownerDocument, 'material-uv-scale');
+    this.materialUvScaleValueElement = readOptionalElement(canvasElement.ownerDocument, 'material-uv-scale-value');
+    this.materialUvBlendSharpnessInput = readOptionalElement(
+      canvasElement.ownerDocument,
+      'material-uv-blend-sharpness'
+    );
+    this.materialUvBlendSharpnessValueElement = readOptionalElement(
+      canvasElement.ownerDocument,
+      'material-uv-blend-sharpness-value'
+    );
     this.environmentSelect = environmentSelect;
     this.glossinessInput = glossinessInput;
     this.lightBounceInput = lightBounceInput;
@@ -9976,7 +11315,8 @@ class UserInterfaceController {
     this.shouldShowPanelsInFullscreen = false;
     this.actionToggleButtonCache = new Map();
     this.sceneObjects = [];
-    this.sceneTreeButtons = [];
+    this.sceneTreeButtons = new Map();
+    this.selectionAnchorEntityId = null;
     this.lightObject = new LightSceneObject(applicationState);
     this.shaderRebuildInputTimerId = 0;
     this.isMovingSelection = false;
@@ -10004,10 +11344,82 @@ class UserInterfaceController {
     this.previousFpsEyePosition = createVec3(Number.NaN, Number.NaN, Number.NaN);
   }
 
+  readSelectedObject() {
+    this.selectionRenderer.syncSelectionFromSceneStore();
+    return this.selectionRenderer.resolveSelectedObject(this.sceneObjects);
+  }
+
+  readSelectedObjects() {
+    this.selectionRenderer.syncSelectionFromSceneStore();
+    return this.selectionRenderer.resolveSelectedObjects(this.sceneObjects);
+  }
+
+  clearSceneSelection() {
+    this.selectionAnchorEntityId = null;
+    this.selectionRenderer.clearSelection();
+    return returnSuccess(undefined);
+  }
+
+  selectSingleSceneObject(sceneObject) {
+    const entityId = readSceneObjectEntityId(sceneObject);
+    this.selectionAnchorEntityId = entityId;
+    this.selectionRenderer.setSelectedEntityIds(entityId === null ? [] : [entityId], entityId);
+    return this.readSelectedObject();
+  }
+
+  selectSceneObjectWithModifiers(sceneObject, selectionOptions = {}) {
+    this.selectionRenderer.syncSelectionFromSceneStore();
+    const targetEntityId = readSceneObjectEntityId(sceneObject);
+    if (targetEntityId === null) {
+      if (!selectionOptions.isRangeSelection && !selectionOptions.isToggleSelection) {
+        this.clearSceneSelection();
+      }
+      return null;
+    }
+
+    const displayEntries = createSceneTreeDisplayEntries(this.sceneObjects);
+    const currentEntityIds = this.selectionRenderer.selectedEntityIds;
+    const currentPrimaryEntityId = this.selectionRenderer.selectedEntityId;
+    const isRangeSelection = Boolean(selectionOptions.isRangeSelection);
+    const isToggleSelection = Boolean(selectionOptions.isToggleSelection);
+    let nextEntityIds = Object.freeze([targetEntityId]);
+    let nextPrimaryEntityId = targetEntityId;
+    let nextAnchorEntityId = targetEntityId;
+
+    if (isRangeSelection) {
+      const anchorEntityId = normalizeSceneEntityId(this.selectionAnchorEntityId) ||
+        normalizeSceneEntityId(currentPrimaryEntityId) ||
+        targetEntityId;
+      const rangeEntityIds = readSceneTreeSelectionRangeIds(displayEntries, anchorEntityId, targetEntityId);
+      nextEntityIds = isToggleSelection
+        ? mergeSceneEntityIdLists(currentEntityIds, rangeEntityIds)
+        : rangeEntityIds;
+      nextAnchorEntityId = anchorEntityId;
+    } else if (isToggleSelection) {
+      if (currentEntityIds.includes(targetEntityId)) {
+        nextEntityIds = Object.freeze(currentEntityIds.filter((entityId) => entityId !== targetEntityId));
+        nextPrimaryEntityId = currentPrimaryEntityId === targetEntityId
+          ? nextEntityIds[nextEntityIds.length - 1] ?? null
+          : currentPrimaryEntityId;
+      } else {
+        nextEntityIds = mergeSceneEntityIdLists(currentEntityIds, [targetEntityId]);
+      }
+    }
+
+    this.selectionAnchorEntityId = nextAnchorEntityId;
+    this.selectionRenderer.setSelectedEntityIds(nextEntityIds, nextPrimaryEntityId);
+    return this.readSelectedObject();
+  }
+
   setSceneObjects(sceneObjects) {
     this.cancelScheduledShaderRebuildFromInput();
     this.lightObject.isLocked = this.applicationState.isBenchmarkModeActive;
     this.sceneObjects = [this.lightObject, ...sceneObjects];
+    const [, hierarchyError] = syncSceneGroupEntityChildren(this.sceneObjects);
+    if (hierarchyError) {
+      return returnFailure(hierarchyError.code, hierarchyError.message, hierarchyError.details);
+    }
+    setSceneStoreSceneItems(this.sceneObjects);
     for (const sceneObject of this.sceneObjects) {
       const [, authoredTransformError] = writeSceneObjectAuthoredTransform(sceneObject);
       if (authoredTransformError) {
@@ -10018,8 +11430,9 @@ class UserInterfaceController {
         );
       }
     }
-    if (!this.sceneObjects.includes(this.selectionRenderer.selectedObject)) {
-      this.selectionRenderer.selectedObject = null;
+    this.selectionRenderer.pruneSelectionToSceneObjects();
+    if (this.selectionRenderer.selectedEntityId === null) {
+      this.selectionAnchorEntityId = null;
     }
 
     const [, syncError] = this.syncSelectedItemReadout();
@@ -10100,6 +11513,12 @@ class UserInterfaceController {
 
   syncSceneObjectsToRendererAndPhysics() {
     const syncStartMilliseconds = readCurrentMilliseconds();
+    const [, hierarchyError] = syncSceneGroupEntityChildren(this.sceneObjects);
+    if (hierarchyError) {
+      return returnFailure(hierarchyError.code, hierarchyError.message, hierarchyError.details);
+    }
+    setSceneStoreSceneItems(this.sceneObjects);
+
     const [, rendererError] = this.selectionRenderer.setObjects(this.sceneObjects, this.applicationState);
     if (rendererError) {
       return returnFailure(rendererError.code, rendererError.message, rendererError.details);
@@ -10295,7 +11714,7 @@ class UserInterfaceController {
   }
 
   syncSelectedItemReadout() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     const displayName = formatSceneObjectDisplayName(selectedObject, this.lightObject);
     const [, readoutError] = writeElementTextIfChanged(
       this.selectedItemNameElement,
@@ -10345,7 +11764,10 @@ class UserInterfaceController {
     }
   }
 
-  syncSelectedLightControls(selectedObject = this.selectionRenderer.selectedObject) {
+  syncSelectedLightControls(selectedObject = undefined) {
+    if (selectedObject === undefined) {
+      selectedObject = this.readSelectedObject();
+    }
     const documentObject = this.canvasElement.ownerDocument;
     const isLightSelection = isSceneLightInspectorObject(selectedObject, this.lightObject);
     const lightControlsElement = readOptionalElement(documentObject, 'selected-light-controls');
@@ -10465,6 +11887,7 @@ class UserInterfaceController {
     this.syncSelectedPhysicsControls(selectedObject);
     this.syncSelectedLightControls(selectedObject);
     this.syncSelectedEmissiveControls(selectedObject);
+    this.syncSelectedMaterialProjectionControls(selectedObject);
   }
 
   syncSelectedPhysicsControls(selectedObject) {
@@ -10556,9 +11979,285 @@ class UserInterfaceController {
         physicsHelpElement.textContent = 'Kinematic and static bodies ignore mass and gravity; collision material settings still apply.';
       }
     }
+
+    this.syncSelectedSpringJointControls();
+    this.syncSelectedPhysicsJointList(selectedObject);
   }
 
-  syncSelectedEmissiveControls(selectedObject = this.selectionRenderer.selectedObject) {
+  readSelectedPhysicsJointObjects() {
+    const selectedObjects = this.readSelectedObjects();
+    if (selectedObjects.length !== 2) {
+      return Object.freeze([]);
+    }
+    if (!selectedObjects.every(isPhysicsSpringJointSelectableSceneObject)) {
+      return Object.freeze([]);
+    }
+    return selectedObjects;
+  }
+
+  syncSelectedSpringJointInputLabels() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const restLengthInput = readOptionalElement(documentObject, 'selected-physics-spring-rest-length');
+    const stiffnessInput = readOptionalElement(documentObject, 'selected-physics-spring-stiffness');
+    const dampingInput = readOptionalElement(documentObject, 'selected-physics-spring-damping');
+
+    const restLengthValueElement = readOptionalElement(documentObject, 'selected-physics-spring-rest-length-value');
+    if (restLengthInput instanceof HTMLInputElement && restLengthValueElement instanceof HTMLElement) {
+      restLengthValueElement.textContent = normalizePhysicsSpringRestLength(restLengthInput.value).toFixed(2);
+    }
+
+    const stiffnessValueElement = readOptionalElement(documentObject, 'selected-physics-spring-stiffness-value');
+    if (stiffnessInput instanceof HTMLInputElement && stiffnessValueElement instanceof HTMLElement) {
+      stiffnessValueElement.textContent = String(Math.round(normalizePhysicsSpringStiffness(stiffnessInput.value)));
+    }
+
+    const dampingValueElement = readOptionalElement(documentObject, 'selected-physics-spring-damping-value');
+    if (dampingInput instanceof HTMLInputElement && dampingValueElement instanceof HTMLElement) {
+      dampingValueElement.textContent = normalizePhysicsSpringDamping(dampingInput.value).toFixed(1);
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  syncSelectedSpringJointControls() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const selectedPhysicsObjects = this.readSelectedPhysicsJointObjects();
+    const hasExactlyTwoPhysicsObjects = selectedPhysicsObjects.length === 2;
+    const connectControlsElement = readOptionalElement(documentObject, 'selected-physics-spring-connect-controls');
+    if (connectControlsElement instanceof HTMLElement) {
+      connectControlsElement.hidden = !hasExactlyTwoPhysicsObjects;
+    }
+
+    const restLengthInput = readOptionalElement(documentObject, 'selected-physics-spring-rest-length');
+    const stiffnessInput = readOptionalElement(documentObject, 'selected-physics-spring-stiffness');
+    const dampingInput = readOptionalElement(documentObject, 'selected-physics-spring-damping');
+    const connectButton = readOptionalElement(documentObject, 'selected-physics-connect-spring');
+    const hasExistingJoint = hasExactlyTwoPhysicsObjects && hasPhysicsSpringJointBetweenObjects(
+      selectedPhysicsObjects[0],
+      selectedPhysicsObjects[1]
+    );
+    const isDisabled = (
+      !hasExactlyTwoPhysicsObjects ||
+      hasExistingJoint ||
+      this.applicationState.isBenchmarkModeActive ||
+      selectedPhysicsObjects.some((sceneObject) => sceneObject.isLocked)
+    );
+
+    if (hasExactlyTwoPhysicsObjects && restLengthInput instanceof HTMLInputElement) {
+      restLengthInput.value = measurePhysicsSpringRestLengthBetweenObjects(
+        selectedPhysicsObjects[0],
+        selectedPhysicsObjects[1]
+      ).toFixed(2);
+    }
+    if (stiffnessInput instanceof HTMLInputElement && !Number.isFinite(Number(stiffnessInput.value))) {
+      stiffnessInput.value = String(DEFAULT_PHYSICS_SPRING_STIFFNESS);
+    }
+    if (dampingInput instanceof HTMLInputElement && !Number.isFinite(Number(dampingInput.value))) {
+      dampingInput.value = DEFAULT_PHYSICS_SPRING_DAMPING.toFixed(1);
+    }
+
+    for (const springInput of [restLengthInput, stiffnessInput, dampingInput]) {
+      if (springInput instanceof HTMLInputElement) {
+        springInput.disabled = !hasExactlyTwoPhysicsObjects || this.applicationState.isBenchmarkModeActive;
+      }
+    }
+
+    if (connectButton instanceof HTMLButtonElement) {
+      connectButton.disabled = isDisabled;
+      connectButton.textContent = hasExistingJoint ? 'Spring Connected' : 'Connect Spring';
+    }
+
+    return this.syncSelectedSpringJointInputLabels();
+  }
+
+  syncSelectedPhysicsJointList(selectedObject) {
+    const documentObject = this.canvasElement.ownerDocument;
+    const jointSectionElement = readOptionalElement(documentObject, 'selected-physics-joints-section');
+    const jointListElement = readOptionalElement(documentObject, 'selected-physics-joint-list');
+    const shouldShowJointList = isPhysicsSpringJointSelectableSceneObject(selectedObject);
+    if (jointSectionElement instanceof HTMLElement) {
+      jointSectionElement.hidden = !shouldShowJointList;
+    }
+    if (!(jointListElement instanceof HTMLElement)) {
+      return returnSuccess(undefined);
+    }
+
+    while (jointListElement.firstChild) {
+      jointListElement.removeChild(jointListElement.firstChild);
+    }
+
+    if (!shouldShowJointList) {
+      jointListElement.textContent = 'No connected joints';
+      return returnSuccess(undefined);
+    }
+
+    const jointRecords = readUniquePhysicsSpringJointRecords(selectedObject);
+    if (jointRecords.length === 0) {
+      jointListElement.textContent = 'No connected joints';
+      return returnSuccess(undefined);
+    }
+
+    for (const jointRecord of jointRecords) {
+      const partnerObject = jointRecord.targetObject;
+      if (!partnerObject) {
+        continue;
+      }
+      const rowElement = documentObject.createElement('div');
+      rowElement.className = 'physics-joint-row';
+
+      const labelElement = documentObject.createElement('span');
+      labelElement.textContent = [
+        formatSceneObjectDisplayName(partnerObject, this.lightObject),
+        `rest ${normalizePhysicsSpringRestLength(jointRecord.restLength).toFixed(2)}`,
+        `stiff ${Math.round(normalizePhysicsSpringStiffness(jointRecord.stiffness))}`,
+        `damp ${normalizePhysicsSpringDamping(jointRecord.damping).toFixed(1)}`
+      ].join(' - ');
+      rowElement.appendChild(labelElement);
+
+      const removeButton = documentObject.createElement('button');
+      removeButton.type = 'button';
+      removeButton.textContent = 'Remove';
+      removeButton.dataset.physicsJointRemove = readPhysicsSpringJointRecordId(
+        jointRecord,
+        selectedObject,
+        partnerObject
+      );
+      removeButton.disabled = selectedObject.isLocked || this.applicationState.isBenchmarkModeActive;
+      rowElement.appendChild(removeButton);
+      jointListElement.appendChild(rowElement);
+    }
+
+    return returnSuccess(undefined);
+  }
+
+  connectSelectedPhysicsSpringJointFromControls() {
+    const selectedPhysicsObjects = this.readSelectedPhysicsJointObjects();
+    if (selectedPhysicsObjects.length !== 2) {
+      this.syncSelectedSpringJointControls();
+      return returnSuccess(undefined);
+    }
+    const [firstObject, secondObject] = selectedPhysicsObjects;
+    if (
+      this.applicationState.isBenchmarkModeActive ||
+      firstObject.isLocked ||
+      secondObject.isLocked ||
+      hasPhysicsSpringJointBetweenObjects(firstObject, secondObject)
+    ) {
+      this.syncSelectedSpringJointControls();
+      return returnSuccess(undefined);
+    }
+
+    const documentObject = this.canvasElement.ownerDocument;
+    const restLengthInput = readOptionalElement(documentObject, 'selected-physics-spring-rest-length');
+    const stiffnessInput = readOptionalElement(documentObject, 'selected-physics-spring-stiffness');
+    const dampingInput = readOptionalElement(documentObject, 'selected-physics-spring-damping');
+    if (
+      !(restLengthInput instanceof HTMLInputElement) ||
+      !(stiffnessInput instanceof HTMLInputElement) ||
+      !(dampingInput instanceof HTMLInputElement)
+    ) {
+      return returnFailure('missing-spring-joint-controls', 'Spring joint controls are not available.');
+    }
+
+    const [restLength, restLengthError] = parseBoundedNumber(
+      restLengthInput.value,
+      DEFAULT_PHYSICS_SPRING_REST_LENGTH,
+      MIN_PHYSICS_SPRING_REST_LENGTH,
+      MAX_PHYSICS_SPRING_REST_LENGTH
+    );
+    if (restLengthError) {
+      return returnFailure(restLengthError.code, restLengthError.message, restLengthError.details);
+    }
+    const [stiffness, stiffnessError] = parseBoundedNumber(
+      stiffnessInput.value,
+      DEFAULT_PHYSICS_SPRING_STIFFNESS,
+      MIN_PHYSICS_SPRING_STIFFNESS,
+      MAX_PHYSICS_SPRING_STIFFNESS
+    );
+    if (stiffnessError) {
+      return returnFailure(stiffnessError.code, stiffnessError.message, stiffnessError.details);
+    }
+    const [damping, dampingError] = parseBoundedNumber(
+      dampingInput.value,
+      DEFAULT_PHYSICS_SPRING_DAMPING,
+      MIN_PHYSICS_SPRING_DAMPING,
+      MAX_PHYSICS_SPRING_DAMPING
+    );
+    if (dampingError) {
+      return returnFailure(dampingError.code, dampingError.message, dampingError.details);
+    }
+
+    const jointId = allocatePhysicsSpringJointId(this.applicationState, firstObject, secondObject);
+    ensurePhysicsSpringJointRecords(firstObject).push(createPhysicsSpringJointRecord(
+      jointId,
+      secondObject,
+      restLength,
+      stiffness,
+      damping
+    ));
+    ensurePhysicsSpringJointRecords(secondObject).push(createPhysicsSpringJointRecord(
+      jointId,
+      firstObject,
+      restLength,
+      stiffness,
+      damping
+    ));
+
+    const [, physicsError] = this.physicsWorld.rebuildScene(this.sceneObjects, this.applicationState);
+    if (physicsError) {
+      removePhysicsSpringJointRecordsById(this.sceneObjects, jointId);
+      this.physicsWorld.rebuildScene(this.sceneObjects, this.applicationState);
+      return returnDiagnosticFailure(
+        'error',
+        'ui',
+        'Spring joint creation could not rebuild the physics world.',
+        physicsError
+      );
+    }
+
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples(false);
+  }
+
+  removeSelectedPhysicsJoint(jointIdValue) {
+    const jointId = String(jointIdValue || '').trim();
+    if (!jointId) {
+      return returnSuccess(undefined);
+    }
+    const jointRecordMatch = findScenePhysicsSpringJointRecordById(this.sceneObjects, jointId);
+    if (!jointRecordMatch) {
+      const [, syncError] = this.syncSelectedItemReadout();
+      if (syncError) {
+        return returnFailure(syncError.code, syncError.message, syncError.details);
+      }
+      return returnSuccess(undefined);
+    }
+
+    const [, removeError] = this.physicsWorld.removeSpringJoint(jointRecordMatch.jointRecord);
+    if (removeError) {
+      return returnDiagnosticFailure(
+        'error',
+        'ui',
+        'Spring joint removal failed.',
+        removeError
+      );
+    }
+
+    removePhysicsSpringJointRecordsById(this.sceneObjects, jointId);
+    const [, readoutError] = this.syncSelectedItemReadout();
+    if (readoutError) {
+      return returnFailure(readoutError.code, readoutError.message, readoutError.details);
+    }
+    return this.selectionRenderer.pathTracer.clearSamples(false);
+  }
+
+  syncSelectedEmissiveControls(selectedObject = undefined) {
+    if (selectedObject === undefined) {
+      selectedObject = this.readSelectedObject();
+    }
     const documentObject = this.canvasElement.ownerDocument;
     const isEmissionConfigurable = isSceneObjectEmissionConfigurable(selectedObject, this.lightObject);
     const isEmissionEnabled = isEmissionConfigurable && readSceneObjectEmissionEnabled(selectedObject);
@@ -10600,6 +12299,57 @@ class UserInterfaceController {
     return returnSuccess(undefined);
   }
 
+  syncSelectedMaterialProjectionControls(selectedObject = undefined) {
+    if (selectedObject === undefined) {
+      selectedObject = this.readSelectedObject();
+    }
+
+    const isProjectionConfigurable = (
+      selectedObject &&
+      selectedObject !== this.lightObject &&
+      Number.isFinite(Number(selectedObject.material))
+    );
+    const isDisabled = (
+      !isProjectionConfigurable ||
+      this.applicationState.isBenchmarkModeActive ||
+      Boolean(selectedObject && selectedObject.isLocked)
+    );
+    const projectionMode = isProjectionConfigurable
+      ? readSceneObjectUvProjectionMode(selectedObject)
+      : normalizeMaterialUvProjectionMode(this.applicationState.materialUvProjectionMode);
+    const uvScale = isProjectionConfigurable
+      ? readSceneObjectUvScale(selectedObject)
+      : normalizeMaterialUvScale(this.applicationState.materialUvScale);
+    const uvBlendSharpness = isProjectionConfigurable
+      ? readSceneObjectUvBlendSharpness(selectedObject)
+      : normalizeMaterialUvBlendSharpness(this.applicationState.materialUvBlendSharpness);
+
+    this.applicationState.materialUvProjectionMode = projectionMode;
+    this.applicationState.materialUvScale = uvScale;
+    this.applicationState.materialUvBlendSharpness = uvBlendSharpness;
+
+    if (this.materialUvProjectionModeSelect instanceof HTMLSelectElement) {
+      this.materialUvProjectionModeSelect.value = projectionMode;
+      this.materialUvProjectionModeSelect.disabled = isDisabled;
+    }
+    if (this.materialUvScaleInput instanceof HTMLInputElement) {
+      this.materialUvScaleInput.value = uvScale.toFixed(2);
+      this.materialUvScaleInput.disabled = isDisabled;
+    }
+    if (this.materialUvScaleValueElement instanceof HTMLElement) {
+      this.materialUvScaleValueElement.textContent = uvScale.toFixed(2);
+    }
+    if (this.materialUvBlendSharpnessInput instanceof HTMLInputElement) {
+      this.materialUvBlendSharpnessInput.value = uvBlendSharpness.toFixed(2);
+      this.materialUvBlendSharpnessInput.disabled = isDisabled || projectionMode !== 'tri-planar';
+    }
+    if (this.materialUvBlendSharpnessValueElement instanceof HTMLElement) {
+      this.materialUvBlendSharpnessValueElement.textContent = uvBlendSharpness.toFixed(2);
+    }
+
+    return returnSuccess(undefined);
+  }
+
   readSelectedObjectPosition(selectedObject) {
     if (!selectedObject) {
       return null;
@@ -10618,37 +12368,68 @@ class UserInterfaceController {
 
   syncSceneTree() {
     const documentObject = this.sceneTreeListElement.ownerDocument;
-    const selectedObject = this.selectionRenderer.selectedObject;
-    for (let sceneObjectIndex = 0; sceneObjectIndex < this.sceneObjects.length; sceneObjectIndex += 1) {
-      const sceneObject = this.sceneObjects[sceneObjectIndex];
-      let itemButton = this.sceneTreeButtons[sceneObjectIndex];
+    const selectedEntityId = this.selectionRenderer.selectedEntityId;
+    const selectedEntityIdSet = new Set(this.selectionRenderer.selectedEntityIds);
+    const displayEntries = createSceneTreeDisplayEntries(this.sceneObjects);
+    const activeEntityIds = new Set();
+    for (let displayIndex = 0; displayIndex < displayEntries.length; displayIndex += 1) {
+      const { sceneObject, depth } = displayEntries[displayIndex];
+      const entityId = readSceneObjectEntityId(sceneObject);
+      if (entityId === null) {
+        continue;
+      }
+      activeEntityIds.add(entityId);
+      let itemButton = this.sceneTreeButtons.get(entityId);
       if (!(itemButton instanceof HTMLButtonElement)) {
         itemButton = documentObject.createElement('button');
         itemButton.type = 'button';
         itemButton.setAttribute('role', 'option');
-        this.sceneTreeButtons[sceneObjectIndex] = itemButton;
-        this.sceneTreeListElement.appendChild(itemButton);
+        this.sceneTreeButtons.set(entityId, itemButton);
       }
-      itemButton.dataset.sceneObjectIndex = String(sceneObjectIndex);
-      itemButton.setAttribute('aria-selected', sceneObject === selectedObject ? 'true' : 'false');
-      itemButton.setAttribute('aria-pressed', sceneObject === selectedObject ? 'true' : 'false');
+      this.sceneTreeListElement.appendChild(itemButton);
+      delete itemButton.dataset.sceneObjectIndex;
+      itemButton.dataset.sceneEntityId = entityId;
+      itemButton.style.paddingLeft = `${10 + depth * 16}px`;
+      const isPrimarySelected = entityId === selectedEntityId;
+      const isSecondarySelected = !isPrimarySelected && selectedEntityIdSet.has(entityId);
+      itemButton.setAttribute('aria-selected', isPrimarySelected || isSecondarySelected ? 'true' : 'false');
+      itemButton.setAttribute('aria-pressed', isPrimarySelected || isSecondarySelected ? 'true' : 'false');
+      if (isPrimarySelected) {
+        itemButton.dataset.selectionState = 'primary';
+      } else if (isSecondarySelected) {
+        itemButton.dataset.selectionState = 'secondary';
+      } else {
+        delete itemButton.dataset.selectionState;
+      }
       const sceneItemName = formatSceneObjectDisplayName(sceneObject, this.lightObject);
       const sceneItemStatus = [
         sceneObject.isHidden ? 'hidden' : '',
         sceneObject.isLocked ? 'locked' : ''
       ].filter(Boolean).join(', ');
-      const sceneItemLabel = sceneObject === this.lightObject ? sceneItemName : `${sceneItemName} #${sceneObjectIndex}`;
+      const jointSelectionLabel = (
+        selectedEntityIdSet.has(entityId) &&
+        isPhysicsSpringJointSelectableSceneObject(sceneObject)
+      )
+        ? ' [spring selection]'
+        : '';
+      const jointAnnotation = formatSceneObjectSpringJointSceneTreeAnnotation(sceneObject, this.lightObject);
+      const sceneItemLabel = sceneObject === this.lightObject
+        ? `${sceneItemName}${jointSelectionLabel}${jointAnnotation}`
+        : `${sceneItemName} #${displayIndex}${jointSelectionLabel}${jointAnnotation}`;
       const nextItemText = sceneItemStatus ? `${sceneItemLabel} (${sceneItemStatus})` : sceneItemLabel;
       if (itemButton.textContent !== nextItemText) {
         itemButton.textContent = nextItemText;
       }
     }
 
-    while (this.sceneTreeButtons.length > this.sceneObjects.length) {
-      const staleButton = this.sceneTreeButtons.pop();
+    for (const [entityId, staleButton] of this.sceneTreeButtons.entries()) {
+      if (activeEntityIds.has(entityId)) {
+        continue;
+      }
       if (staleButton && staleButton.parentNode === this.sceneTreeListElement) {
         this.sceneTreeListElement.removeChild(staleButton);
       }
+      this.sceneTreeButtons.delete(entityId);
     }
 
     return writeElementTextIfChanged(
@@ -10657,19 +12438,29 @@ class UserInterfaceController {
     );
   }
 
-  selectSceneObjectByIndex(sceneObjectIndexValue) {
-    const sceneObjectIndex = Number.parseInt(sceneObjectIndexValue, 10);
-    if (!Number.isInteger(sceneObjectIndex) || sceneObjectIndex < 0 || sceneObjectIndex >= this.sceneObjects.length) {
+  selectSceneObjectByEntityId(sceneEntityIdValue, selectionOptions = {}) {
+    const selectedObject = findSceneObjectByEntityId(this.sceneObjects, sceneEntityIdValue);
+    if (!selectedObject) {
       return returnFailure('invalid-scene-tree-selection', 'Scene tree item is not available.');
     }
 
-    const selectedObject = this.sceneObjects[sceneObjectIndex];
-    this.selectionRenderer.selectedObject = selectedObject;
-    const [, materialSyncError] = this.syncMaterialSelectToObject(selectedObject);
+    const nextSelectedObject = this.selectSceneObjectWithModifiers(selectedObject, selectionOptions);
+    const [, materialSyncError] = this.syncMaterialSelectToObject(nextSelectedObject);
     if (materialSyncError) {
       return returnFailure(materialSyncError.code, materialSyncError.message, materialSyncError.details);
     }
     return this.syncSelectedItemReadout();
+  }
+
+  selectSceneObjectByIndex(sceneObjectIndexValue, selectionOptions = {}) {
+    const sceneObjectIndex = Number.parseInt(sceneObjectIndexValue, 10);
+    const displayEntries = createSceneTreeDisplayEntries(this.sceneObjects);
+    if (!Number.isInteger(sceneObjectIndex) || sceneObjectIndex < 0 || sceneObjectIndex >= displayEntries.length) {
+      return returnFailure('invalid-scene-tree-selection', 'Scene tree item is not available.');
+    }
+
+    const selectedObject = displayEntries[sceneObjectIndex].sceneObject;
+    return this.selectSceneObjectByEntityId(readSceneObjectEntityId(selectedObject), selectionOptions);
   }
 
   render() {
@@ -10677,7 +12468,7 @@ class UserInterfaceController {
   }
 
   selectLight() {
-    this.selectionRenderer.selectedObject = this.lightObject;
+    this.selectSingleSceneObject(this.lightObject);
     return this.syncSelectedItemReadout();
   }
 
@@ -11019,8 +12810,14 @@ class UserInterfaceController {
       allocateSceneObjectId(this.applicationState),
       this.applicationState.material
     );
+    writeSceneObjectMaterialProjectionSettings(
+      sphereObject,
+      this.applicationState.materialUvProjectionMode,
+      this.applicationState.materialUvScale,
+      this.applicationState.materialUvBlendSharpness
+    );
     this.sceneObjects.push(sphereObject);
-    this.selectionRenderer.selectedObject = sphereObject;
+    this.selectSingleSceneObject(sphereObject);
     const [, readoutError] = this.syncSelectedItemReadout();
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
@@ -11039,8 +12836,14 @@ class UserInterfaceController {
       allocateSceneObjectId(this.applicationState),
       this.applicationState.material
     );
+    writeSceneObjectMaterialProjectionSettings(
+      cubeObject,
+      this.applicationState.materialUvProjectionMode,
+      this.applicationState.materialUvScale,
+      this.applicationState.materialUvBlendSharpness
+    );
     this.sceneObjects.push(cubeObject);
-    this.selectionRenderer.selectedObject = cubeObject;
+    this.selectSingleSceneObject(cubeObject);
     const [, readoutError] = this.syncSelectedItemReadout();
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
@@ -11054,8 +12857,14 @@ class UserInterfaceController {
     }
 
     const sceneObject = primitiveFactory(this.applicationState);
+    writeSceneObjectMaterialProjectionSettings(
+      sceneObject,
+      this.applicationState.materialUvProjectionMode,
+      this.applicationState.materialUvScale,
+      this.applicationState.materialUvBlendSharpness
+    );
     this.sceneObjects.push(sceneObject);
-    this.selectionRenderer.selectedObject = sceneObject;
+    this.selectSingleSceneObject(sceneObject);
     const [, readoutError] = this.syncSelectedItemReadout();
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
@@ -11064,17 +12873,26 @@ class UserInterfaceController {
   }
 
   deleteSelection() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!selectedObject || selectedObject === this.lightObject || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
 
     const selectedObjectIndex = this.sceneObjects.indexOf(selectedObject);
     if (selectedObjectIndex >= 0) {
+      removePhysicsSpringJointRecordsForObject(this.sceneObjects, selectedObject);
+      if (isGroupEntitySceneObject(selectedObject)) {
+        for (const childEntityId of normalizeSceneEntityIdList(selectedObject.childEntityIds)) {
+          const childObject = findSceneObjectByEntityId(this.sceneObjects, childEntityId);
+          if (childObject && childObject.parentEntityId === selectedObject.entityId) {
+            childObject.parentEntityId = null;
+          }
+        }
+      }
       this.sceneObjects.splice(selectedObjectIndex, 1);
     }
 
-    this.selectionRenderer.selectedObject = null;
+    this.clearSceneSelection();
     const [, readoutError] = this.syncSelectedItemReadout();
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
@@ -11083,7 +12901,7 @@ class UserInterfaceController {
   }
 
   duplicateSelection() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (
       !selectedObject ||
       selectedObject === this.lightObject ||
@@ -11099,7 +12917,7 @@ class UserInterfaceController {
       return returnFailure(offsetError.code, offsetError.message, offsetError.details);
     }
     this.sceneObjects.push(duplicateObject);
-    this.selectionRenderer.selectedObject = duplicateObject;
+    this.selectSingleSceneObject(duplicateObject);
     const [, readoutError] = this.syncSelectedItemReadout();
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
@@ -11108,7 +12926,7 @@ class UserInterfaceController {
   }
 
   renameSelection() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!selectedObject || selectedObject === this.lightObject || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
@@ -11123,7 +12941,7 @@ class UserInterfaceController {
   }
 
   toggleSelectionHidden() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!selectedObject || selectedObject === this.lightObject || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
@@ -11137,7 +12955,7 @@ class UserInterfaceController {
       return returnSuccess(undefined);
     }
 
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!selectedObject || selectedObject === this.lightObject) {
       return returnSuccess(undefined);
     }
@@ -11147,7 +12965,7 @@ class UserInterfaceController {
   }
 
   updateSelectionTransformFromInputs() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!selectedObject || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
@@ -11220,7 +13038,7 @@ class UserInterfaceController {
   }
 
   updateSelectedPhysicsFromControls() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!isPhysicsSupportedSceneObject(selectedObject) || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
@@ -11363,7 +13181,7 @@ class UserInterfaceController {
   }
 
   updateSelectedEmissiveFromControls() {
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (!isSceneObjectEmissionConfigurable(selectedObject, this.lightObject)) {
       return this.syncSelectedEmissiveControls(selectedObject);
     }
@@ -11446,6 +13264,54 @@ class UserInterfaceController {
     return returnSuccess(undefined);
   }
 
+  updateMaterialProjectionFromControls() {
+    const nextProjectionMode = this.materialUvProjectionModeSelect instanceof HTMLSelectElement
+      ? normalizeMaterialUvProjectionMode(this.materialUvProjectionModeSelect.value)
+      : normalizeMaterialUvProjectionMode(this.applicationState.materialUvProjectionMode);
+    const nextUvScale = this.materialUvScaleInput instanceof HTMLInputElement
+      ? normalizeMaterialUvScale(Number.parseFloat(this.materialUvScaleInput.value))
+      : normalizeMaterialUvScale(this.applicationState.materialUvScale);
+    const nextUvBlendSharpness = this.materialUvBlendSharpnessInput instanceof HTMLInputElement
+      ? normalizeMaterialUvBlendSharpness(Number.parseFloat(this.materialUvBlendSharpnessInput.value))
+      : normalizeMaterialUvBlendSharpness(this.applicationState.materialUvBlendSharpness);
+
+    this.applicationState.materialUvProjectionMode = nextProjectionMode;
+    this.applicationState.materialUvScale = nextUvScale;
+    this.applicationState.materialUvBlendSharpness = nextUvBlendSharpness;
+
+    const selectedObject = this.readSelectedObject();
+    if (
+      !selectedObject ||
+      selectedObject === this.lightObject ||
+      selectedObject.isLocked ||
+      !Number.isFinite(Number(selectedObject.material))
+    ) {
+      return this.syncSelectedMaterialProjectionControls(selectedObject);
+    }
+
+    const previousProjectionMode = readSceneObjectUvProjectionMode(selectedObject);
+    const previousUvScale = readSceneObjectUvScale(selectedObject);
+    const previousUvBlendSharpness = readSceneObjectUvBlendSharpness(selectedObject);
+    selectedObject.uvProjectionMode = nextProjectionMode;
+    selectedObject.uvScale = nextUvScale;
+    selectedObject.uvBlendSharpness = nextUvBlendSharpness;
+
+    const [, syncError] = this.syncSelectedMaterialProjectionControls(selectedObject);
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    if (
+      previousProjectionMode === nextProjectionMode &&
+      previousUvScale === nextUvScale &&
+      previousUvBlendSharpness === nextUvBlendSharpness
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    return this.scheduleShaderRebuildFromInput('Updating material projection and compiling shaders...');
+  }
+
   applyMaterialToSelection() {
     const [nextMaterial, materialError] = parseMaterial(this.materialSelect.value);
     if (materialError) {
@@ -11453,7 +13319,7 @@ class UserInterfaceController {
     }
 
     this.applicationState.material = nextMaterial;
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (
       !selectedObject ||
       selectedObject === this.lightObject ||
@@ -11463,13 +13329,31 @@ class UserInterfaceController {
       return returnSuccess(undefined);
     }
 
-    if (selectedObject.material === nextMaterial) {
-      return this.syncSelectedEmissiveControls(selectedObject);
-    }
+    const nextProjectionMode = normalizeMaterialUvProjectionMode(this.applicationState.materialUvProjectionMode);
+    const nextUvScale = normalizeMaterialUvScale(this.applicationState.materialUvScale);
+    const nextUvBlendSharpness = normalizeMaterialUvBlendSharpness(this.applicationState.materialUvBlendSharpness);
+    const previousProjectionMode = readSceneObjectUvProjectionMode(selectedObject);
+    const previousUvScale = readSceneObjectUvScale(selectedObject);
+    const previousUvBlendSharpness = readSceneObjectUvBlendSharpness(selectedObject);
+    const didMaterialChange = selectedObject.material !== nextMaterial;
+    const didProjectionChange = (
+      previousProjectionMode !== nextProjectionMode ||
+      previousUvScale !== nextUvScale ||
+      previousUvBlendSharpness !== nextUvBlendSharpness
+    );
 
-    const [, materialSetError] = selectedObject.setMaterial(nextMaterial);
-    if (materialSetError) {
-      return returnDiagnosticFailure('error', 'ui', 'Apply material action could not update the selected item.', materialSetError);
+    if (didMaterialChange) {
+      const [, materialSetError] = selectedObject.setMaterial(nextMaterial);
+      if (materialSetError) {
+        return returnDiagnosticFailure('error', 'ui', 'Apply material action could not update the selected item.', materialSetError);
+      }
+    }
+    selectedObject.uvProjectionMode = nextProjectionMode;
+    selectedObject.uvScale = nextUvScale;
+    selectedObject.uvBlendSharpness = nextUvBlendSharpness;
+
+    if (!didMaterialChange && !didProjectionChange) {
+      return this.syncSelectedEmissiveControls(selectedObject);
     }
 
     const [, rendererError] = this.selectionRenderer.setObjects(this.sceneObjects, this.applicationState);
@@ -11490,7 +13374,7 @@ class UserInterfaceController {
 
     this.applicationState.material = normalizeMaterial(sceneObject.material);
     this.materialSelect.value = String(this.applicationState.material);
-    return returnSuccess(undefined);
+    return this.syncSelectedMaterialProjectionControls(sceneObject);
   }
 
   updateEnvironmentFromSelect() {
@@ -12955,7 +14839,7 @@ class UserInterfaceController {
       return returnFailure(lightTranslationError.code, lightTranslationError.message, lightTranslationError.details);
     }
 
-    this.selectionRenderer.selectedObject = null;
+    this.clearSceneSelection();
     this.isMovingSelection = false;
     this.previousCameraAngleX = Number.NaN;
     this.previousCameraAngleY = Number.NaN;
@@ -13230,6 +15114,23 @@ class UserInterfaceController {
     this.materialSelect.value = String(state.material);
     this.environmentSelect.value = String(state.environment);
     this.glossinessInput.value = state.glossiness.toFixed(2);
+    if (this.materialUvProjectionModeSelect instanceof HTMLSelectElement) {
+      this.materialUvProjectionModeSelect.value = normalizeMaterialUvProjectionMode(state.materialUvProjectionMode);
+    }
+    if (this.materialUvScaleInput instanceof HTMLInputElement) {
+      this.materialUvScaleInput.value = normalizeMaterialUvScale(state.materialUvScale).toFixed(2);
+    }
+    if (this.materialUvScaleValueElement instanceof HTMLElement) {
+      this.materialUvScaleValueElement.textContent = normalizeMaterialUvScale(state.materialUvScale).toFixed(2);
+    }
+    if (this.materialUvBlendSharpnessInput instanceof HTMLInputElement) {
+      this.materialUvBlendSharpnessInput.value = normalizeMaterialUvBlendSharpness(state.materialUvBlendSharpness).toFixed(2);
+    }
+    if (this.materialUvBlendSharpnessValueElement instanceof HTMLElement) {
+      this.materialUvBlendSharpnessValueElement.textContent = normalizeMaterialUvBlendSharpness(
+        state.materialUvBlendSharpness
+      ).toFixed(2);
+    }
     this.glossinessContainer.style.display = state.material === MATERIAL.GLOSSY ? 'inline' : 'none';
     this.isGlossinessVisible = state.material === MATERIAL.GLOSSY;
 
@@ -13385,8 +15286,12 @@ class UserInterfaceController {
     writeVec3(state.lightPosition, 0.4, 0.5, -0.6);
     writeVec3(state.lightColor, 1, 1, 1);
     state.nextObjectId = 0;
+    state.nextPhysicsJointId = 0;
     state.material = MATERIAL.DIFFUSE;
     state.glossiness = 0.6;
+    state.materialUvProjectionMode = DEFAULT_MATERIAL_UV_PROJECTION_MODE;
+    state.materialUvScale = DEFAULT_MATERIAL_UV_SCALE;
+    state.materialUvBlendSharpness = DEFAULT_MATERIAL_UV_BLEND_SHARPNESS;
     state.environment = ENVIRONMENT.YELLOW_BLUE_CORNELL_BOX;
     state.lightIntensity = DEFAULT_LIGHT_INTENSITY;
     state.lightSize = DEFAULT_LIGHT_SIZE;
@@ -13460,7 +15365,7 @@ class UserInterfaceController {
       return returnFailure(lightTranslationError.code, lightTranslationError.message, lightTranslationError.details);
     }
 
-    this.selectionRenderer.selectedObject = null;
+    this.clearSceneSelection();
     this.isMovingSelection = false;
     this.shouldShowPanelsInFullscreen = false;
     this.previousCameraMode = null;
@@ -13750,7 +15655,7 @@ class UserInterfaceController {
       return returnSuccess(undefined);
     }
 
-    const selectedObject = this.selectionRenderer.selectedObject;
+    const selectedObject = this.readSelectedObject();
     if (selectedObject && !selectedObject.isHidden && !selectedObject.isLocked) {
       const [, resetError] = selectedObject.setTemporaryTranslation(ORIGIN_VECTOR);
       if (resetError) {
@@ -13767,7 +15672,7 @@ class UserInterfaceController {
     return this.selectionRenderer.pathTracer.clearSamples(false);
   }
 
-  handleCanvasPress(xPosition, yPosition) {
+  handleCanvasPress(xPosition, yPosition, selectionOptions = {}) {
     const originPosition = this.applicationState.eyePosition;
     const rayDirection = this.pointerRayDirection;
     writeEyeRayVector(
@@ -13778,8 +15683,9 @@ class UserInterfaceController {
       originPosition
     );
 
-    const selectedObject = this.selectionRenderer.selectedObject;
-    if (selectedObject) {
+    const hasSelectionModifier = Boolean(selectionOptions.isRangeSelection || selectionOptions.isToggleSelection);
+    const selectedObject = this.readSelectedObject();
+    if (selectedObject && !hasSelectionModifier && !selectedObject.isLocked) {
       const minBounds = selectedObject.getMinCorner();
       const maxBounds = selectedObject.getMaxCorner();
       const selectionBoxDistance = intersectCube(originPosition, rayDirection, minBounds, maxBounds);
@@ -13812,8 +15718,15 @@ class UserInterfaceController {
       }
     }
 
-    this.selectionRenderer.selectedObject = closestObject;
-    const [, materialSyncError] = this.syncMaterialSelectToObject(closestObject);
+    let nextSelectedObject = null;
+    if (closestObject) {
+      nextSelectedObject = this.selectSceneObjectWithModifiers(closestObject, selectionOptions);
+    } else if (hasSelectionModifier) {
+      nextSelectedObject = this.readSelectedObject();
+    } else {
+      this.clearSceneSelection();
+    }
+    const [, materialSyncError] = this.syncMaterialSelectToObject(nextSelectedObject);
     if (materialSyncError) {
       return returnFailure(materialSyncError.code, materialSyncError.message, materialSyncError.details);
     }
@@ -13831,7 +15744,8 @@ class UserInterfaceController {
   }
 
   handleCanvasMove(xPosition, yPosition) {
-    if (!this.isMovingSelection || !this.selectionRenderer.selectedObject || this.selectionRenderer.selectedObject.isLocked) {
+    const selectedObject = this.readSelectedObject();
+    if (!this.isMovingSelection || !selectedObject || selectedObject.isLocked) {
       return returnSuccess(undefined);
     }
 
@@ -13845,7 +15759,7 @@ class UserInterfaceController {
     }
 
     writeSubtractVec3(this.pointerTranslation, hitPosition, this.originalHitPosition);
-    const [, translateError] = this.selectionRenderer.selectedObject.setTemporaryTranslation(this.pointerTranslation);
+    const [, translateError] = selectedObject.setTemporaryTranslation(this.pointerTranslation);
     if (translateError) {
       return returnFailure(translateError.code, translateError.message, translateError.details);
     }
@@ -13859,12 +15773,12 @@ class UserInterfaceController {
   }
 
   handleCanvasRelease(xPosition, yPosition) {
-    if (!this.isMovingSelection || !this.selectionRenderer.selectedObject || this.selectionRenderer.selectedObject.isLocked) {
+    const selectedObject = this.readSelectedObject();
+    if (!this.isMovingSelection || !selectedObject || selectedObject.isLocked) {
       this.isMovingSelection = false;
       return returnSuccess(undefined);
     }
 
-    const selectedObject = this.selectionRenderer.selectedObject;
     const [hitPosition, hitError] = this.readMovementPlaneHit(xPosition, yPosition);
     if (hitError) {
       this.isMovingSelection = false;
@@ -13982,8 +15896,12 @@ const createApplicationState = () => ({
   lightPosition: createVec3(0.4, 0.5, -0.6),
   lightColor: createVec3(1, 1, 1),
   nextObjectId: 0,
+  nextPhysicsJointId: 0,
   material: MATERIAL.DIFFUSE,
   glossiness: 0.6,
+  materialUvProjectionMode: DEFAULT_MATERIAL_UV_PROJECTION_MODE,
+  materialUvScale: DEFAULT_MATERIAL_UV_SCALE,
+  materialUvBlendSharpness: DEFAULT_MATERIAL_UV_BLEND_SHARPNESS,
   environment: ENVIRONMENT.YELLOW_BLUE_CORNELL_BOX,
   lightIntensity: DEFAULT_LIGHT_INTENSITY,
   lightSize: DEFAULT_LIGHT_SIZE,
@@ -14611,6 +16529,7 @@ const SCENE_OBJECT_SDF_PROTOTYPES = Object.freeze({
 });
 
 const SCENE_OBJECT_TYPE_ALIASES = Object.freeze({
+  GroupEntity: 'group',
   SphereSceneObject: 'sphere',
   CubeSceneObject: 'cube',
   SdfSceneObject: 'sdf',
@@ -14694,6 +16613,9 @@ const createSceneSnapshotFileName = () => (
 );
 
 const readSceneObjectSnapshotType = (sceneObject) => {
+  if (isGroupEntitySceneObject(sceneObject)) {
+    return 'group';
+  }
   if (sceneObject instanceof LightSceneObject) {
     return 'light';
   }
@@ -14760,6 +16682,14 @@ const createSceneObjectSnapshotBase = (sceneObject, type) => {
     hidden: Boolean(sceneObject.isHidden),
     locked: Boolean(sceneObject.isLocked)
   };
+  const entityId = readSceneObjectEntityId(sceneObject);
+  if (entityId !== null) {
+    objectSnapshot.entityId = entityId;
+  }
+  const parentEntityId = readSceneObjectParentEntityId(sceneObject);
+  if (parentEntityId !== null) {
+    objectSnapshot.parentEntityId = parentEntityId;
+  }
 
   if (isPhysicsSupportedSceneObject(sceneObject)) {
     objectSnapshot.physics = {
@@ -14781,6 +16711,14 @@ const createSceneObjectSnapshotBase = (sceneObject, type) => {
     };
   }
 
+  if (hasSceneObjectCustomUvProjectionSettings(sceneObject)) {
+    objectSnapshot.textureProjection = {
+      mode: readSceneObjectUvProjectionMode(sceneObject),
+      scale: readSceneObjectUvScale(sceneObject),
+      blendSharpness: readSceneObjectUvBlendSharpness(sceneObject)
+    };
+  }
+
   return objectSnapshot;
 };
 
@@ -14788,6 +16726,25 @@ const createSceneObjectSnapshot = (sceneObject) => {
   const type = readSceneObjectSnapshotType(sceneObject);
   if (!type || type === 'light') {
     return null;
+  }
+
+  if (type === 'group') {
+    const objectSnapshot = {
+      type,
+      name: sceneObject.displayName || 'Group',
+      entityId: readSceneObjectEntityId(sceneObject),
+      childEntityIds: normalizeSceneEntityIdList(sceneObject.childEntityIds),
+      centerPosition: serializeSceneVec3(sceneObject.centerPosition || ORIGIN_VECTOR),
+      rotation: serializeSceneVec3(sceneObject.rotation || ORIGIN_VECTOR),
+      scale: serializeSceneVec3(sceneObject.scale || createVec3(1, 1, 1)),
+      hidden: Boolean(sceneObject.isHidden),
+      locked: Boolean(sceneObject.isLocked)
+    };
+    const parentEntityId = readSceneObjectParentEntityId(sceneObject);
+    if (parentEntityId !== null) {
+      objectSnapshot.parentEntityId = parentEntityId;
+    }
+    return objectSnapshot;
   }
 
   const objectSnapshot = createSceneObjectSnapshotBase(sceneObject, type);
@@ -14884,7 +16841,39 @@ const normalizeSceneObjectSnapshotType = (typeValue) => {
   return SCENE_OBJECT_TYPE_ALIASES[rawType] || rawType;
 };
 
+const readSceneObjectSnapshotEntityId = (objectSnapshot) => (
+  normalizeSceneEntityId(readSceneSnapshotFirstDefined(
+    objectSnapshot.entityId,
+    objectSnapshot.id,
+    objectSnapshot.sceneObjectId,
+    objectSnapshot.objectId
+  ))
+);
+
+const allocateSceneObjectIdFromSnapshot = (applicationState, objectSnapshot) => {
+  const entityId = readSceneObjectSnapshotEntityId(objectSnapshot);
+  const numericEntityId = Number(entityId);
+  if (Number.isInteger(numericEntityId) && numericEntityId > 0) {
+    applicationState.nextObjectId = Math.max(applicationState.nextObjectId, numericEntityId + 1);
+    return numericEntityId;
+  }
+  return allocateSceneObjectId(applicationState);
+};
+
+const applySceneObjectSnapshotIdentityFields = (sceneObject, objectSnapshot) => {
+  const entityId = readSceneObjectSnapshotEntityId(objectSnapshot);
+  if (entityId !== null) {
+    sceneObject.entityId = entityId;
+  }
+  sceneObject.parentEntityId = normalizeSceneEntityId(readSceneSnapshotFirstDefined(
+    objectSnapshot.parentEntityId,
+    objectSnapshot.parentId
+  ));
+  return sceneObject;
+};
+
 const applySceneObjectSnapshotCommonFields = (sceneObject, objectSnapshot) => {
+  applySceneObjectSnapshotIdentityFields(sceneObject, objectSnapshot);
   const objectName = readSceneSnapshotFirstDefined(objectSnapshot.name, objectSnapshot.displayName);
   sceneObject.displayName = typeof objectName === 'string' ? objectName.trim().slice(0, 96) : '';
   sceneObject.isHidden = readSceneSnapshotBoolean(
@@ -14898,6 +16887,34 @@ const applySceneObjectSnapshotCommonFields = (sceneObject, objectSnapshot) => {
   sceneObject.glossiness = normalizeSceneObjectMaterialGlossiness(readSceneSnapshotNumber(
     readSceneSnapshotFirstDefined(objectSnapshot.glossiness, objectSnapshot.materialGlossiness),
     sceneObject.glossiness
+  ));
+  const textureProjectionSnapshot = readSceneSnapshotPlainObject(readSceneSnapshotFirstDefined(
+    objectSnapshot.textureProjection,
+    objectSnapshot.uvProjection
+  ));
+  sceneObject.uvProjectionMode = normalizeMaterialUvProjectionMode(readSceneSnapshotFirstDefined(
+    textureProjectionSnapshot.mode,
+    textureProjectionSnapshot.uvProjectionMode,
+    objectSnapshot.uvProjectionMode,
+    objectSnapshot.textureProjectionMode
+  ));
+  sceneObject.uvScale = normalizeMaterialUvScale(readSceneSnapshotNumber(
+    readSceneSnapshotFirstDefined(
+      textureProjectionSnapshot.scale,
+      textureProjectionSnapshot.uvScale,
+      objectSnapshot.uvScale,
+      objectSnapshot.textureProjectionScale
+    ),
+    sceneObject.uvScale
+  ));
+  sceneObject.uvBlendSharpness = normalizeMaterialUvBlendSharpness(readSceneSnapshotNumber(
+    readSceneSnapshotFirstDefined(
+      textureProjectionSnapshot.blendSharpness,
+      textureProjectionSnapshot.uvBlendSharpness,
+      objectSnapshot.uvBlendSharpness,
+      objectSnapshot.textureProjectionBlendSharpness
+    ),
+    sceneObject.uvBlendSharpness
   ));
 
   const emissiveSnapshot = readSceneSnapshotPlainObject(
@@ -15018,7 +17035,7 @@ const createSceneObjectFromSnapshot = (applicationState, objectSnapshotValue) =>
       new SphereSceneObject(
         readSceneSnapshotVec3(objectSnapshot.centerPosition, ORIGIN_VECTOR, -8, 8),
         normalizeBoundedNumber(readSceneSnapshotNumber(objectSnapshot.radius, 0.25), 0.25, 0.001, 8),
-        allocateSceneObjectId(applicationState),
+        allocateSceneObjectIdFromSnapshot(applicationState, objectSnapshot),
         material
       ),
       objectSnapshot
@@ -15030,9 +17047,35 @@ const createSceneObjectFromSnapshot = (applicationState, objectSnapshotValue) =>
     const maxCorner = readSceneSnapshotVec3(objectSnapshot.maxCorner, createVec3(0.25, 0.25, 0.25), -8, 8);
     sanitizeSceneCubeCorners(minCorner, maxCorner);
     return applySceneObjectSnapshotCommonFields(
-      new CubeSceneObject(minCorner, maxCorner, allocateSceneObjectId(applicationState), material),
+      new CubeSceneObject(minCorner, maxCorner, allocateSceneObjectIdFromSnapshot(applicationState, objectSnapshot), material),
       objectSnapshot
     );
+  }
+
+  if (objectType === 'group') {
+    const groupEntityId = readSceneObjectSnapshotEntityId(objectSnapshot);
+    const numericGroupEntityId = Number(groupEntityId);
+    if (Number.isInteger(numericGroupEntityId) && numericGroupEntityId > 0) {
+      applicationState.nextObjectId = Math.max(applicationState.nextObjectId, numericGroupEntityId + 1);
+    }
+    const groupEntity = new GroupEntity({
+      entityId: groupEntityId ?? `group-${allocateSceneObjectId(applicationState)}`,
+      parentEntityId: readSceneSnapshotFirstDefined(objectSnapshot.parentEntityId, objectSnapshot.parentId),
+      name: readSceneSnapshotFirstDefined(objectSnapshot.name, objectSnapshot.displayName),
+      childEntityIds: objectSnapshot.childEntityIds,
+      centerPosition: readSceneSnapshotVec3(objectSnapshot.centerPosition, ORIGIN_VECTOR, -8, 8),
+      rotation: readSceneSnapshotVec3(objectSnapshot.rotation, ORIGIN_VECTOR, -360, 360),
+      scale: readSceneSnapshotPositiveVec3(objectSnapshot.scale, createVec3(1, 1, 1)),
+      hidden: readSceneSnapshotBoolean(
+        readSceneSnapshotFirstDefined(objectSnapshot.hidden, objectSnapshot.isHidden),
+        false
+      ),
+      locked: readSceneSnapshotBoolean(
+        readSceneSnapshotFirstDefined(objectSnapshot.locked, objectSnapshot.isLocked),
+        false
+      )
+    });
+    return applySceneObjectSnapshotIdentityFields(groupEntity, objectSnapshot);
   }
 
   const sdfPrototype = SCENE_OBJECT_SDF_PROTOTYPES[objectType];
@@ -15045,7 +17088,7 @@ const createSceneObjectFromSnapshot = (applicationState, objectSnapshotValue) =>
     readSceneSnapshotPositiveVec3(objectSnapshot.boundsHalfExtents, createVec3(0.25, 0.25, 0.25)),
     readSceneSnapshotVec3(objectSnapshot.parameterA, createVec3(0.25, 0.25, 0.25), -16, 16),
     readSceneSnapshotVec3(objectSnapshot.parameterB, ORIGIN_VECTOR, -16, 16),
-    allocateSceneObjectId(applicationState),
+    allocateSceneObjectIdFromSnapshot(applicationState, objectSnapshot),
     objectType === 'areaLight' ? MATERIAL.DIFFUSE : material
   );
   Object.setPrototypeOf(sceneObject, sdfPrototype);
@@ -15064,6 +17107,7 @@ const createSceneObjectsFromSnapshot = (applicationState, objectsSnapshot) => {
       sceneObjects.push(sceneObject);
     }
   }
+  syncSceneGroupEntityChildren(sceneObjects);
   return sceneObjects;
 };
 
@@ -17926,15 +19970,18 @@ const restoreWebGlRenderingResources = (application) => {
   }
 
   const [gpuInfo] = updateGpuStatus(documentObject, webGlContext);
-  const previousSelectedObject = application.uiController.selectionRenderer.selectedObject;
+  const previousSelectedEntityId = application.uiController.selectionRenderer.selectedEntityId;
+  const previousSelectedEntityIds = application.uiController.selectionRenderer.selectedEntityIds;
   const [selectionRenderer, rendererError] = SelectionRenderer.create(webGlContext);
   if (rendererError) {
     return returnFailure(rendererError.code, rendererError.message, rendererError.details);
   }
 
-  if (application.uiController.sceneObjects.includes(previousSelectedObject)) {
-    selectionRenderer.selectedObject = previousSelectedObject;
-  }
+  selectionRenderer.setSelectedEntityIds(
+    previousSelectedEntityIds,
+    previousSelectedEntityId,
+    { skipSceneStoreSync: true }
+  );
 
   application.uiController.selectionRenderer = selectionRenderer;
   application.gpuInfo = gpuInfo;
@@ -18193,7 +20240,14 @@ const attachInputHandlers = (documentObject, canvasElement, errorElement, uiCont
       return returnSuccess(undefined);
     }
 
-    const [didSelectObject, selectError] = uiController.handleCanvasPress(pointerPosition.x, pointerPosition.y);
+    const [didSelectObject, selectError] = uiController.handleCanvasPress(
+      pointerPosition.x,
+      pointerPosition.y,
+      {
+        isRangeSelection: event.shiftKey,
+        isToggleSelection: event.ctrlKey || event.metaKey
+      }
+    );
     if (selectError) {
       displayError(errorElement, selectError);
       return returnSuccess(undefined);
@@ -19026,6 +21080,7 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     }
 
     const sceneObjectIndex = targetButton.dataset.sceneObjectIndex;
+    const sceneEntityId = targetButton.dataset.sceneEntityId;
     const targetPanelId = targetButton.dataset.panelTarget;
     const actionName = targetButton.dataset.action;
     const presetName = targetButton.dataset.preset;
@@ -19035,9 +21090,28 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     const debugViewModeName = targetButton.dataset.debugView;
     const cameraShotSaveSlot = targetButton.dataset.cameraShotSave;
     const cameraShotLoadSlot = targetButton.dataset.cameraShotLoad;
+    const physicsJointRemoveId = targetButton.dataset.physicsJointRemove;
 
+    if (physicsJointRemoveId !== undefined) {
+      return runAndDisplayError(errorElement, () => uiController.removeSelectedPhysicsJoint(physicsJointRemoveId));
+    }
+    if (sceneEntityId !== undefined) {
+      return runAndDisplayError(errorElement, () => uiController.selectSceneObjectByEntityId(
+        sceneEntityId,
+        {
+          isRangeSelection: event.shiftKey,
+          isToggleSelection: event.ctrlKey || event.metaKey
+        }
+      ));
+    }
     if (sceneObjectIndex !== undefined) {
-      return runAndDisplayError(errorElement, () => uiController.selectSceneObjectByIndex(sceneObjectIndex));
+      return runAndDisplayError(errorElement, () => uiController.selectSceneObjectByIndex(
+        sceneObjectIndex,
+        {
+          isRangeSelection: event.shiftKey,
+          isToggleSelection: event.ctrlKey || event.metaKey
+        }
+      ));
     }
     if (qualityPresetName) {
       return runAndDisplayError(errorElement, () => uiController.applyQualityPreset(qualityPresetName));
@@ -19101,6 +21175,9 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     }
     if (actionName === 'toggle-selection-locked') {
       return runAndDisplayError(errorElement, () => uiController.toggleSelectionLocked());
+    }
+    if (actionName === 'connect-selected-spring') {
+      return runAndDisplayError(errorElement, () => uiController.connectSelectedPhysicsSpringJointFromControls());
     }
     if (actionName === 'add-sphere') {
       const actionResult = runAndDisplayError(errorElement, () => uiController.addSphere());
@@ -19256,6 +21333,12 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     runAndDisplayError(errorElement, () => uiController.updateMaterialFromSelect())
   ));
 
+  if (uiController.materialUvProjectionModeSelect instanceof HTMLSelectElement) {
+    uiController.materialUvProjectionModeSelect.addEventListener('change', () => (
+      runAndDisplayError(errorElement, () => uiController.updateMaterialProjectionFromControls())
+    ));
+  }
+
   uiController.environmentSelect.addEventListener('change', () => (
     runAndDisplayError(errorElement, () => uiController.updateEnvironmentFromSelect())
   ));
@@ -19263,6 +21346,17 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
   uiController.glossinessInput.addEventListener('input', () => (
     runAndDisplayError(errorElement, () => uiController.updateGlossinessFromInput())
   ));
+
+  for (const materialUvInput of [
+    uiController.materialUvScaleInput,
+    uiController.materialUvBlendSharpnessInput
+  ]) {
+    if (materialUvInput instanceof HTMLInputElement) {
+      materialUvInput.addEventListener('input', () => (
+        runAndDisplayError(errorElement, () => uiController.updateMaterialProjectionFromControls())
+      ));
+    }
+  }
 
   uiController.resolutionPresetSelect.addEventListener('change', () => {
     if (uiController.resolutionPresetSelect.value === 'custom') {
@@ -19526,6 +21620,21 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     ));
   } else {
     logMissingExpectedControl('selected-physics-collide-with-objects', 'HTMLInputElement');
+  }
+
+  for (const physicsSpringInputId of [
+    'selected-physics-spring-rest-length',
+    'selected-physics-spring-stiffness',
+    'selected-physics-spring-damping'
+  ]) {
+    const physicsSpringInput = readOptionalElement(documentObject, physicsSpringInputId);
+    if (physicsSpringInput instanceof HTMLInputElement) {
+      physicsSpringInput.addEventListener('input', () => (
+        runAndDisplayError(errorElement, () => uiController.syncSelectedSpringJointInputLabels())
+      ));
+    } else {
+      logMissingExpectedControl(physicsSpringInputId, 'HTMLInputElement');
+    }
   }
 
   return returnSuccess(undefined);
