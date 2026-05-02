@@ -1,6 +1,6 @@
 # ECS Scene Model Decisions
 
-This document closes TODO audit decision work for the scene ECS model, inspector mixed values, and Rapier body/collider ownership. It is a contract for the migration; the current runtime still carries some fields directly on scene object classes while the ECS-backed implementation is being built.
+This document closes TODO audit decision work for the scene ECS model, inspector mixed values, and Rapier body/collider ownership. It is both the contract for remaining migration work and the current Workstream 1 runtime shape: scene object classes still keep legacy renderer methods, but they now expose ECS identity, hierarchy, editor, and component fields for scene-store normalization.
 
 ## Entity Records
 
@@ -30,6 +30,8 @@ Rules:
 - `isHidden` prevents rendering, selection hits, and physics creation. `isLocked` prevents direct editor edits but does not by itself remove render or physics behavior.
 - `components` is keyed by stable component name. Array form is allowed only as a temporary loader/import bridge; normalized ECS state uses object keys.
 - Document order is the fallback display order. For groups, `GroupComponent.childEntityIds` supplies child order and must match each child's `parentEntityId`.
+- Scene JSON persists `entityId`, `parentEntityId`, and group `childEntityIds` when present. Loading normalizes those fields, accepts legacy parent aliases, and repairs child lists from parent links before renderer/physics sync.
+- Legacy DOM tree rendering follows the same contract: it collects root entities first, appends children depth-first from `parentEntityId` / `childEntityIds`, and keys reusable row buttons by `entityId` rather than array index.
 
 ## Core Components
 
@@ -62,6 +64,17 @@ type MaterialComponent = {
   glossiness: number;
   emissiveColor?: Vec3;
   emissiveIntensity?: number;
+  uvProjectionMode?: 'uv' | 'tri-planar';
+  uvScale?: number;
+  uvBlendSharpness?: number;
+  textures?: Partial<Record<'albedo' | 'normal' | 'metallicRoughness' | 'emissive' | 'ambientOcclusion', {
+    textureId: string;
+    projection?: {
+      mode: 'uv' | 'tri-planar';
+      scale?: number;
+      blendSharpness?: number;
+    };
+  }>>;
 };
 
 type RenderableComponent = {
@@ -73,7 +86,8 @@ type RenderableComponent = {
 Rules:
 
 - `TransformComponent` owns placement. Legacy sphere `centerPosition`, cube `minCorner`/`maxCorner`, and SDF `centerPosition` fields are compatibility views over transform plus geometry data.
-- `MaterialComponent` owns `material`, `glossiness`, and optional emissive values. During migration, legacy `sceneObject.material` and related emissive fields may forward to this component so shader code can remain unchanged.
+- `MaterialComponent` owns `material`, `glossiness`, optional emissive values, and material texture projection metadata. During migration, legacy `sceneObject.material`, `sceneObject.glossiness`, and projection fields may forward to this component so shader code can remain unchanged.
+- Texture projection is renderer/material state. Mesh imports default to authored UV projection when valid UVs exist; primitives, SDFs, and UV-less meshes can explicitly use `tri-planar` projection, which blends three axis-aligned material texture samples by surface-normal weights.
 - `RenderableComponent` means the entity can produce path-tracer shader/uniform data. Groups and pure editor helpers do not have this component.
 - `GeometryComponent` describes authored shape data. It does not create physics by itself.
 
@@ -102,6 +116,7 @@ Rules:
 
 - A group has `TransformComponent` and `GroupComponent`.
 - A group never has `RenderableComponent` and must not generate GLSL uniforms, intersection code, shadow tests, or material evaluation.
+- The active renderer enforces this with `isRenderableSceneObject()` guards before shader code joins, material scans, uniform caching, or uniform uploads touch scene objects.
 - `childEntityIds` is ordered. A child is valid only when its `parentEntityId` matches the group entity ID.
 - Moving a group updates the group transform. Child local transforms remain unchanged; their world transforms are derived from the ancestor chain.
 - Hiding a group hides its subtree for rendering, selection, and physics creation. Locking a group prevents group edits and subtree transform edits unless a later tool explicitly supports locked-parent overrides.
@@ -206,5 +221,8 @@ Current migration mapping:
 - `SdfSceneObject` and subclasses map to transform, SDF geometry, material, and renderable components. They do not create Rapier objects until an explicit collider component is added.
 - `AreaLightSceneObject` maps to transform, SDF/rounded-box geometry, material/light emission, and renderable components. It does not create Rapier objects by default.
 - `LightSceneObject` maps to transform and light components only. It does not create Rapier objects.
+- `GroupEntity` is active in the legacy runtime and appears directly in `sceneObjects`. It maps to transform, visibility, group, and optional physics compatibility data, but intentionally has no renderable component or shader methods.
+- Scene save/load now includes ECS IDs, parent links, and group child IDs. Loading creates `GroupEntity` instances for group snapshots, restores child `parentEntityId` values, and re-syncs group `childEntityIds` from the runtime object list.
+- The runtime sync path calls `setSceneStoreSceneItems(this.sceneObjects)` after hierarchy repair, so `sceneStore` reflects the active runtime items instead of a separate static copy.
 - Runtime renderable objects now store material state in `MaterialComponent` instances while exposing `sceneObject.material` and `sceneObject.glossiness` as compatibility accessors for shader generation and scene save/load paths.
 - Physics-capable runtime objects now store body settings and the transient Rapier handle in `PhysicsComponent` instances while exposing `physicsRigidBody`, `isPhysicsEnabled`, `physicsBodyType`, `physicsMass`, `physicsGravityScale`, `physicsFriction`, `physicsRestitution`, and `collideWithObjects` as compatibility accessors for the existing physics rebuild path.

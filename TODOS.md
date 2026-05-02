@@ -3,18 +3,18 @@
 Audit note: checked items reflect implemented behavior or documented decisions as of 2026-05-01. Unchecked items are still real implementation work, not hidden scope.
 
 ## Workstream 1: Scene Data And Documents
-- [ ] Make every object in the scene a separate ECS item
+- [x] Make every object in the scene a separate ECS item
 - [x] Define the ECS entity and component model for scene objects
-- [ ] Convert existing primitives, lights, and special objects into ECS-backed entities
+- [x] Convert existing primitives, lights, and special objects into ECS-backed entities
 - [x] Add a stable ID and name for each scene item
 
 ### Entity And Component Model
 - [x] Add a canonical `entityId: string` field to every scene object class (`SphereSceneObject`, `CubeSceneObject`, `SdfSceneObject` and all subclasses, the light object) â€” set to `String(objectId)` in each constructor so `sceneStore.normalizeSceneItem()` can read it directly and retire the `id ?? sceneObjectId ?? objectId ?? index` fallback chain
 - [x] Add `parentEntityId: string | null` to every scene object (null = scene root); `GroupEntity` sets this field on children when they are added to the group and clears it when they are removed; `syncSceneTree()` uses this field to derive display order without assuming a flat list
-- [ ] Define a `GroupEntity` class that holds `childEntityIds: string[]` and a world-space transform but generates no GLSL uniform or intersection code; include it in `sceneObjects` like any other object so it participates in the ECS tree, hide/lock, and naming systems; the path-trace shader ignores it via a type-check guard in `joinObjectShaderCode()`
-- [ ] Extract physics state (`physicsRigidBody`, body type, friction, restitution) from inline scene object fields into a standalone `PhysicsComponent` data class in `src/components/PhysicsComponent.js`; keep backward-compatible getters on the scene objects (`get physicsRigidBody()`) so the existing `physicsWorld.rebuildScene()` path compiles without changes during migration
-- [ ] Extract material state (`material` integer, `glossiness` float) from inline fields into a `MaterialComponent` in `src/components/MaterialComponent.js`; keep `this.material` as a forwarding getter so all GLSL-generating methods (`getIntersectCode`, `getNormalCalculationCode`, etc.) continue to work unchanged
-- [ ] Unify the two selection systems: replace `SelectionRenderer.selectedObject` (direct object reference, stale across scene resets) with `selectedEntityId: string | null`; resolve to the live scene object by ID inside `render()`, `syncSelectedItemReadout()`, and `selectSceneObjectByIndex()` so there is one source of truth matching the `sceneStore.selectedItemId` signal
+- [x] Define a `GroupEntity` class that holds `childEntityIds: string[]` and a world-space transform but generates no GLSL uniform or intersection code; include it in `sceneObjects` like any other object so it participates in the ECS tree, hide/lock, and naming systems; the path-trace shader ignores it via a type-check guard in `joinObjectShaderCode()`
+- [x] Extract physics state (`physicsRigidBody`, body type, friction, restitution) from inline scene object fields into a standalone `PhysicsComponent` data class in `src/components/PhysicsComponent.js`; keep backward-compatible getters on the scene objects (`get physicsRigidBody()`) so the existing `physicsWorld.rebuildScene()` path compiles without changes during migration
+- [x] Extract material state (`material` integer, `glossiness` float) from inline fields into a `MaterialComponent` in `src/components/MaterialComponent.js`; keep `this.material` as a forwarding getter so all GLSL-generating methods (`getIntersectCode`, `getNormalCalculationCode`, etc.) continue to work unchanged
+- [x] Unify the two selection systems: replace `SelectionRenderer.selectedObject` (direct object reference, stale across scene resets) with `selectedEntityId: string | null`; resolve to the live scene object by ID inside `render()`, `syncSelectedItemReadout()`, and `selectSceneObjectByIndex()` so there is one source of truth matching the `sceneStore.selectedItemId` signal
 - [x] Add per-item settings and expand the property model over time
 - [x] Decide which settings are shared across all items and which are type-specific
 - [x] Add scene save and load support
@@ -34,7 +34,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Clicking an item in the scene tree selects it and immediately populates the inspector panel with that object's settings
 - [x] Keep tree selection and canvas selection in sync
 - [x] Support selecting and dragging multiple items in the ECS tree
-- [ ] Add Shift + click and Ctrl + click selection behavior in both the tree and the viewport
+- [x] Add Shift + click and Ctrl + click selection behavior in both the tree and the viewport
 - [x] Show a clear visual state for primary selection vs secondary selected items
 - [ ] Add marquee or box selection in the viewport if it fits the editor workflow
 - [x] Add bulk actions for the current multi-selection
@@ -56,7 +56,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Add hide, show, and lock controls for scene items
 
 ### Scene Tree Hierarchy And Component Rows
-- [ ] Update `syncSceneTree()` to derive display order from `parentEntityId` rather than the flat `sceneObjects` index: collect root items (null parent) first, then DFS-append each item's children; re-key `this.sceneTreeButtons` by entity ID string instead of array index so button reuse survives reordering
+- [x] Update `syncSceneTree()` to derive display order from `parentEntityId` rather than the flat `sceneObjects` index: collect root items (null parent) first, then DFS-append each item's children; re-key `this.sceneTreeButtons` by entity ID string instead of array index so button reuse survives reordering
 - [x] Store group expand/collapsed state in a `Set<string>` of expanded entity IDs on the tree manager; add a chevron element to each group button that rotates on expand; toggle child button `hidden` attribute on click; persist the expanded ID set to `localStorage` so the tree reopens in the same state after a scene reload
 - [x] Add component sub-rows (`<div class="scene-tree-component-row">`) immediately after each item's button: one row displaying the material name (derived from the `MATERIAL` constant reverse-map), one row showing the physics body type if `physicsRigidBody` is non-null, one row showing the animation name if an animation component is attached; sub-rows are indented one level deeper than the item and receive no click or keyboard handling
 - [x] Add a `+` icon button inside `#scene-tree-header` beside the item-count `<span>` that opens a small inline popover listing "Sphere / Cube / Cylinder / Torus / Capsule / Light" â€” dispatches the same `data-action` events used by the Create panel; once this path is live and verified, remove the "Create" tab from the inspector tab strip and move its keyboard shortcut (Ctrl+1) to trigger this popover instead
@@ -80,9 +80,9 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [ ] Preserve model hierarchy, pivots, and named nodes when importing
 - [ ] Add support for textured materials on imported assets
 - [x] Handle texture loading, caching, missing-texture fallbacks, and asset relinking
-- [ ] Add controls for assigning and swapping textures in the editor
+- [x] Add controls for assigning and swapping textures in the editor
 - [x] Define how textured materials map into the path tracing material system
-- [ ] Add reusable material presets or saved materials
+- [x] Add reusable material presets or saved materials
 
 ### Bundled Reference Models
 - [ ] Add `assets/models/suzanne.obj` to the project â€” the Blender Suzanne monkey head (CC0, ~500 triangles) serves as the canonical mesh import test and a recognisable benchmark reference; source from the Blender open-data repository or export directly from Blender with triangulated faces and vertex normals enabled
@@ -115,15 +115,15 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [ ] Add playback controls for play, pause, stop, speed, and clip selection
 - [ ] Keep animation state in sync with transforms, selection, and scene editing
 - [x] Decide how animated models interact with physics and benchmark mode
-- [ ] Add a system for procedural transform animations that can be attached to or detached from any item or group
-- [ ] Implement a continuous Y-axis spin animation (rotate around up axis at a configurable speed)
-- [ ] Implement a vertical bob animation (oscillate up and down at a configurable amplitude and frequency)
-- [ ] Implement a uniform pulse animation (oscillate scale in and out at a configurable amplitude and frequency)
-- [ ] Implement an orbit animation (circle around a configurable center point at a configurable radius and speed)
-- [ ] Implement a wobble animation (randomised small-angle rotation jitter to simulate instability or vibration)
-- [ ] Allow multiple animations to be stacked on the same item so effects can be combined
-- [ ] Show attached animations as components in the inspector for the selected item
-- [ ] Allow each animation component to be enabled, disabled, or removed individually from the inspector
+- [x] Add a system for procedural transform animations that can be attached to or detached from any item or group
+- [x] Implement a continuous Y-axis spin animation (rotate around up axis at a configurable speed)
+- [x] Implement a vertical bob animation (oscillate up and down at a configurable amplitude and frequency)
+- [x] Implement a uniform pulse animation (oscillate scale in and out at a configurable amplitude and frequency)
+- [x] Implement an orbit animation (circle around a configurable center point at a configurable radius and speed)
+- [x] Implement a wobble animation (randomised small-angle rotation jitter to simulate instability or vibration)
+- [x] Allow multiple animations to be stacked on the same item so effects can be combined
+- [x] Show attached animations as components in the inspector for the selected item
+- [x] Allow each animation component to be enabled, disabled, or removed individually from the inspector
 
 ## Workstream 4: Cameras, Lighting, And Render View
 - [x] Add two distinct camera modes: FPS mode and editor orbit mode
@@ -295,8 +295,8 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 ### Physics Controls And Joints
 - [x] Add a global gravity control in the Scene or Physics settings panel: a direction dropdown (Down / Up / Zero-G / Custom) and a magnitude slider (0â€“20, default 9.81); write the resulting `{x, y, z}` vector to `world.gravity` at the start of each physics step so any scene can be switched to zero-G or reversed gravity at runtime without a preset change
 - [x] Store a `gravityScale` override in each benchmark and preset scene's metadata object (e.g. `gravityScale: 0` for the particle fluid scene) and apply it when the scene is loaded so scenes that require specific gravity configurations are self-contained
-- [ ] Add spring joint creation between two selected physics-enabled objects: when exactly two physics items are selected, show a "Connect Spring" button in the inspector that creates a Rapier `JointData.spring()` between their centres with configurable rest length, stiffness, and damping sliders; record the joint handle on both scene objects and render the connection as a dashed-line annotation in the scene tree component rows
-- [ ] Allow joints to be deleted from the inspector: when a physics-enabled object is selected, show a "Connected joints" list displaying each joint's partner object name and a remove button; the remove button calls `world.removeImpulseJoint()`, clears the handle from both objects' records, and triggers a scene-tree refresh
+- [x] Add spring joint creation between two selected physics-enabled objects: when exactly two physics items are selected, show a "Connect Spring" button in the inspector that creates a Rapier `JointData.spring()` between their centres with configurable rest length, stiffness, and damping sliders; record the joint handle on both scene objects and render the connection as a dashed-line annotation in the scene tree component rows
+- [x] Allow joints to be deleted from the inspector: when a physics-enabled object is selected, show a "Connected joints" list displaying each joint's partner object name and a remove button; the remove button calls `world.removeImpulseJoint()`, clears the handle from both objects' records, and triggers a scene-tree refresh
 
 ### Logging And Debug Instrumentation
 - [x] Define a structured logger with named channels (e.g. `renderer`, `physics`, `sceneLoad`, `ui`, `assetPipeline`) and four levels (`debug`, `info`, `warn`, `error`); gate `debug` messages behind a `localStorage` flag so they are off in production but trivially re-enabled per channel in DevTools without a rebuild
@@ -322,7 +322,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [ ] Add backend-specific ray-rate profiling so WebGL and WebGPU hotspots can be compared directly
 - [ ] Measure the cost of accumulation texture transfers and reduce extra full-frame copies where possible
 - [x] Review whether preserveDrawingBuffer is still needed and disable it when export does not require it
-- [ ] Reduce unnecessary post-process passes for bloom, glare, and display composition in draft modes
+- [x] Reduce unnecessary post-process passes for bloom, glare, and display composition in draft modes
 - [x] Minimize per-frame uniform and state updates by batching or caching unchanged renderer state
 - [x] Add dynamic quality controls that can lower rays per pixel or internal render resolution to protect ray rate
 - [ ] Investigate scene acceleration structures or faster scene queries for larger object counts
@@ -397,7 +397,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Keep the `<canvas>` and `#error` elements in static HTML; React must never own or re-render the canvas element
 - [ ] Strip all inline HTML for panels, menus, and overlays from index.html once each React component is live and tested
 - [x] Extract all CSS from the `<style>` block in index.html into `src/app.css` so styles survive the HTML teardown
-- [ ] Verify the app loads and renders correctly in both the Electron shell and the browser/GitHub Pages deploy after the importmap is added
+- [x] Verify the app loads and renders correctly in both the Electron shell and the browser/GitHub Pages deploy after the importmap is added
 
 ### State Management
 - [x] Create `src/store.js` that converts `createApplicationState()` into Preact signals â€” one signal per field so components only re-render when their specific field changes
@@ -478,7 +478,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 
 ### CSS and Style
 - [x] Move all styles from the inline `<style>` block in index.html into `src/app.css` with no changes to selectors or values
-- [ ] Remove the `<link rel="stylesheet" href="dist/app.css">` reference and replace it with a `<link rel="stylesheet" href="src/app.css">` once the inline block is gone
+- [x] Remove the `<link rel="stylesheet" href="dist/app.css">` reference and replace it with a `<link rel="stylesheet" href="src/app.css">` once the inline block is gone
 - [x] Audit `src/app.css` for any selectors that targeted dynamically-added class names set by JS (`is-open`, `is-collapsed`, `aria-pressed`) and ensure they still match after the React migration
 - [ ] Replace raw `element.style.setProperty` calls for CSS custom properties (e.g. `--canvas-render-size`) with a single `useEffect` in the `RenderCanvas` component that writes to `document.documentElement.style`
 
@@ -488,8 +488,8 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [ ] Add a `data-migrated` attribute to each removed HTML section as a comment tombstone during the transition period, then remove tombstones after all sections are live
 - [x] Verify keyboard shortcuts still work after the menu bar migration by testing every shortcut in the existing keydown map
 - [x] Verify floating window drag, collapse, close, and position persistence all work after `FloatingWindow` migration
-- [ ] Verify that benchmark values update correctly at the expected throttle rate and do not cause visible frame drops in the render loop
-- [ ] Verify the Electron shell loads correctly with the importmap â€” Electron's renderer process must allow the CDN URLs or the importmap must fall back to vendored copies
+- [x] Verify that benchmark values update correctly at the expected throttle rate and do not cause visible frame drops in the render loop
+- [x] Verify the Electron shell loads correctly with the importmap â€” Electron's renderer process must allow the CDN URLs or the importmap must fall back to vendored copies
 - [x] Vendor Preact, HTM, and Preact signals into `vendor/` if CDN availability cannot be guaranteed in the Electron context
 - [ ] Run the GitHub Pages deploy and confirm all assets load correctly with the new module structure
 
@@ -504,7 +504,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 ### Procedural Surface
 - [x] Add Voronoi cracked-earth material (VORONOI_CRACKS) â€” cellular noise distance field baked into surface colour and normal offset; darkens cell boundaries to simulate dried mud, reptile scales, or fractured ceramic
 - [x] Add holographic / diffraction grating material (DIFFRACTION_GRATING) â€” sinusoidal spectral response modulated by dot(viewDir, reflectDir) produces rainbow banding that shifts with viewing angle; complements the existing SPECTRAL_GLASS material
-- [ ] Add tri-planar UV projection mode usable by any material â€” blends three axis-aligned texture lookups weighted by the absolute surface normal to eliminate seams on SDF objects like capsules, toruses, and fractals; prerequisite for texture-based materials to work correctly on curved primitives
+- [x] Add tri-planar UV projection mode usable by any material â€” blends three axis-aligned texture lookups weighted by the absolute surface normal to eliminate seams on SDF objects like capsules, toruses, and fractals; prerequisite for texture-based materials to work correctly on curved primitives
 
 ### Volumetric / Atmosphere
 - [x] Add heterogeneous fog material (HETEROGENEOUS_FOG) â€” replaces the current uniform fog density with an FBM-modulated density field sampled along each ray march step; produces patchy cloud-like scattering and visually richer god rays than the flat VOLUMETRIC_SHAFTS material
@@ -520,7 +520,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Add X-ray / silhouette accumulation material (XRAY) â€” accumulates transparency weighted by the inverse of the view-to-normal dot product so edges glow and surfaces facing the camera are invisible; useful for inspecting SDF scene structure and showcasing the fractal and metaballs primitives
 
 ### Additional Material Variety
-- [ ] Split emission into a composable material modifier so any base surface can also emit light, enabling combinations such as velvet/fuzzy emissive spheres, glossy neon plastic, emissive glass, and procedural glowing cracks without adding one enum value per combination
+- [x] Split emission into a composable material modifier so any base surface can also emit light, enabling combinations such as velvet/fuzzy emissive spheres, glossy neon plastic, emissive glass, and procedural glowing cracks without adding one enum value per combination
 - [x] Add clear-coat automotive paint material with a tinted diffuse base, metallic flake sparkle, and a glossy transparent top coat; useful for car paint, lacquered objects, and polished product renders
 - [x] Add layered ceramic / porcelain glaze material with a smooth coloured glaze over a slightly rough clay or porcelain body; include subtle edge darkening and crackle variation as optional procedural detail
 - [x] Add rubber / matte plastic material with broad low-energy highlights, high roughness, and configurable tint; useful for tires, tool grips, toys, and industrial parts
