@@ -7,6 +7,7 @@ import { CameraPanel } from './panels/CameraPanel.js';
 import { ImageCorrectionPanel } from './panels/ImageCorrectionPanel.js';
 import { ObjectPanel } from './panels/ObjectPanel.js';
 import { OutputPanel } from './panels/OutputPanel.js';
+import { PhysicsPanel } from './panels/PhysicsPanel.js';
 import { PresetPanel } from './panels/PresetPanel.js';
 import { RenderPanel } from './panels/RenderPanel.js';
 import { uiLogger } from '../logger.js';
@@ -35,6 +36,7 @@ import { NumberInputGroup } from './controls/EditorFields.js';
 
 export const INSPECTOR_SECTIONS = Object.freeze([
   { key: 'render', title: 'Render', accentColor: '#5cb85c', defaultOpen: true, render: () => html`<${RenderPanel} />` },
+  { key: 'physics', title: 'Physics', accentColor: '#4db6ac', render: () => html`<${PhysicsPanel} />` },
   { key: 'camera', title: 'Camera', accentColor: '#f0ad4e', render: () => html`<${CameraPanel} />` },
   { key: 'output', title: 'Output', accentColor: '#9b59b6', render: () => html`<${OutputPanel} />` },
   { key: 'image-correction', title: 'Image Correction', accentColor: '#40b8c8', render: () => html`<${ImageCorrectionPanel} />` },
@@ -332,7 +334,7 @@ export function InspectorPanel({
   }, [selectedItem]);
 
   return html`
-    <>
+    <div data-inspector-shell="mounted">
       <${FloatingWindow}
         id=${id}
         windowKey="inspector"
@@ -380,6 +382,6 @@ export function InspectorPanel({
         `)}
       <//>
       <${LogPanel} />
-    </>
+    </div>
   `;
 }

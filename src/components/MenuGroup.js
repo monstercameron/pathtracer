@@ -4,6 +4,16 @@ const renderShortcut = (shortcut) => (
   shortcut ? html`<span className="menu-shortcut">${shortcut}</span>` : null
 );
 
+const renderItemLabel = (item) => (
+  item.labelDataAttribute === 'camera-mode-label'
+    ? html`<span data-camera-mode-label>${item.label}</span>`
+    : item.labelDataAttribute === 'fullscreen-label'
+      ? html`<span data-fullscreen-label>${item.label}</span>`
+      : item.labelDataAttribute === 'fullscreen-panels-label'
+        ? html`<span data-fullscreen-panels-label>${item.label}</span>`
+        : item.label
+);
+
 const readPressedValue = (item, pressedSignals = {}) => {
   const actionSignal = item.action ? pressedSignals[item.action] : null;
   const windowSignal = item.windowTarget ? pressedSignals[`window:${item.windowTarget}`] : null;
@@ -48,7 +58,7 @@ const renderMenuItem = (item, onItemClick, pressedSignals) => {
       disabled=${item.disabled ? true : undefined}
       onClick=${(event) => onItemClick(event, item)}
     >
-      ${item.label}
+      ${renderItemLabel(item)}
       ${renderShortcut(item.shortcut)}
     </button>
   `;

@@ -217,6 +217,7 @@ const readPhysicsHelpText = (selectedItem, isPhysicsSupported, isPhysicsEnabled,
   return 'Kinematic and static bodies ignore mass and gravity; collision material settings still apply.';
 };
 
+const fixed1 = (value) => Number(value).toFixed(1);
 const fixed2 = (value) => Number(value).toFixed(2);
 const toHexByte = (value) => {
   const normalizedValue = Math.max(0, Math.min(1, Number(value)));
@@ -463,12 +464,51 @@ export function ObjectPanel({ id = 'object-panel' }) {
           disabled=${arePhysicsDetailsDisabled}
           hidden=${isLightSelection}
         />
+        <div id="selected-physics-spring-connect-controls" className="control-section" hidden>
+          <div className="section-title">Spring joint</div>
+          <${SliderField}
+            id="selected-physics-spring-rest-length"
+            label="Rest length"
+            min=${0.02}
+            max=${1}
+            step=${0.01}
+            value=${0.14}
+            formatter=${fixed2}
+            onInput=${() => undefined}
+          />
+          <${SliderField}
+            id="selected-physics-spring-stiffness"
+            label="Stiffness"
+            min=${40}
+            max=${240}
+            step=${1}
+            value=${120}
+            onInput=${() => undefined}
+          />
+          <${SliderField}
+            id="selected-physics-spring-damping"
+            label="Damping"
+            min=${0}
+            max=${80}
+            step=${0.5}
+            value=${8}
+            formatter=${fixed1}
+            onInput=${() => undefined}
+          />
+          <button id="selected-physics-connect-spring" type="button" data-action="connect-selected-spring" disabled>Connect Spring</button>
+        </div>
+        <div id="selected-physics-joints-section" className="control-section" hidden>
+          <div className="section-title">Connected joints</div>
+          <div id="selected-physics-joint-list" className="selection-readout">No connected joints</div>
+        </div>
         <div id="selected-physics-help" className="field-help" hidden=${isLightSelection}>
           ${physicsHelpText}
         </div>
       </div>
 
-      ${isLightSelection ? html`<${LightSelectionControls} />` : null}
+      <div hidden=${!isLightSelection}>
+        <${LightSelectionControls} />
+      </div>
 
       <div className="control-section" hidden=${isLightSelection}>
         <div className="section-title">Components</div>

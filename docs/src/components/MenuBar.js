@@ -24,6 +24,9 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'new-scene', label: 'New Scene', action: 'reset-all', shortcut: 'Ctrl+N' },
       { key: 'reset-scene', label: 'Reset Scene', action: 'reset-all' },
       { key: 'file-output-separator', type: 'separator' },
+      { key: 'save-scene-json', label: 'Save Scene JSON', action: 'save-scene-json' },
+      { key: 'load-scene-json', label: 'Load Scene JSON', action: 'load-scene-json' },
+      { key: 'file-scene-json-separator', type: 'separator' },
       { key: 'output-settings', label: 'Output Settings', panelTarget: 'output-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+5' },
       { key: 'save-png', label: 'Save PNG', action: 'save-bitmap', shortcut: 'Ctrl+S' }
     ])
@@ -51,9 +54,10 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'benchmark', label: 'Benchmark', windowTarget: 'benchmark', shortcut: 'B' },
       { key: 'log-panel', label: 'Log Panel', windowTarget: 'log-panel' },
       { key: 'view-separator', type: 'separator' },
+      { key: 'camera-mode', id: 'camera-mode-toggle', label: 'Camera: Orbit', action: 'toggle-camera-mode', labelDataAttribute: 'camera-mode-label', pressed: false },
       { key: 'camera-auto-rotate', label: 'Camera Auto-Rotate', action: 'toggle-camera-playback', shortcut: 'C', pressed: true },
-      { key: 'fullscreen', id: 'canvas-fullscreen', label: 'Fullscreen', action: 'toggle-canvas-fullscreen', shortcut: 'F', pressed: false },
-      { key: 'fullscreen-panels', id: 'fullscreen-panels-toggle', label: 'Fullscreen Panels', action: 'toggle-fullscreen-panels', pressed: false }
+      { key: 'fullscreen', id: 'canvas-fullscreen', label: 'Fullscreen', action: 'toggle-canvas-fullscreen', shortcut: 'F', labelDataAttribute: 'fullscreen-label', pressed: false },
+      { key: 'fullscreen-panels', id: 'fullscreen-panels-toggle', label: 'Fullscreen Panels', action: 'toggle-fullscreen-panels', labelDataAttribute: 'fullscreen-panels-label', pressed: false }
     ])
   },
   {
@@ -110,11 +114,16 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'preset-flat-primitives', label: 'Flat Primitives', preset: 'flatPrimitiveShowcase' },
       { key: 'preset-implicit-primitives', label: 'Implicit Primitives', preset: 'implicitPrimitiveShowcase' },
       { key: 'preset-area-light', label: 'Area Light Studio', preset: 'areaLightShowcase' },
+      { key: 'reference-presets-separator', type: 'separator' },
+      { key: 'reference-presets-label', type: 'label', label: 'Reference models' },
+      { key: 'preset-suzanne-reference', label: 'Suzanne Reference Mesh', preset: 'suzanneReference' },
       { key: 'benchmark-scenes-separator', type: 'separator' },
       { key: 'benchmark-scenes-label', type: 'label', label: 'Benchmark scenes' },
-      { key: 'benchmark-standard', label: 'Standard Benchmark', benchmarkScene: 'default', shortcut: 'Fixed' },
+      { key: 'benchmark-standard', label: 'Standard Benchmark', benchmarkScene: 'standard', shortcut: 'Fixed' },
+      { key: 'benchmark-sponza-atrium', label: 'Sponza Atrium', benchmarkScene: 'benchmarkSponzaAtrium' },
       { key: 'benchmark-shader-gauntlet', label: 'Shader Gauntlet', benchmarkScene: 'benchmarkShaderGauntlet' },
       { key: 'benchmark-physics-chaos', label: 'Physics Chaos', benchmarkScene: 'benchmarkPhysicsChaos' },
+      { key: 'benchmark-particle-fluid', label: 'Particle Fluid', benchmarkScene: 'benchmarkParticleFluid' },
       { key: 'benchmark-sdf-complexity', label: 'SDF Complexity', benchmarkScene: 'benchmarkSdfComplexity' },
       { key: 'benchmark-caustic-pool', label: 'Caustic Pool', benchmarkScene: 'benchmarkCausticPool' },
       { key: 'benchmark-motion-blur', label: 'Motion Blur Stress', benchmarkScene: 'benchmarkMotionBlurStress' },
@@ -124,6 +133,8 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'demo-scenes-separator', type: 'separator' },
       { key: 'demo-scenes-label', type: 'label', label: 'Demo scenes' },
       { key: 'preset-corridor-of-light', label: 'Corridor of Light', preset: 'corridorOfLight' },
+      { key: 'preset-corridor-of-light-glass', label: 'Corridor + Glass Sphere', preset: 'corridorOfLightGlassSphere' },
+      { key: 'preset-corridor-of-light-mirror', label: 'Corridor + Mirror Cube', preset: 'corridorOfLightMirrorCube' },
       { key: 'preset-depth-of-field-portrait', label: 'Depth-of-Field Portrait', preset: 'depthOfFieldPortrait' },
       { key: 'preset-shadow-study', label: 'Shadow Study', preset: 'shadowStudy' },
       { key: 'preset-mirror-room', label: 'Mirror Room', preset: 'mirrorRoom' },
@@ -153,6 +164,7 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'debug-settings-separator', type: 'separator' },
       { key: 'settings-label', type: 'label', label: 'Settings' },
       { key: 'render-settings', label: 'Render Settings', panelTarget: 'render-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+3' },
+      { key: 'physics-settings', label: 'Physics Settings', panelTarget: 'physics-panel', activationWindowTarget: 'controls' },
       { key: 'camera-settings', label: 'Camera Settings', panelTarget: 'camera-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+4' },
       { key: 'environment-settings', label: 'Environment Settings', panelTarget: 'render-panel', activationWindowTarget: 'controls' },
       { key: 'output-settings', label: 'Resolution / Output', panelTarget: 'output-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+5' }
@@ -287,11 +299,25 @@ export function MenuBar({ groups = MENU_GROUPS }) {
         setUiWindowVisible(targetWindowId, true);
       }
       openUiPanel(targetPanelId);
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
     if (targetWindowId) {
-      toggleUiWindowVisible(targetWindowId);
+      const targetWindowElement = globalThis.document?.getElementById(targetWindowId);
+      if (targetWindowElement instanceof HTMLElement) {
+        const shouldShowWindow = targetWindowElement.hidden;
+        targetWindowElement.hidden = !shouldShowWindow;
+        if (shouldShowWindow) {
+          targetWindowElement.classList.remove('is-collapsed');
+        }
+        setUiWindowVisible(targetWindowId, shouldShowWindow);
+      } else {
+        toggleUiWindowVisible(targetWindowId);
+      }
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -315,7 +341,7 @@ export function MenuBar({ groups = MENU_GROUPS }) {
   };
 
   return html`
-    <nav ref=${navRef} className="app-menu" aria-label="Application menu">
+    <nav id="app-menu" ref=${navRef} className="app-menu" aria-label="Application menu">
       ${groups.map((group) => html`
         <${MenuGroup}
           key=${group.key}

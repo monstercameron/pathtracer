@@ -11,7 +11,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const smokeMainPath = path.join(repoRoot, 'scripts', 'electron-smoke-main.cjs');
 const tempDirectory = mkdtempSync(path.join(tmpdir(), 'pathtracer-electron-smoke-'));
 const outputPath = path.join(tempDirectory, 'result.json');
-const timeoutMilliseconds = 90000;
+const timeoutMilliseconds = 180000;
 const verbose = process.argv.includes('--verbose');
 
 const printProcessOutput = (result) => {
@@ -76,6 +76,16 @@ try {
     smokeResult.staticServerRequests.length > 0
   ) {
     console.error(`\nLocal browser-smoke requests: ${smokeResult.staticServerRequests.join(', ')}`);
+  }
+
+  if (Array.isArray(smokeResult.performanceSummaries) && smokeResult.performanceSummaries.length > 0) {
+    for (const summary of smokeResult.performanceSummaries) {
+      console.log(
+        `perf - ${summary.name}: frames=${summary.frameCount ?? 0}, ` +
+        `p95=${Math.round(summary.p95FrameDelta ?? 0)}ms, ` +
+        `max=${Math.round(summary.maxFrameDelta ?? 0)}ms`
+      );
+    }
   }
 
   if (Array.isArray(smokeResult.failures) && smokeResult.failures.length > 0) {

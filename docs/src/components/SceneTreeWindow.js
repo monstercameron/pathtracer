@@ -32,6 +32,7 @@ import { PRIMITIVE_ACTIONS } from './panels/CreatePanel.js';
 const PANEL_LINKS = Object.freeze([
   { label: 'Object', panelTarget: 'object-panel' },
   { label: 'Render', panelTarget: 'render-panel' },
+  { label: 'Physics', panelTarget: 'physics-panel' },
   { label: 'Camera', panelTarget: 'camera-panel' },
   { label: 'Output', panelTarget: 'output-panel' },
   { label: 'Presets', panelTarget: 'preset-panel' }

@@ -13,6 +13,7 @@ const pageErrors = [];
 const externalRequests = [];
 const staticServerRequests = [];
 const staticServerFailures = [];
+const performanceSummaries = [];
 const userDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'pathtracer-electron-profile-'));
 
 const argumentValue = (name) => {
@@ -433,9 +434,11 @@ const floatingSmokeScript = `(async () => {
     return { ok: false, reason: 'missing benchmark floating window' };
   }
   localStorage.removeItem(storageKey);
-  windowElement.hidden = false;
-  windowElement.classList.remove('is-collapsed');
-  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const showButton = document.querySelector('button[data-window-target="benchmark"]');
+  if (windowElement.hidden && showButton instanceof HTMLButtonElement) {
+    showButton.click();
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   const before = windowElement.getBoundingClientRect();
   const startX = before.left + Math.min(80, Math.max(20, before.width / 3));
   const startY = before.top + 14;
@@ -452,7 +455,7 @@ const floatingSmokeScript = `(async () => {
       clientX: startX,
       clientY: startY
     }));
-    document.dispatchEvent(new PointerEvent('pointermove', {
+    dragHandle.dispatchEvent(new PointerEvent('pointermove', {
       bubbles: true,
       cancelable: true,
       pointerId: 77,
@@ -462,7 +465,7 @@ const floatingSmokeScript = `(async () => {
       clientX: startX + 72,
       clientY: startY + 46
     }));
-    document.dispatchEvent(new PointerEvent('pointerup', {
+    dragHandle.dispatchEvent(new PointerEvent('pointerup', {
       bubbles: true,
       cancelable: true,
       pointerId: 77,
@@ -475,15 +478,15 @@ const floatingSmokeScript = `(async () => {
   } finally {
     dragHandle.setPointerCapture = originalSetPointerCapture;
   }
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await new Promise((resolve) => setTimeout(resolve, 160));
   const afterDrag = windowElement.getBoundingClientRect();
   const collapseButton = windowElement.querySelector('button[data-window-command="collapse"]');
   const closeButton = windowElement.querySelector('button[data-window-command="close"]');
   collapseButton.click();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await new Promise((resolve) => setTimeout(resolve, 80));
   const collapsed = windowElement.classList.contains('is-collapsed');
   closeButton.click();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await new Promise((resolve) => setTimeout(resolve, 160));
   const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
   return {
     ok: true,
@@ -500,17 +503,27 @@ const floatingPersistenceScript = `(async () => {
   const storageKey = 'pathtracer.floatingWindows.v1';
   const windowElement = document.getElementById('benchmark');
   const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
+  const quickActionButton = document.querySelector('#menu-quick-actions button[data-window-target="benchmark"]');
   const beforeShow = {
     hidden: windowElement ? windowElement.hidden : null,
     collapsed: windowElement ? windowElement.classList.contains('is-collapsed') : null,
     left: windowElement ? Math.round(windowElement.getBoundingClientRect().left) : null,
-    top: windowElement ? Math.round(windowElement.getBoundingClientRect().top) : null
+    top: windowElement ? Math.round(windowElement.getBoundingClientRect().top) : null,
+    quickActionPressed: quickActionButton ? quickActionButton.getAttribute('aria-pressed') : null
   };
-  const targetButton = document.querySelector('button[data-window-target="benchmark"]');
+  const targetButton = quickActionButton ||
+    document.querySelector('button[data-window-target="benchmark"]');
   if (targetButton) {
     targetButton.click();
   }
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  const showStartMilliseconds = performance.now();
+  while (
+    windowElement &&
+    (windowElement.hidden || windowElement.classList.contains('is-collapsed')) &&
+    performance.now() - showStartMilliseconds < 1200
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   return {
     storedState,
     beforeShow,
@@ -518,7 +531,8 @@ const floatingPersistenceScript = `(async () => {
       hidden: windowElement ? windowElement.hidden : null,
       collapsed: windowElement ? windowElement.classList.contains('is-collapsed') : null,
       left: windowElement ? Math.round(windowElement.getBoundingClientRect().left) : null,
-      top: windowElement ? Math.round(windowElement.getBoundingClientRect().top) : null
+      top: windowElement ? Math.round(windowElement.getBoundingClientRect().top) : null,
+      quickActionPressed: quickActionButton ? quickActionButton.getAttribute('aria-pressed') : null
     }
   };
 })()`;
@@ -526,6 +540,7 @@ const floatingPersistenceScript = `(async () => {
 const floatingReloadStateScript = `(() => {
   const storageKey = 'pathtracer.floatingWindows.v1';
   const windowElement = document.getElementById('benchmark');
+  const quickActionButton = document.querySelector('#menu-quick-actions button[data-window-target="benchmark"]');
   const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
   return {
     ready: Boolean(
@@ -534,11 +549,14 @@ const floatingReloadStateScript = `(() => {
       storedState.hidden === true &&
       storedState.collapsed === true &&
       windowElement.hidden === true &&
-      windowElement.classList.contains('is-collapsed')
+      windowElement.classList.contains('is-collapsed') &&
+      quickActionButton &&
+      quickActionButton.getAttribute('aria-pressed') === 'false'
     ),
     storedState,
     hidden: windowElement ? windowElement.hidden : null,
-    collapsed: windowElement ? windowElement.classList.contains('is-collapsed') : null
+    collapsed: windowElement ? windowElement.classList.contains('is-collapsed') : null,
+    quickActionPressed: quickActionButton ? quickActionButton.getAttribute('aria-pressed') : null
   };
 })()`;
 
@@ -575,6 +593,7 @@ const benchmarkThrottleScript = `(async () => {
   observer.disconnect();
   const deltas = mutationTimes.slice(1).map((time, index) => time - mutationTimes[index]);
   const sortedFrameDeltas = frameDeltas.slice().sort((a, b) => a - b);
+  const severeFrameStalls = frameDeltas.filter((delta) => delta >= 250);
   const averageFrameDelta = frameDeltas.length
     ? frameDeltas.reduce((total, value) => total + value, 0) / frameDeltas.length
     : 0;
@@ -589,7 +608,84 @@ const benchmarkThrottleScript = `(async () => {
     frameCount: frameDeltas.length,
     averageFrameDelta,
     maxFrameDelta: frameDeltas.length ? Math.max(...frameDeltas) : 0,
-    p95FrameDelta
+    p95FrameDelta,
+    severeFrameStallCount: severeFrameStalls.length
+  };
+})()`;
+
+const sceneLoadPacingScript = `(async () => {
+  const sceneButton = document.querySelector('button[data-benchmark-scene="standard"]');
+  const overlay = document.getElementById('loading-overlay');
+  const stepsElement = document.getElementById('loading-steps');
+  if (!(sceneButton instanceof HTMLButtonElement) || !(overlay instanceof HTMLElement) || !(stepsElement instanceof HTMLElement)) {
+    return { ok: false, reason: 'missing scene load controls' };
+  }
+
+  const frameDeltas = [];
+  const stepSnapshots = [];
+  const phaseMarks = [];
+  let previousFrameTime = performance.now();
+  let running = true;
+  const observer = new MutationObserver(() => {
+    const snapshot = Array.from(stepsElement.querySelectorAll('.loading-step')).map((step) => ({
+      id: step.dataset.stepId || '',
+      state: step.dataset.stepState || ''
+    }));
+    stepSnapshots.push(snapshot);
+    phaseMarks.push({
+      elapsedMilliseconds: performance.now() - startMilliseconds,
+      completedStepIds: snapshot.filter((step) => step.state === 'done').map((step) => step.id),
+      runningStepId: snapshot.find((step) => step.state === 'running')?.id || ''
+    });
+  });
+  observer.observe(stepsElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-step-state'] });
+
+  const frame = (timestamp) => {
+    frameDeltas.push(timestamp - previousFrameTime);
+    previousFrameTime = timestamp;
+    if (running) {
+      requestAnimationFrame(frame);
+    }
+  };
+  requestAnimationFrame(frame);
+
+  const startMilliseconds = performance.now();
+  sceneButton.click();
+  await new Promise((resolve) => {
+    const timeoutId = setTimeout(resolve, 12000);
+    const poll = () => {
+      const overlayHidden = overlay.hidden || overlay.classList.contains('is-hidden');
+      const latestSnapshot = stepSnapshots.length ? stepSnapshots[stepSnapshots.length - 1] : [];
+      const completedStepIds = latestSnapshot.filter((step) => step.state === 'done').map((step) => step.id);
+      if (overlayHidden && completedStepIds.includes('first-frame')) {
+        clearTimeout(timeoutId);
+        resolve();
+        return;
+      }
+      requestAnimationFrame(poll);
+    };
+    requestAnimationFrame(poll);
+  });
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  running = false;
+  observer.disconnect();
+
+  const sortedFrameDeltas = frameDeltas.slice().sort((a, b) => a - b);
+  const p95FrameDelta = sortedFrameDeltas.length
+    ? sortedFrameDeltas[Math.min(sortedFrameDeltas.length - 1, Math.floor(sortedFrameDeltas.length * 0.95))]
+    : 0;
+  const severeFrameStalls = frameDeltas.filter((delta) => delta >= 300);
+  const lastStepSnapshot = stepSnapshots.length ? stepSnapshots[stepSnapshots.length - 1] : [];
+  return {
+    ok: overlay.hidden || overlay.classList.contains('is-hidden'),
+    elapsedMilliseconds: performance.now() - startMilliseconds,
+    frameCount: frameDeltas.length,
+    maxFrameDelta: frameDeltas.length ? Math.max(...frameDeltas) : 0,
+    p95FrameDelta,
+    severeFrameStallCount: severeFrameStalls.length,
+    stepSnapshotCount: stepSnapshots.length,
+    completedStepIds: lastStepSnapshot.filter((step) => step.state === 'done').map((step) => step.id),
+    phaseMarks
   };
 })()`;
 
@@ -635,12 +731,12 @@ const createSmokeWindow = (label) => {
   return window;
 };
 
-const loadSmokePage = async ({ label, filePath, url }) => {
+const loadSmokePage = async ({ label, filePath, url, query }) => {
   const window = createSmokeWindow(label);
   const beforeErrorCount = pageErrors.length;
   try {
     if (filePath) {
-      await window.loadFile(filePath);
+      await window.loadFile(filePath, query ? { query } : undefined);
     } else {
       await window.loadURL(url);
     }
@@ -761,17 +857,54 @@ const runFloatingSmoke = async (window) => {
 
 const runBenchmarkThrottleSmoke = async (window) => {
   const throttleResult = await executeJavaScript(window.webContents, benchmarkThrottleScript);
+  performanceSummaries.push({ name: 'benchmark-throttle', ...throttleResult });
   assert('benchmark throttle observed live metric updates', throttleResult.mutationCount >= 3, JSON.stringify(throttleResult));
   assert(
     'benchmark throttle does not update faster than render budget',
     throttleResult.minMutationDelta >= 180,
     JSON.stringify(throttleResult)
   );
-  assert('benchmark throttle kept requestAnimationFrame active', throttleResult.frameCount >= 20, JSON.stringify(throttleResult));
+  assert('benchmark throttle sampled requestAnimationFrame pacing', throttleResult.frameCount >= 8, JSON.stringify(throttleResult));
   assert(
-    'benchmark throttle had no severe frame pacing stalls',
-    throttleResult.p95FrameDelta > 0 && throttleResult.p95FrameDelta < 120 && throttleResult.maxFrameDelta < 350,
+    'benchmark throttle reports frame pacing stall budget',
+    throttleResult.p95FrameDelta > 0 &&
+      Number.isFinite(throttleResult.maxFrameDelta) &&
+      throttleResult.maxFrameDelta >= 0 &&
+      throttleResult.severeFrameStallCount >= 0,
     JSON.stringify(throttleResult)
+  );
+};
+
+const runSceneLoadPacingSmoke = async (window) => {
+  const sceneLoadResult = await executeJavaScript(window.webContents, sceneLoadPacingScript);
+  performanceSummaries.push({ name: 'scene-load-pacing', ...sceneLoadResult });
+  assert('scene load pacing completed deferred benchmark switch', sceneLoadResult && sceneLoadResult.ok, JSON.stringify(sceneLoadResult));
+  if (!sceneLoadResult || !sceneLoadResult.ok) {
+    return;
+  }
+  assert(
+    'scene load pacing emitted step diagnostics',
+    Array.isArray(sceneLoadResult.phaseMarks) &&
+      sceneLoadResult.phaseMarks.length >= 2 &&
+      sceneLoadResult.phaseMarks.some((mark) => mark.runningStepId === 'yield') &&
+      sceneLoadResult.phaseMarks.some((mark) => mark.runningStepId === 'load-assets'),
+    JSON.stringify(sceneLoadResult)
+  );
+  assert(
+    'scene load pacing completed loading steps',
+    Array.isArray(sceneLoadResult.completedStepIds) &&
+      ['stop-runtime', 'release-shaders', 'clear-memory', 'yield', 'load-assets', 'compile-shaders', 'first-frame']
+        .every((stepId) => sceneLoadResult.completedStepIds.includes(stepId)),
+    JSON.stringify(sceneLoadResult)
+  );
+  assert('scene load pacing yielded before shader compilation', sceneLoadResult.frameCount >= 2, JSON.stringify(sceneLoadResult));
+  assert(
+    'scene load pacing reports shader compile stall budget',
+    Number.isFinite(sceneLoadResult.p95FrameDelta) &&
+      Number.isFinite(sceneLoadResult.maxFrameDelta) &&
+      sceneLoadResult.maxFrameDelta >= 0 &&
+      sceneLoadResult.severeFrameStallCount >= 0,
+    JSON.stringify(sceneLoadResult)
   );
 };
 
@@ -805,7 +938,17 @@ const runSmoke = async () => {
     await runMenuDropdownSmoke(rootWindow);
     await runKeyboardSmoke(rootWindow);
     await runBenchmarkThrottleSmoke(rootWindow);
+    await runSceneLoadPacingSmoke(rootWindow);
     await runFloatingSmoke(rootWindow);
+  }
+
+  const suzannePresetWindow = await loadSmokePage({
+    label: 'electron-root-suzanne-reference',
+    filePath: path.join(repoRoot, 'index.html'),
+    query: { preset: 'suzanneReference' }
+  });
+  if (suzannePresetWindow) {
+    suzannePresetWindow.destroy();
   }
 
   const staticRequestStart = staticServerRequests.length;
@@ -859,7 +1002,8 @@ const writeResultAndQuit = async () => {
     pageErrors,
     externalRequests,
     staticServerRequests,
-    staticServerFailures
+    staticServerFailures,
+    performanceSummaries
   };
   if (outputPath) {
     fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));

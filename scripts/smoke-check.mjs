@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -24,6 +24,44 @@ const assert = (name, condition, detail = '') => record(name, Boolean(condition)
 
 const fileHash = (filePath) => createHash('sha256').update(readFileSync(filePath)).digest('hex');
 const readUtf8 = (...parts) => readFileSync(repoPath(...parts), 'utf8');
+
+const extractMarkdownSection = (source, heading) => {
+  const headingIndex = source.indexOf(heading);
+  if (headingIndex < 0) {
+    return '';
+  }
+  const nextHeadingIndex = source.indexOf('\n## ', headingIndex + heading.length);
+  return nextHeadingIndex < 0 ? source.slice(headingIndex) : source.slice(headingIndex, nextHeadingIndex);
+};
+
+const countObjFaces = (filePath) => {
+  const source = readFileSync(filePath, 'utf8');
+  return (source.match(/^f\s+/gmu) || []).length;
+};
+
+const readGlbHeader = (filePath) => {
+  const fd = openSync(filePath, 'r');
+  try {
+    const header = Buffer.alloc(20);
+    readSync(fd, header, 0, header.length, 0);
+    const magic = header.readUInt32LE(0);
+    const version = header.readUInt32LE(4);
+    const byteLength = header.readUInt32LE(8);
+    const jsonLength = header.readUInt32LE(12);
+    const jsonType = header.readUInt32LE(16);
+    const jsonChunk = Buffer.alloc(jsonLength);
+    readSync(fd, jsonChunk, 0, jsonLength, 20);
+    return {
+      magic,
+      version,
+      byteLength,
+      jsonType,
+      json: JSON.parse(jsonChunk.toString('utf8').trim())
+    };
+  } finally {
+    closeSync(fd);
+  }
+};
 
 const listFiles = (directory, predicate = () => true) => {
   const entries = readdirSync(directory, { withFileTypes: true });
@@ -60,6 +98,54 @@ const htmlHasButtonSelector = (html, selector) => {
   const buttonPattern = new RegExp(`<button\\b[^>]*\\b${attributeName}="${attributeValue}"[^>]*>`, 'u');
   return buttonPattern.test(html);
 };
+
+const sourceHasSelector = (source, selector) => {
+  const idMatch = /^#([A-Za-z][\w:-]*)$/u.exec(selector);
+  if (idMatch) {
+    const [, id] = idMatch;
+    return (
+      source.includes(`id="${id}"`) ||
+      source.includes(`id='${id}'`) ||
+      source.includes(`id=${id}`) ||
+      source.includes(`id = '${id}'`) ||
+      source.includes(`id = "${id}"`) ||
+      source.includes(`'${id}'`) ||
+      source.includes(`"${id}"`)
+    );
+  }
+
+  const elementIdMatch = /^([a-z]+)#([A-Za-z][\w:-]*)$/iu.exec(selector);
+  if (elementIdMatch) {
+    return sourceHasSelector(source, `#${elementIdMatch[2]}`);
+  }
+
+  const buttonMatch = /^button\[([^=\]]+)="([^"]+)"\]$/u.exec(selector);
+  if (buttonMatch) {
+    const [, attributeName, attributeValue] = buttonMatch;
+    return source.includes(`${attributeName}="${attributeValue}"`) || source.includes(`${attributeName}=${attributeValue}`) || source.includes(`'${attributeValue}'`);
+  }
+
+  return source.includes(selector);
+};
+
+const readReactUiSource = () => [
+  readUtf8('src', 'main.jsx.js'),
+  readUtf8('src', 'components', 'MenuBar.js'),
+  readUtf8('src', 'components', 'MenuGroup.js'),
+  readUtf8('src', 'components', 'QuickActions.js'),
+  readUtf8('src', 'components', 'LoadingOverlay.js'),
+  readUtf8('src', 'components', 'SceneTreeWindow.js'),
+  readUtf8('src', 'components', 'InspectorPanel.js'),
+  readUtf8('src', 'components', 'BenchmarkPanel.js'),
+  readUtf8('src', 'components', 'FloatingWindow.js'),
+  readUtf8('src', 'components', 'panels', 'ObjectPanel.js'),
+  readUtf8('src', 'components', 'panels', 'RenderPanel.js'),
+  readUtf8('src', 'components', 'panels', 'PhysicsPanel.js'),
+  readUtf8('src', 'components', 'panels', 'CameraPanel.js'),
+  readUtf8('src', 'components', 'panels', 'OutputPanel.js'),
+  readUtf8('src', 'components', 'panels', 'ImageCorrectionPanel.js'),
+  readUtf8('src', 'components', 'panels', 'PresetPanel.js')
+].join('\n');
 
 const extractImportMap = (html) => {
   const match = /<script\s+type="importmap"\s*>([\s\S]*?)<\/script>/iu.exec(html);
@@ -126,6 +212,73 @@ const checkMirrorPairs = () => {
     const relativeSourcePath = displayPath(sourceFile);
     const docsSourcePath = repoPath('docs', ...relativeSourcePath.split('/'));
     assert(`mirror exists docs/${relativeSourcePath}`, existsSync(docsSourcePath));
+  }
+};
+
+const checkReferenceModelAssets = () => {
+  const modelFiles = [
+    'assets/models/suzanne.obj',
+    'assets/models/suzanne_low.obj',
+    'assets/models/suzanne.LICENSE.md',
+    'assets/models/sponza/sponza.glb',
+    'assets/models/sponza/LICENSE.md',
+    'assets/models/sponza/README.upstream.md'
+  ];
+
+  for (const modelFile of modelFiles) {
+    const rootPath = repoPath(...modelFile.split('/'));
+    const docsPath = repoPath('docs', ...modelFile.split('/'));
+    assert(`reference model exists ${modelFile}`, existsSync(rootPath) && statSync(rootPath).isFile());
+    assert(`reference model mirror exists docs/${modelFile}`, existsSync(docsPath) && statSync(docsPath).isFile());
+    if (existsSync(rootPath) && existsSync(docsPath)) {
+      assert(`reference model mirror size ${modelFile}`, statSync(rootPath).size === statSync(docsPath).size);
+    }
+  }
+
+  const suzannePath = repoPath('assets', 'models', 'suzanne.obj');
+  const suzanneLowPath = repoPath('assets', 'models', 'suzanne_low.obj');
+  if (existsSync(suzannePath)) {
+    assert('reference Suzanne full triangle count', countObjFaces(suzannePath) === 3936);
+  }
+  if (existsSync(suzanneLowPath)) {
+    const lowFaceCount = countObjFaces(suzanneLowPath);
+    assert('reference Suzanne low triangle count', lowFaceCount >= 150 && lowFaceCount <= 220, String(lowFaceCount));
+  }
+
+  const suzanneLicense = readUtf8('assets', 'models', 'suzanne.LICENSE.md');
+  const sponzaLicense = readUtf8('assets', 'models', 'sponza', 'LICENSE.md');
+  const modelReadme = readUtf8('assets', 'models', 'README.md');
+  assert('reference Suzanne license is CC0', suzanneLicense.includes('CC0 1.0 Universal') && modelReadme.includes('CC0-1.0'));
+  assert('reference Sponza license is documented', sponzaLicense.includes('Cryengine Limited License Agreement') && modelReadme.includes('LicenseRef-CRYENGINE-Agreement'));
+
+  const referenceModelSource = readUtf8('src', 'referenceModelData.js');
+  const docsReferenceModelSource = readUtf8('docs', 'src', 'referenceModelData.js');
+  assert('reference model data mirror parity', referenceModelSource === docsReferenceModelSource);
+  assert('reference model data exports Suzanne low mesh', (
+    referenceModelSource.includes('SUZANNE_LOW_REFERENCE_MODEL') &&
+    referenceModelSource.includes("assetPath: 'assets/models/suzanne_low.obj'") &&
+    referenceModelSource.includes('triangleCount: 196') &&
+    referenceModelSource.includes('fullTriangleCount: 3936')
+  ));
+  assert('reference model data exports Sponza GLB metadata', (
+    referenceModelSource.includes('SPONZA_GLB_REFERENCE_MODEL') &&
+    referenceModelSource.includes("assetPath: 'assets/models/sponza/sponza.glb'") &&
+    referenceModelSource.includes('triangleCount: 262267')
+  ));
+
+  const sponzaPath = repoPath('assets', 'models', 'sponza', 'sponza.glb');
+  if (existsSync(sponzaPath)) {
+    const glb = readGlbHeader(sponzaPath);
+    assert('reference Sponza GLB magic', glb.magic === 0x46546c67);
+    assert('reference Sponza GLB version', glb.version === 2);
+    assert('reference Sponza GLB byte length', glb.byteLength === statSync(sponzaPath).size);
+    assert('reference Sponza GLB JSON chunk', glb.jsonType === 0x4e4f534a && glb.json.asset?.version === '2.0');
+    assert('reference Sponza GLB is self-contained', (
+      glb.json.buffers?.length === 1
+      && !glb.json.buffers[0].uri
+      && glb.json.images?.length > 0
+      && glb.json.images.every((image) => Number.isInteger(image.bufferView) && !image.uri)
+    ), JSON.stringify({ buffers: glb.json.buffers?.length, images: glb.json.images?.length }));
   }
 };
 
@@ -217,6 +370,7 @@ const checkImportMapAndStaticAssets = () => {
 const checkKeyboardShortcutContracts = () => {
   const bundle = readUtf8('webgl-path-tracing.js');
   const html = readUtf8('index.html');
+  const reactUiSource = readReactUiSource();
   const readme = readUtf8('README.md');
 
   const ctrlShortcutSelectors = Object.freeze({
@@ -250,7 +404,7 @@ const checkKeyboardShortcutContracts = () => {
 
   for (const [keyCode, selector] of Object.entries({ ...ctrlShortcutSelectors, ...commandShortcutSelectors })) {
     assert(`keyboard selector ${keyCode}`, bundle.includes(`${keyCode}: '${selector}'`), selector);
-    assert(`keyboard selector target exists ${keyCode}`, htmlHasButtonSelector(html, selector), selector);
+    assert(`keyboard selector target exists ${keyCode}`, htmlHasButtonSelector(html, selector) || sourceHasSelector(reactUiSource, selector), selector);
   }
 
   for (const documentedShortcut of ['Ctrl+1', 'Ctrl+2', 'Ctrl+6', 'Ctrl+N', 'Ctrl+S', '`C` toggles', '`P` pauses', '`K` pauses', '`F` toggles', '`I` toggles', '`T` toggles', '`B` toggles', '`L` selects']) {
@@ -261,6 +415,7 @@ const checkKeyboardShortcutContracts = () => {
 const checkFloatingWindowContracts = () => {
   const source = readUtf8('src', 'components', 'FloatingWindow.js');
   const html = readUtf8('index.html');
+  const reactUiSource = readReactUiSource();
   const readme = readUtf8('README.md');
 
   assert('floating window exports stable storage key', source.includes("FLOATING_WINDOW_STORAGE_KEY = 'pathtracer.floatingWindows.v1'"));
@@ -277,12 +432,12 @@ const checkFloatingWindowContracts = () => {
   assert('floating window show clears collapse', source.includes('setCollapsed(false)'));
 
   for (const windowId of ['scene-tree-window', 'controls', 'benchmark']) {
-    const sectionPattern = new RegExp(`<section\\b[^>]*\\bid="${windowId}"[^>]*\\bdata-floating-window\\b`, 'u');
-    assert(`fallback HTML has floating window ${windowId}`, sectionPattern.test(html));
+    assert(`React has floating window ${windowId}`, sourceHasSelector(reactUiSource, `#${windowId}`));
+    assert(`HTML tombstones floating window ${windowId}`, html.includes(`react-migrated:${windowId}`));
   }
-  assert('fallback HTML has drag handles', (html.match(/data-window-drag-handle/gu) || []).length >= 3);
-  assert('fallback HTML has collapse commands', (html.match(/data-window-command="collapse"/gu) || []).length >= 3);
-  assert('fallback HTML has close commands', (html.match(/data-window-command="close"/gu) || []).length >= 3);
+  assert('React has drag handles', source.includes('data-window-drag-handle'));
+  assert('React has collapse commands', source.includes('data-window-command="collapse"'));
+  assert('React has close commands', source.includes('data-window-command="close"'));
   assert('README documents floating panel restore', readme.includes('panel layout is restored in the browser'));
 };
 
@@ -309,7 +464,7 @@ const checkReactCanvasCssContracts = () => {
   ));
   assert('render canvas CSS effect targets document root', (
     renderCanvasSource.includes('ownerDocument.documentElement') &&
-    renderCanvasSource.includes('return writeCanvasCssProperties(documentElement, width, height);') &&
+    renderCanvasSource.includes('return applyRenderCanvasCssProperties(documentElement, width, height);') &&
     renderCanvasSource.includes('}, [width, height]);')
   ));
   assert('render canvas restores previous document root CSS values', (
@@ -322,16 +477,24 @@ const checkReactCanvasCssContracts = () => {
   ));
 
   assert('active entrypoint still loads legacy renderer', html.includes('<script type="module" src="webgl-path-tracing.js"></script>'));
+  assert('active entrypoint loads React shell before legacy renderer', html.indexOf('src="src/main.jsx.js"') !== -1 && html.indexOf('src="src/main.jsx.js"') < html.indexOf('src="webgl-path-tracing.js"'));
   assert('active entrypoint still has fallback canvas', html.includes('<canvas id="canvas" width="512" height="512"></canvas>'));
-  assert('React scaffold remains inert unless explicitly activated', (
-    html.includes('<div id="ui-root" hidden></div>') &&
-    mainSource.includes('AppScaffold({ active = false, includeCanvas = false, onCanvasReady })')
+  assert('React scaffold activates from ui-root dataset', (
+    html.includes('<div id="ui-root" data-react-app-shell="active"></div>') &&
+    mainSource.includes("rootElement.dataset.reactAppShell === 'active'") &&
+    mainSource.includes("rootElement.dataset.reactMounted = mountOptions.active ? 'active' : 'inert';")
   ));
-  assert('legacy fallback writes canvas CSS custom properties on document root', (
+  assert('React scaffold keeps canvas compatibility opt-in', (
+    mainSource.includes('AppScaffold({ active = false, includeCanvas = false, onCanvasReady })') &&
+    mainSource.includes("rootElement.dataset.reactCanvas === 'active'")
+  ));
+  assert('legacy fallback writes canvas CSS custom properties through RenderCanvas helper', (
+    legacyRendererSource.includes("import { applyRenderCanvasCssProperties } from './src/components/RenderCanvas.js';") &&
     legacyRendererSource.includes('const applyCanvasSizeToDocument = (documentObject, canvasElement) => {') &&
-    canvasCssProperties.every((propertyName) => (
-      legacyRendererSource.includes(`documentObject.documentElement.style.setProperty('${propertyName}'`)
-    ))
+    legacyRendererSource.includes('applyRenderCanvasCssProperties(documentObject.documentElement, CANVAS_RENDER_WIDTH, CANVAS_RENDER_HEIGHT);')
+  ));
+  assert('legacy fallback avoids raw document root canvas CSS custom-property writes', (
+    !/documentObject\.documentElement\.style\.setProperty\(\s*['"`]--canvas-/u.test(legacyRendererSource)
   ));
   assert('legacy fallback sizes the active canvas element', (
     legacyRendererSource.includes('canvasElement.width = CANVAS_RENDER_WIDTH;') &&
@@ -340,6 +503,36 @@ const checkReactCanvasCssContracts = () => {
   assert('legacy fallback avoids canvas inline CSS custom-property writes', (
     !/canvasElement\.style\.setProperty\(\s*['"`]--canvas-/u.test(legacyRendererSource)
   ));
+};
+
+const checkReactStaticMigrationContracts = async () => {
+  const { MIGRATED_STATIC_SECTIONS } = await import(pathToFileURL(repoPath('src', 'components', 'migrationManifest.js')).href);
+  const html = readUtf8('index.html');
+  const reactUiSource = readReactUiSource();
+  const mainSource = readUtf8('src', 'main.jsx.js');
+
+  assert('migration manifest has migrated sections', Array.isArray(MIGRATED_STATIC_SECTIONS) && MIGRATED_STATIC_SECTIONS.length >= 5);
+  assert('React app exports migration manifest', mainSource.includes('export { MIGRATED_STATIC_SECTIONS };'));
+  assert('React app renders loading overlay', mainSource.includes('<${LoadingOverlay} />'));
+  assert('index keeps only renderer compatibility canvas', html.includes('data-legacy-renderer-compat="canvas"'));
+
+  for (const section of MIGRATED_STATIC_SECTIONS) {
+    const sourcePath = repoPath(...section.source.split('/'));
+    assert(`migration source exists ${section.id}`, existsSync(sourcePath), section.source);
+    assert(`migration tombstone exists ${section.id}`, html.includes(section.tombstone), section.tombstone);
+    assert(`migration component mounted ${section.component}`, mainSource.includes(section.component) || reactUiSource.includes(`function ${section.component}`), section.component);
+    for (const selector of section.requiredSelectors) {
+      assert(`migration selector ${section.id} ${selector}`, sourceHasSelector(reactUiSource, selector), selector);
+    }
+  }
+
+  for (const removedStaticId of ['app-menu', 'loading-overlay', 'scene-tree-window', 'controls', 'benchmark']) {
+    assert(
+      `index removed static ${removedStaticId}`,
+      !new RegExp(`<(?:nav|section|div)\\b[^>]*\\bid="${removedStaticId}"`, 'u').test(html),
+      removedStaticId
+    );
+  }
 };
 
 const checkBenchmarkSignalContracts = () => {
@@ -368,9 +561,12 @@ const checkBenchmarkSignalContracts = () => {
   assert('store guards app signal writes', storeSource.includes('if (!areSignalValuesEqual(fieldSignal.value, nextValue))'));
   assert('store bound app object skips unchanged writes', storeSource.includes('} else if (!areSignalValuesEqual(signals[fieldName].value, nextValue)) {'));
   assert('store patches state inside batch', /export const patchApplicationState[\s\S]*batch\(\(\) =>/u.test(storeSource));
+  assert('store exports legacy application state binder', storeSource.includes('export const bindLegacyApplicationStateObject = bindApplicationStateObject;'));
+  assert('store binder patches initial legacy state', /export const bindApplicationStateObject[\s\S]*patchApplicationState\(initialStatePatch, signals\);/u.test(storeSource));
 
   const benchmarkStoreSource = readUtf8('src', 'benchmarkStore.js');
   assert('benchmark store exports updateBenchmarkSignals', benchmarkStoreSource.includes('export const updateBenchmarkSignals'));
+  assert('benchmark store exports gpu renderer setter', benchmarkStoreSource.includes('export const setBenchmarkGpuRenderer'));
   assert('benchmark store batches signal updates', /export const updateBenchmarkSignals[\s\S]*batch\(\(\) =>/u.test(benchmarkStoreSource));
   assert('benchmark store skips unchanged writes', benchmarkStoreSource.includes('if (!Object.is(targetSignal.value, value))'));
   for (const fieldName of [
@@ -381,7 +577,12 @@ const checkBenchmarkSignalContracts = () => {
     'measurementSource',
     'renderResolution',
     'lightBounces',
-    'gpuRenderer'
+    'gpuRenderer',
+    'accumulatedSamples',
+    'convergenceSampleCount',
+    'estimatedGpuBufferMemoryBytes',
+    'sceneComplexityScore',
+    'benchmarkSceneLabel'
   ]) {
     assert(`benchmark store updates ${fieldName}`, benchmarkStoreSource.includes(fieldName));
   }
@@ -390,16 +591,84 @@ const checkBenchmarkSignalContracts = () => {
   assert('render bridge imports benchmark signal updater', renderBridgeSource.includes("import { updateBenchmarkSignals } from './benchmarkStore.js';"));
   assert('render bridge batches render-loop signal writes', renderBridgeSource.includes('batch(() =>'));
   assert('render bridge passes benchmark context', renderBridgeSource.includes('updateBenchmarkSignals(benchmarkSnapshot, {'));
+  assert('render bridge owns render frame scheduling', (
+    renderBridgeSource.includes('export const scheduleRenderFrame =') &&
+    renderBridgeSource.includes('activeWindow.requestAnimationFrame(runScheduledFrame)') &&
+    renderBridgeSource.includes('export const cancelScheduledRenderFrame =')
+  ));
+  assert('render bridge exposes WebGL render invocation', renderBridgeSource.includes('export const invokeWebGlRenderer ='));
 
   const legacyRendererSource = readUtf8('webgl-path-tracing.js');
+  const updateGpuStatusBody = legacyRendererSource.match(
+    /const updateGpuStatus = \(documentObject, webGlContext\) => \{([\s\S]*?)\n\};/u
+  )?.[1] || '';
+  const loggerSource = readUtf8('src', 'logger.js');
+  const electronSmokeMainSource = readUtf8('scripts', 'electron-smoke-main.cjs');
+  const electronSmokeCheckSource = readUtf8('scripts', 'electron-smoke-check.mjs');
+  assert('logger exposes performance channel', (
+    loggerSource.includes("'performance'") &&
+    loggerSource.includes('export const performanceLogger = logger.performance;')
+  ));
   assert(
     'legacy renderer imports benchmark signal updater',
-    legacyRendererSource.includes("import { updateBenchmarkSignals } from './src/benchmarkStore.js';")
+    legacyRendererSource.includes('updateBenchmarkSignals') &&
+      legacyRendererSource.includes("'./src/benchmarkStore.js'")
+  );
+  assert('legacy renderer imports signal effect', legacyRendererSource.includes("import { effect } from '@preact/signals';"));
+  assert(
+    'legacy renderer imports application state binder',
+    legacyRendererSource.includes("import { bindLegacyApplicationStateObject } from './src/store.js';")
   );
   assert(
-    'legacy benchmark display updates signals at throttle point',
-    /this\.previousUpdateMilliseconds = currentTimeMilliseconds;\s*updateBenchmarkSignals\(benchmarkSnapshot, \{/u.test(legacyRendererSource)
+    'legacy application state is signal-bound',
+    legacyRendererSource.includes('const createApplicationState = () => bindLegacyApplicationStateObject({')
   );
+  assert(
+    'legacy benchmark bridge updates signals at throttle point',
+    /class BenchmarkSignalBridge[\s\S]*this\.previousUpdateMilliseconds = currentTimeMilliseconds;[\s\S]*updateBenchmarkSignals\(benchmarkSnapshot, \{/u.test(legacyRendererSource)
+  );
+  assert('legacy benchmark display class retired', !legacyRendererSource.includes('class BenchmarkDisplay'));
+  assert(
+    'legacy benchmark fallback binds DOM to signals',
+    legacyRendererSource.includes('const attachLegacyBenchmarkSignalBindings = (documentObject) => (') &&
+      legacyRendererSource.includes('LEGACY_BENCHMARK_SIGNAL_BINDINGS.map((binding) => effect(() => {')
+  );
+  assert(
+    'legacy benchmark metrics avoid required DOM reads',
+    !/readRequiredElement\(\s*documentObject,\s*['"`]benchmark-(performance-score|rays-per-second|ray-bandwidth|perceptual-fps|resolution|bounces|samples|convergence|gpu-memory|scene-complexity|gpu-renderer|source)['"`]/u.test(legacyRendererSource)
+  );
+  assert(
+    'gpu status populates gpu renderer signal without DOM writes',
+    updateGpuStatusBody.includes('setBenchmarkGpuRenderer(rendererLabel);') &&
+      updateGpuStatusBody.includes('return returnSuccess(gpuInfo);') &&
+      !/(?:textContent|classList\.toggle|\.title =)/u.test(updateGpuStatusBody)
+  );
+  assert('legacy render-loop scheduling routes through bridge', (
+    legacyRendererSource.includes('scheduleRenderFrame(application.applicationState, renderFrame, { canvas: application.canvasElement })') &&
+    legacyRendererSource.includes('return scheduleRenderFrame(applicationState);') &&
+    legacyRendererSource.includes('return cancelScheduledRenderFrame(applicationState);') &&
+    !legacyRendererSource.includes('requestAnimationFrame(applicationState.animationFrameCallback)') &&
+    !legacyRendererSource.includes('cancelAnimationFrame(applicationState.animationFrameId)')
+  ));
+  assert('legacy WebGL render invocation routes through bridge', (
+    legacyRendererSource.includes('invokeWebGlRenderer(this.pathTracer, applicationState)') &&
+    !legacyRendererSource.includes('this.pathTracer.render(applicationState)')
+  ));
+  assert('electron smoke checks benchmark stall counters', (
+    electronSmokeMainSource.includes('severeFrameStallCount') &&
+    electronSmokeMainSource.includes('benchmark throttle reports frame pacing stall budget')
+  ));
+  assert('electron smoke checks deferred scene-load frame pacing', (
+    electronSmokeMainSource.includes('const sceneLoadPacingScript =') &&
+    electronSmokeMainSource.includes('scene load pacing completed deferred benchmark switch') &&
+    electronSmokeMainSource.includes('scene load pacing yielded before shader compilation') &&
+    electronSmokeMainSource.includes('scene load pacing reports shader compile stall budget')
+  ));
+  assert('electron smoke compiles Suzanne reference preset', (
+    electronSmokeMainSource.includes("label: 'electron-root-suzanne-reference'") &&
+    electronSmokeMainSource.includes("query: { preset: 'suzanneReference' }")
+  ));
+  assert('electron smoke prints performance summaries', electronSmokeCheckSource.includes('perf - ${summary.name}: frames='));
   assert('interactive quality throttle uses one ray per pixel', legacyRendererSource.includes('const INTERACTIVE_QUALITY_RAYS_PER_PIXEL = 1;'));
   assert('interactive quality throttle preserves configured bounces', (
     !legacyRendererSource.includes('INTERACTIVE_QUALITY_LIGHT_BOUNCE_COUNT') &&
@@ -415,7 +684,87 @@ const checkBenchmarkSignalContracts = () => {
 const checkBenchmarkSceneContracts = () => {
   const legacyRendererSource = readUtf8('webgl-path-tracing.js');
   const html = readUtf8('index.html');
+  const reactUiSource = readReactUiSource();
+  const appCss = readUtf8('src', 'app.css');
 
+  assert('sponza atrium benchmark factory exists', legacyRendererSource.includes('const createBenchmarkSponzaAtriumSceneObjects'));
+  assert('sponza atrium benchmark is default', legacyRendererSource.includes("const DEFAULT_BENCHMARK_SCENE_NAME = 'benchmarkSponzaAtrium';"));
+  assert('sponza atrium benchmark registered', legacyRendererSource.includes('benchmarkSponzaAtrium: Object.freeze({'));
+  assert('reference mesh scene object exists', legacyRendererSource.includes('class ReferenceMeshSceneObject'));
+  assert('reference mesh shader intersection exists', legacyRendererSource.includes('const intersectTriangleSource = ['));
+  assert('Suzanne reference preset registered', (
+    legacyRendererSource.includes('suzanneReference: createSuzanneReferenceSceneObjects') &&
+    legacyRendererSource.includes('suzanneReference: createDefaultSceneMetadata()') &&
+    sourceHasSelector(reactUiSource, 'button[data-preset="suzanneReference"]')
+  ));
+  assert('Sponza benchmark tracks GLB reference metadata', (
+    legacyRendererSource.includes('referenceAssetPath: SPONZA_GLB_REFERENCE_MODEL.assetPath') &&
+    legacyRendererSource.includes('referenceTriangleCount: SPONZA_GLB_REFERENCE_MODEL.triangleCount')
+  ));
+  assert(
+    'sponza atrium benchmark target settings',
+    /benchmarkSponzaAtrium:[\s\S]*targetBounces:\s*8,[\s\S]*targetRaysPerPixel:\s*16/u.test(legacyRendererSource)
+  );
+  assert(
+    'sponza atrium benchmark uses exact opening camera metadata',
+    legacyRendererSource.includes('cameraEyePosition: Object.freeze([0, 0.3, 0])') &&
+      legacyRendererSource.includes('cameraTargetPosition: Object.freeze([1, 0.2, 0])') &&
+      legacyRendererSource.includes('cameraFieldOfViewDegrees: 65')
+  );
+  assert(
+    'sponza atrium benchmark exposes lissajous tuning constants',
+    legacyRendererSource.includes('const lissajousAmplitudeX = 0.45;') &&
+      legacyRendererSource.includes('const lissajousAmplitudeY = 0.12;') &&
+      legacyRendererSource.includes('const lissajousAmplitudeZ = 0.38;') &&
+      legacyRendererSource.includes('const lissajousFreqX = 3 * 0.11;') &&
+      legacyRendererSource.includes('const lissajousFreqY = 5 * 0.07;') &&
+      legacyRendererSource.includes('const lissajousFreqZ = 7 * 0.09;')
+  );
+  assert(
+    'sponza atrium benchmark keeps shader object budget capped',
+    legacyRendererSource.includes('const SPONZA_ATRIUM_FLAGSTONE_BAND_COUNT = 4;') &&
+      legacyRendererSource.includes('const SPONZA_ATRIUM_COLUMN_PAIR_COUNT = 3;') &&
+      legacyRendererSource.includes('const SPONZA_ATRIUM_CURTAIN_PAIR_COUNT = 2;') &&
+      !legacyRendererSource.includes('slabXIndex < 6') &&
+      !legacyRendererSource.includes('columnIndex < 5')
+  );
+  assert('sponza atrium benchmark menu button exists', (
+    htmlHasButtonSelector(html, 'button[data-benchmark-scene="benchmarkSponzaAtrium"]') ||
+    sourceHasSelector(reactUiSource, 'button[data-benchmark-scene="benchmarkSponzaAtrium"]')
+  ));
+  assert(
+    'scene menu loads release path tracer program before deferred compile',
+    /releaseSceneProgram\(\) \{[\s\S]*deleteProgram\(this\.tracerProgram\)[\s\S]*this\.sceneObjects = \[\][\s\S]*webGlContext\.flush\(\)/u.test(legacyRendererSource) &&
+      legacyRendererSource.includes('releaseSceneRendererResources()') &&
+      legacyRendererSource.includes('const requestDeferredSceneLoad =') &&
+      legacyRendererSource.includes('windowObject.requestAnimationFrame(queueAfterFrame)') &&
+      legacyRendererSource.includes('windowObject.setTimeout(runLoadAction, 0)') &&
+      /if \(presetName\) \{[\s\S]*requestDeferredSceneLoad/u.test(legacyRendererSource) &&
+      /if \(benchmarkSceneName\) \{[\s\S]*requestDeferredSceneLoad/u.test(legacyRendererSource)
+  );
+  assert(
+    'scene loading dialog lists offload and new asset steps',
+    sourceHasSelector(reactUiSource, '#loading-overlay') &&
+      sourceHasSelector(reactUiSource, '#loading-steps') &&
+      legacyRendererSource.includes('const DEFERRED_SCENE_LOAD_STEPS = Object.freeze([') &&
+      legacyRendererSource.includes('Offload the previous path-tracer shader program') &&
+      legacyRendererSource.includes('Clear scene uniforms, texture bindings, and accumulation history') &&
+      legacyRendererSource.includes('Load new scene assets and associated components') &&
+      legacyRendererSource.includes('const updateDeferredSceneLoadDialog =') &&
+      legacyRendererSource.includes('const writeLoadingSteps =') &&
+      appCss.includes('.loading-step[data-step-state="running"]') &&
+      appCss.includes('.loading-step[data-step-state="done"]') &&
+      appCss.includes('.loading-step[data-step-state="error"]')
+  );
+  assert(
+    'benchmark lighting outliers are toned down',
+    !legacyRendererSource.includes('skyBrightness: 2.65') &&
+      !legacyRendererSource.includes('skyBrightness: 2.35') &&
+      !legacyRendererSource.includes('skyBrightness: 2.0') &&
+      !legacyRendererSource.includes('bloomStrength: 0.82') &&
+      !legacyRendererSource.includes('glareStrength: 0.42') &&
+      !legacyRendererSource.includes('lightIntensity: 0.92')
+  );
   assert('particle fluid benchmark factory exists', legacyRendererSource.includes('const createBenchmarkParticleFluidSceneObjects'));
   assert('particle fluid benchmark registered', legacyRendererSource.includes('benchmarkParticleFluid: Object.freeze({'));
   assert(
@@ -435,31 +784,34 @@ const checkBenchmarkSceneContracts = () => {
       legacyRendererSource.includes('Particle Fluid Glass Container') &&
       legacyRendererSource.includes('MATERIAL.GLASS')
   );
-  assert('particle fluid benchmark menu button exists', htmlHasButtonSelector(html, 'button[data-benchmark-scene="benchmarkParticleFluid"]'));
+  assert('particle fluid benchmark menu button exists', (
+    htmlHasButtonSelector(html, 'button[data-benchmark-scene="benchmarkParticleFluid"]') ||
+    sourceHasSelector(reactUiSource, 'button[data-benchmark-scene="benchmarkParticleFluid"]')
+  ));
   assert('particle fluid benchmark controls exist', (
-    html.includes('id="particle-fluid-controls"') &&
-    html.includes('id="particle-fluid-count"') &&
-    html.includes('id="particle-fluid-radius"') &&
-    html.includes('id="particle-fluid-stiffness"') &&
-    htmlHasButtonSelector(html, 'button[data-action="apply-particle-fluid-settings"]')
+    sourceHasSelector(reactUiSource, '#particle-fluid-controls') &&
+    sourceHasSelector(reactUiSource, '#particle-fluid-count') &&
+    sourceHasSelector(reactUiSource, '#particle-fluid-radius') &&
+    sourceHasSelector(reactUiSource, '#particle-fluid-stiffness') &&
+    sourceHasSelector(reactUiSource, 'button[data-action="apply-particle-fluid-settings"]')
   ));
 };
 
 const checkPhysicsJointContracts = () => {
   const legacyRendererSource = readUtf8('webgl-path-tracing.js');
-  const html = readUtf8('index.html');
+  const reactUiSource = readReactUiSource();
   const decisions = readUtf8('docs', 'workstream-decisions.md');
 
   assert('spring joint fallback controls exist', (
-    html.includes('id="selected-physics-spring-connect-controls"') &&
-    html.includes('id="selected-physics-spring-rest-length"') &&
-    html.includes('id="selected-physics-spring-stiffness"') &&
-    html.includes('id="selected-physics-spring-damping"') &&
-    htmlHasButtonSelector(html, 'button[data-action="connect-selected-spring"]')
+    sourceHasSelector(reactUiSource, '#selected-physics-spring-connect-controls') &&
+    sourceHasSelector(reactUiSource, '#selected-physics-spring-rest-length') &&
+    sourceHasSelector(reactUiSource, '#selected-physics-spring-stiffness') &&
+    sourceHasSelector(reactUiSource, '#selected-physics-spring-damping') &&
+    sourceHasSelector(reactUiSource, 'button[data-action="connect-selected-spring"]')
   ));
   assert('spring joint connected list exists', (
-    html.includes('id="selected-physics-joints-section"') &&
-    html.includes('id="selected-physics-joint-list"')
+    sourceHasSelector(reactUiSource, '#selected-physics-joints-section') &&
+    sourceHasSelector(reactUiSource, '#selected-physics-joint-list')
   ));
   assert('spring joints use two selected physics objects', (
     legacyRendererSource.includes('readSelectedPhysicsJointObjects()') &&
@@ -485,6 +837,42 @@ const checkPhysicsJointContracts = () => {
     legacyRendererSource.includes('[spring selection]')
   ));
   assert('spring joint decision note exists', decisions.includes('## Physics Spring Joints'));
+};
+
+const checkPhysicsHotPathContracts = () => {
+  const legacyRendererSource = readUtf8('webgl-path-tracing.js');
+
+  assert('physics rebuild dirty flag helper exists', (
+    legacyRendererSource.includes('SCENE_OBJECT_PHYSICS_REBUILD_DIRTY_FLAG') &&
+    legacyRendererSource.includes('markSceneObjectPhysicsRebuildDirty(this)') &&
+    legacyRendererSource.includes('isSceneObjectPhysicsRebuildDirty(sceneObject)')
+  ));
+  assert('physics incremental rebuild plan exists', (
+    legacyRendererSource.includes('createIncrementalRebuildPlan(sceneObjects, applicationState)') &&
+    legacyRendererSource.includes('rebuildSceneIncrementally(sceneObjects, applicationState, rebuildPlan)') &&
+    legacyRendererSource.includes('previous-body-not-removable') &&
+    legacyRendererSource.includes('spring-joints-configured')
+  ));
+  assert('physics awake cache avoids repeated sleep scans', (
+    legacyRendererSource.includes('hasKnownAwakeDynamicPhysicsObjects') &&
+    legacyRendererSource.includes('isDynamicPhysicsAwakeCacheDirty') &&
+    legacyRendererSource.includes('awakeDynamicPhysicsSleepScanCount') &&
+    /hasAwakeDynamicPhysicsObjects\(\) \{[\s\S]*if \(!this\.isDynamicPhysicsAwakeCacheDirty\)/u.test(legacyRendererSource)
+  ));
+  assert('physics Rapier collision event queue feeds awake cache', (
+    legacyRendererSource.includes('new this.rapierRuntime.EventQueue(true)') &&
+    legacyRendererSource.includes('this.world.step(this.collisionEventQueue)') &&
+    legacyRendererSource.includes('drainCollisionEvents') &&
+    legacyRendererSource.includes('ActiveEvents.COLLISION_EVENTS')
+  ));
+  assert('physics worker shared memory scaffold documents isolation headers', (
+    legacyRendererSource.includes('createRapierPhysicsWorkerCapability') &&
+    legacyRendererSource.includes('createRapierPhysicsWorkerSharedStepState') &&
+    legacyRendererSource.includes('SharedArrayBuffer') &&
+    legacyRendererSource.includes('Atomics.store') &&
+    legacyRendererSource.includes('Cross-Origin-Opener-Policy: same-origin') &&
+    legacyRendererSource.includes('Cross-Origin-Embedder-Policy: require-corp')
+  ));
 };
 
 const checkEmissionModifierContracts = () => {
@@ -634,6 +1022,9 @@ const checkRendererPostProcessContracts = () => {
 const checkTodoEvidence = () => {
   const readme = readFileSync(repoPath('README.md'), 'utf8');
   const changelog = readFileSync(repoPath('CHANGELOG.md'), 'utf8');
+  const todos = readFileSync(repoPath('TODOS.md'), 'utf8');
+  const verificationSmoke = readFileSync(repoPath('docs', 'verification-smoke.md'), 'utf8');
+  const packageJson = JSON.parse(readFileSync(repoPath('package.json'), 'utf8'));
   const decisionsPath = repoPath('docs', 'workstream-decisions.md');
   const ecsPath = repoPath('docs', 'ecs-scene-model.md');
   const decisions = existsSync(decisionsPath) ? readFileSync(decisionsPath, 'utf8') : '';
@@ -644,18 +1035,46 @@ const checkTodoEvidence = () => {
   const docsMaterialComponentPath = repoPath('docs', 'src', 'components', 'MaterialComponent.js');
   const physicsComponentPath = repoPath('src', 'components', 'PhysicsComponent.js');
   const docsPhysicsComponentPath = repoPath('docs', 'src', 'components', 'PhysicsComponent.js');
+  const ws9Section = extractMarkdownSection(todos, '## Workstream 9: JS Performance (CPU-Side Hot Path Fixes)');
+  const deferredPerformanceSection = extractMarkdownSection(todos, '## Deferred Performance And React Runtime Follow-Ups');
 
   assert('evidence README documents loader scaffold', readme.includes('OBJ/MTL, STL, PLY, glTF 2.0 JSON'));
   assert('evidence README documents import coordinator', readme.includes('src/importers'));
   assert('evidence README links workstream decisions', readme.includes('docs/workstream-decisions.md'));
+  assert('evidence README documents WS9 performance work', readme.includes('CPU-side performance work is tracked as WS9'));
+  assert('evidence README documents Pages deploy smoke', readme.includes('npm run test:pages-deploy') && readme.includes('/pathtracer/'));
   assert('evidence decisions doc exists', existsSync(decisionsPath));
   assert('evidence ECS scene model doc exists', existsSync(ecsPath));
   assert('evidence decisions cover imported assets', decisions.includes('## Imported Assets'));
   assert('evidence decisions cover renderer backends', decisions.includes('## Renderer Backends'));
   assert('evidence decisions cover canvas export', decisions.includes('## Canvas Export'));
+  assert('evidence decisions cover WS9 closure', decisions.includes('## WS9 Performance Closure'));
+  assert('evidence decisions document deferred runtime work', decisions.includes('Deferred Performance And React Runtime Follow-Ups'));
+  assert('evidence verification documents migration validation', verificationSmoke.includes('WS9 migration validation'));
+  assert('evidence verification documents Pages deploy smoke', verificationSmoke.includes('npm run test:pages-deploy') && verificationSmoke.includes('GitHub Pages project URL'));
+  assert('evidence verification documents performance coverage', verificationSmoke.includes('CPU-side performance contracts'));
+  assert('evidence package default test runs Pages deploy smoke', packageJson.scripts?.test?.includes('npm run test:pages-deploy'));
+  assert('evidence WS9 TODO section exists', ws9Section.includes('### DOM and Display') && ws9Section.includes('### Migration Sequence and Validation'));
+  assert('evidence WS9 has no unchecked TODOs', !/^- \[ \]/mu.test(ws9Section));
+  assert('evidence deferred performance follow-ups remain open', (
+    deferredPerformanceSection.includes('SharedArrayBuffer') &&
+    deferredPerformanceSection.includes('BenchmarkDisplay') &&
+    /^- \[ \]/mu.test(deferredPerformanceSection)
+  ));
   assert('evidence changelog notes workstream decisions', changelog.includes('Add workstream decision notes'));
   assert('evidence changelog notes loader scaffold', changelog.includes('Add OBJ/MTL, STL, and PLY parser modules plus loader smoke samples'));
   assert('evidence changelog notes GLTF/GLB APIs', changelog.includes('Document the GLTF/GLB loader APIs'));
+  assert('evidence changelog notes WS9 closure', changelog.includes('Close WS9 validation and TODO audit'));
+  assert('evidence WS9 caches action toggle queries', legacyRenderer.includes('this.actionToggleButtonCache = new Map();') && legacyRenderer.includes('getActionToggleButtons(actionName)'));
+  assert('evidence WS9 guards control value writes', legacyRenderer.includes('syncIntegerControlFromState(inputElement, valueElement, value)') && legacyRenderer.includes('if (inputElement.value !== nextValue)'));
+  assert('evidence WS9 caches element text writes', legacyRenderer.includes('const ELEMENT_TEXT_CACHE = new WeakMap();') && legacyRenderer.includes('ELEMENT_TEXT_CACHE.get(element) === nextText'));
+  assert('evidence WS9 reuses benchmark samples', legacyRenderer.includes('static createReusableSample()') && legacyRenderer.includes('static createSampleBuffer(sampleCapacity)') && legacyRenderer.includes('this.samples[(this.sampleStartIndex + this.sampleCount) % this.samples.length]'));
+  assert('evidence WS9 prunes benchmark samples only when needed', legacyRenderer.includes('shouldPruneOldEntries(currentTimeMilliseconds)') && legacyRenderer.includes('pruneOldEntriesIfNeeded(currentTimeMilliseconds)'));
+  assert('evidence WS9 throttles benchmark update before snapshot formatting', legacyRenderer.includes('this.previousFrameSnapshotMilliseconds > 0') && legacyRenderer.includes('timestampMilliseconds - this.previousFrameSnapshotMilliseconds < BENCHMARK_UPDATE_INTERVAL_MILLISECONDS'));
+  assert('evidence WS9 caches WebGL program binds', legacyRenderer.includes('const ACTIVE_WEBGL_PROGRAMS = new WeakMap();') && legacyRenderer.includes('const useWebGlProgramIfNeeded = (webGlContext, program) =>'));
+  assert('evidence WS9 guards tracer frame scalar uniforms', legacyRenderer.includes('haveTracerFrameScalarUniformsChanged(') && legacyRenderer.includes('this.previousTracerFrameScalarUniformValues'));
+  assert('evidence WS9 uses entity keyed scene tree diff', legacyRenderer.includes('this.sceneTreeButtons = new Map();') && legacyRenderer.includes('itemButton.dataset.sceneEntityId = entityId'));
+  assert('evidence WS9 uses constructor display-name cache', legacyRenderer.includes('const SCENE_OBJECT_DISPLAY_NAMES = new Map();') && legacyRenderer.includes('SCENE_OBJECT_DISPLAY_NAMES.set(constructorFunction, displayName)'));
   assert('evidence material component exists', existsSync(materialComponentPath) && existsSync(docsMaterialComponentPath));
   assert('evidence material component mirror parity', fileHash(materialComponentPath) === fileHash(docsMaterialComponentPath));
   assert('evidence physics component exists', existsSync(physicsComponentPath) && existsSync(docsPhysicsComponentPath));
@@ -825,15 +1244,18 @@ checkSyntax();
 
 if (!syntaxOnly) {
   checkMirrorPairs();
+  checkReferenceModelAssets();
   checkVendorFiles();
   checkStylesheetContracts();
   checkImportMapAndStaticAssets();
   checkKeyboardShortcutContracts();
   checkFloatingWindowContracts();
   checkReactCanvasCssContracts();
+  await checkReactStaticMigrationContracts();
   checkBenchmarkSignalContracts();
   checkBenchmarkSceneContracts();
   checkPhysicsJointContracts();
+  checkPhysicsHotPathContracts();
   checkEmissionModifierContracts();
   checkMaterialPresetTextureContracts();
   checkRendererPostProcessContracts();

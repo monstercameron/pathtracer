@@ -115,14 +115,29 @@ export function FloatingWindow({
   if (!initialState.current) {
     initialState.current = readInitialWindowState(id, windowKey, defaultPosition, defaultVisible);
   }
+  const didSeedVisibleSignalRef = useRef(false);
+  if (visibleSignal && !didSeedVisibleSignalRef.current) {
+    visibleSignal.value = initialState.current.visible;
+    didSeedVisibleSignalRef.current = true;
+  }
 
   const elementRef = useRef(null);
   const dragStateRef = useRef(null);
+  const lastRectStateRef = useRef(null);
   const previousVisibleRef = useRef(initialState.current.visible);
   const [localVisible, setLocalVisible] = useState(initialState.current.visible);
   const [collapsed, setCollapsed] = useState(initialState.current.collapsed);
   const [position, setPosition] = useState(initialState.current.position);
   const visible = visibleSignal ? Boolean(visibleSignal.value) : localVisible;
+
+  useEffect(() => {
+    if (!visibleSignal || typeof visibleSignal.subscribe !== 'function') {
+      return undefined;
+    }
+    return visibleSignal.subscribe((nextVisible) => {
+      setLocalVisible(Boolean(nextVisible));
+    });
+  }, [visibleSignal]);
 
   const setWindowVisible = useCallback((nextVisible) => {
     const normalizedVisible = Boolean(nextVisible);
@@ -149,13 +164,23 @@ export function FloatingWindow({
   const persistCurrentState = useCallback(() => {
     if (!elementRef.current) {
       writeStoredWindowState(storageKey, {
-        ...position,
+        ...(lastRectStateRef.current || position),
         hidden: !visible,
         collapsed
       });
       return;
     }
-    writeStoredWindowState(storageKey, readRectState(elementRef.current, visible, collapsed));
+    if (!visible) {
+      writeStoredWindowState(storageKey, {
+        ...(lastRectStateRef.current || position),
+        hidden: true,
+        collapsed
+      });
+      return;
+    }
+    const rectState = readRectState(elementRef.current, visible, collapsed);
+    lastRectStateRef.current = rectState;
+    writeStoredWindowState(storageKey, rectState);
   }, [collapsed, position, storageKey, visible]);
 
   const show = useCallback(() => {
@@ -167,10 +192,42 @@ export function FloatingWindow({
 
   const hide = useCallback(() => {
     uiLogger.info('ui:floating-window-command', { windowId: storageKey, command: 'hide' });
+    if (elementRef.current) {
+      const rectState = readRectState(elementRef.current, true, collapsed);
+      lastRectStateRef.current = rectState;
+      writeStoredWindowState(storageKey, {
+        ...rectState,
+        hidden: true,
+        collapsed
+      });
+    } else if (lastRectStateRef.current || position) {
+      writeStoredWindowState(storageKey, {
+        ...(lastRectStateRef.current || position),
+        hidden: true,
+        collapsed
+      });
+    }
     setWindowVisible(false);
-  }, [setWindowVisible, storageKey]);
+  }, [collapsed, position, setWindowVisible, storageKey]);
 
   const toggleCollapse = useCallback(() => {
+    if (elementRef.current) {
+      const rectState = readRectState(elementRef.current, visible, collapsed);
+      const nextPosition = {
+        left: rectState.left,
+        top: rectState.top,
+        right: 'auto',
+        bottom: 'auto',
+        width: rectState.width,
+        height: rectState.height
+      };
+      lastRectStateRef.current = {
+        ...nextPosition,
+        hidden: !visible,
+        collapsed
+      };
+      setPosition(nextPosition);
+    }
     setCollapsed((currentValue) => {
       const nextValue = !currentValue;
       uiLogger.info('ui:floating-window-collapse', {
@@ -180,7 +237,7 @@ export function FloatingWindow({
       });
       return nextValue;
     });
-  }, [storageKey]);
+  }, [collapsed, storageKey, visible]);
 
   useImperativeHandle(forwardedRef, () => ({
     element: elementRef.current,
@@ -197,12 +254,6 @@ export function FloatingWindow({
       initialCollapsed: initialState.current.collapsed
     });
   }, [defaultVisible, storageKey]);
-
-  useEffect(() => {
-    if (visibleSignal) {
-      visibleSignal.value = initialState.current.visible;
-    }
-  }, [visibleSignal]);
 
   useEffect(() => {
     if (visible && !previousVisibleRef.current) {
@@ -306,15 +357,22 @@ export function FloatingWindow({
     }
 
     const rectangle = elementRef.current.getBoundingClientRect();
-    dragStateRef.current = null;
-    setPosition({
+    const nextPosition = {
       left: Math.round(rectangle.left),
       top: Math.round(rectangle.top),
       right: 'auto',
       bottom: 'auto',
       width: Math.round(rectangle.width),
       height: Math.round(rectangle.height)
-    });
+    };
+    dragStateRef.current = null;
+    lastRectStateRef.current = {
+      ...nextPosition,
+      hidden: !visible,
+      collapsed
+    };
+    setPosition(nextPosition);
+    writeStoredWindowState(storageKey, lastRectStateRef.current);
     uiLogger.debug('ui:floating-window-drag-end', {
       windowId: storageKey,
       left: Math.round(rectangle.left),
@@ -329,7 +387,7 @@ export function FloatingWindow({
         uiLogger.warn('ui:floating-window-pointer-release-failed', { windowId: storageKey, error });
       }
     }
-  }, [storageKey]);
+  }, [collapsed, storageKey, visible]);
 
   const style = {
     left: toCssSize(position.left),

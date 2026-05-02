@@ -423,6 +423,7 @@ export const uiPanelOpenSignals = createBooleanSignalMap({
   'object-panel': false,
   'scene-panel': false,
   'render-panel': true,
+  'physics-panel': false,
   'camera-panel': false,
   'output-panel': false,
   'preset-panel': false
@@ -576,6 +577,7 @@ export const quickActionPressedSignals = Object.freeze({
   'panel:object-panel': uiPanelOpenSignals['object-panel'],
   [`panel:${SCENE_TREE_CREATE_PANEL_ID}`]: isSceneTreeCreateMenuOpen,
   'panel:render-panel': uiPanelOpenSignals['render-panel'],
+  'panel:physics-panel': uiPanelOpenSignals['physics-panel'],
   'panel:camera-panel': uiPanelOpenSignals['camera-panel'],
   'panel:output-panel': uiPanelOpenSignals['output-panel'],
   'panel:preset-panel': uiPanelOpenSignals['preset-panel']
@@ -583,22 +585,28 @@ export const quickActionPressedSignals = Object.freeze({
 
 export const getApplicationSignals = () => applicationStateSignals;
 
-export const getApplicationStateSignal = (fieldName) => {
-  const fieldSignal = applicationStateSignals[fieldName];
+const getApplicationStateSignalFromMap = (signals, fieldName) => {
+  const fieldSignal = signals && signals[fieldName];
   if (!fieldSignal) {
     uiLogger.warn('state:unknown-field', {
       fieldName,
-      availableFields: APPLICATION_STATE_FIELDS
+      availableFields: signals ? Object.keys(signals) : APPLICATION_STATE_FIELDS
     });
     throw new RangeError(`Unknown application state field "${fieldName}".`);
   }
   return fieldSignal;
 };
 
-export const getApplicationValue = (fieldName) => getApplicationStateSignal(fieldName).value;
+export const getApplicationStateSignal = (fieldName) => (
+  getApplicationStateSignalFromMap(applicationStateSignals, fieldName)
+);
 
-export const setApplicationValue = (fieldName, value) => {
-  const fieldSignal = getApplicationStateSignal(fieldName);
+export const getApplicationValue = (fieldName, signals = applicationStateSignals) => (
+  getApplicationStateSignalFromMap(signals, fieldName).value
+);
+
+export const setApplicationValue = (fieldName, value, signals = applicationStateSignals) => {
+  const fieldSignal = getApplicationStateSignalFromMap(signals, fieldName);
   const nextValue = cloneSignalValue(value);
   if (!areSignalValuesEqual(fieldSignal.value, nextValue)) {
     uiLogger.debug('state:set', {
@@ -624,22 +632,22 @@ export const toggleApplicationBoolean = (fieldName) => {
   return nextValue;
 };
 
-export const patchApplicationState = (partialState) => {
+export const patchApplicationState = (partialState, signals = applicationStateSignals) => {
   if (!partialState || typeof partialState !== 'object') {
     uiLogger.warn('state:patch-invalid', { valueType: typeof partialState });
-    return applicationStateSignals;
+    return signals;
   }
 
   batch(() => {
     for (const [fieldName, value] of Object.entries(partialState)) {
-      if (Object.prototype.hasOwnProperty.call(applicationStateSignals, fieldName)) {
-        setApplicationValue(fieldName, value);
+      if (Object.prototype.hasOwnProperty.call(signals, fieldName)) {
+        setApplicationValue(fieldName, value, signals);
       } else {
         uiLogger.warn('state:patch-unknown-field', { fieldName });
       }
     }
   });
-  return applicationStateSignals;
+  return signals;
 };
 
 export const updateApplicationSignalsFromState = patchApplicationState;
@@ -656,6 +664,14 @@ export const bindApplicationStateObject = (targetState, signals = applicationSta
   if (!targetState || typeof targetState !== 'object') {
     throw new TypeError('bindApplicationStateObject requires a mutable target object.');
   }
+
+  const initialStatePatch = {};
+  for (const fieldName of APPLICATION_STATE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(targetState, fieldName)) {
+      initialStatePatch[fieldName] = targetState[fieldName];
+    }
+  }
+  patchApplicationState(initialStatePatch, signals);
 
   for (const fieldName of APPLICATION_STATE_FIELDS) {
     Object.defineProperty(targetState, fieldName, {
@@ -676,6 +692,8 @@ export const bindApplicationStateObject = (targetState, signals = applicationSta
   }
   return targetState;
 };
+
+export const bindLegacyApplicationStateObject = bindApplicationStateObject;
 
 export const cameraAngleX = applicationStateSignals.cameraAngleX;
 export const cameraAngleY = applicationStateSignals.cameraAngleY;

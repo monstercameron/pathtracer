@@ -11,6 +11,7 @@ export const QUICK_ACTION_ITEMS = Object.freeze([
   { key: 'add-cube', label: 'Add Cube', action: 'add-cube', tooltip: 'Add Cube', ariaLabel: 'Add Cube' },
   { key: 'add-area-light', label: 'Add Light', action: 'add-area-light', tooltip: 'Add Area Light', ariaLabel: 'Add Area Light' },
   { key: 'divider-panels', type: 'divider' },
+  { key: 'scene-tree-add', label: 'Add', action: 'toggle-scene-tree-create', tooltip: 'Add Scene Item', ariaLabel: 'Add scene item' },
   { key: 'panel-object', label: 'Object', panelTarget: 'object-panel', activationWindowTarget: 'controls', tooltip: 'Object Inspector', ariaLabel: 'Open Object Inspector' },
   { key: 'panel-render', label: 'Render', panelTarget: 'render-panel', activationWindowTarget: 'controls', tooltip: 'Render Settings', ariaLabel: 'Open Render Settings' },
   { key: 'window-tree', label: 'Scene Tree', windowTarget: 'scene-tree-window', tooltip: 'Scene Tree', ariaLabel: 'Toggle Scene Tree' },

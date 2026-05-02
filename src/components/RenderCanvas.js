@@ -1,6 +1,7 @@
 import { html } from 'htm/preact';
 import { useEffect, useImperativeHandle, useRef } from 'preact/hooks';
 import { uiLogger } from '../logger.js';
+import { registerRenderCanvas } from '../renderBridge.js';
 
 export const CANVAS_EVENT_NAMES = Object.freeze([
   'pointerdown',
@@ -57,7 +58,7 @@ const normalizeCanvasDimension = (value, fallbackValue) => {
   return Math.max(1, Math.round(parsedValue));
 };
 
-const createCanvasCssProperties = (width, height) => {
+export const createRenderCanvasCssProperties = (width, height) => {
   const renderWidth = normalizeCanvasDimension(width, DEFAULT_CANVAS_DIMENSION);
   const renderHeight = normalizeCanvasDimension(height, DEFAULT_CANVAS_DIMENSION);
   const renderSize = Math.max(renderWidth, renderHeight);
@@ -70,9 +71,9 @@ const createCanvasCssProperties = (width, height) => {
   };
 };
 
-const writeCanvasCssProperties = (documentElement, width, height) => {
+export const applyRenderCanvasCssProperties = (documentElement, width, height) => {
   const style = documentElement.style;
-  const properties = createCanvasCssProperties(width, height);
+  const properties = createRenderCanvasCssProperties(width, height);
   const previousProperties = Object.fromEntries(
     CANVAS_CSS_PROPERTY_NAMES.map((propertyName) => [
       propertyName,
@@ -124,7 +125,7 @@ export function RenderCanvas({
       return undefined;
     }
 
-    return writeCanvasCssProperties(documentElement, width, height);
+    return applyRenderCanvasCssProperties(documentElement, width, height);
   }, [width, height]);
 
   useEffect(() => {
@@ -133,23 +134,28 @@ export function RenderCanvas({
       return undefined;
     }
 
-    const cleanup = attachCanvasEventHandlers(canvasRef.current, eventHandlers);
+    const cleanupCanvasRegistration = registerRenderCanvas(canvasRef.current);
+    const cleanupEventHandlers = attachCanvasEventHandlers(canvasRef.current, eventHandlers);
     uiLogger.info('ui:canvas-ready', {
       canvasId,
       width,
       height,
       eventHandlerCount: Object.values(eventHandlers).filter((handler) => typeof handler === 'function').length
     });
-    if (onCanvasReady) {
-      onCanvasReady(canvasRef.current);
-    }
-    return cleanup;
+    const cleanupCanvasReady = onCanvasReady ? onCanvasReady(canvasRef.current) : undefined;
+    return () => {
+      if (typeof cleanupCanvasReady === 'function') {
+        cleanupCanvasReady();
+      }
+      cleanupEventHandlers();
+      cleanupCanvasRegistration();
+    };
   }, [eventHandlers, onCanvasReady]);
 
   return html`
-    <>
+    <div data-render-canvas-shell="mounted">
       <canvas id=${canvasId} ref=${canvasRef} width=${width} height=${height}></canvas>
       <div id=${errorId}><noscript>Please enable JavaScript.</noscript></div>
-    </>
+    </div>
   `;
 }

@@ -15,13 +15,16 @@ export const PRESET_SCENE_BUTTONS = Object.freeze([
   { preset: 'curvedPrimitiveShowcase', label: 'Curved Primitives' },
   { preset: 'flatPrimitiveShowcase', label: 'Flat Primitives' },
   { preset: 'implicitPrimitiveShowcase', label: 'Implicit Primitives' },
-  { preset: 'areaLightShowcase', label: 'Area Light Studio' }
+  { preset: 'areaLightShowcase', label: 'Area Light Studio' },
+  { preset: 'suzanneReference', label: 'Suzanne Reference Mesh' }
 ]);
 
 export const BENCHMARK_SCENE_BUTTONS = Object.freeze([
-  { benchmarkScene: 'default', label: 'Standard Benchmark' },
+  { benchmarkScene: 'standard', label: 'Standard Benchmark' },
+  { benchmarkScene: 'benchmarkSponzaAtrium', label: 'Sponza Atrium' },
   { benchmarkScene: 'benchmarkShaderGauntlet', label: 'Shader Gauntlet' },
   { benchmarkScene: 'benchmarkPhysicsChaos', label: 'Physics Chaos' },
+  { benchmarkScene: 'benchmarkParticleFluid', label: 'Particle Fluid' },
   { benchmarkScene: 'benchmarkSdfComplexity', label: 'SDF Complexity' },
   { benchmarkScene: 'benchmarkCausticPool', label: 'Caustic Pool' },
   { benchmarkScene: 'benchmarkMotionBlurStress', label: 'Motion Blur Stress' },

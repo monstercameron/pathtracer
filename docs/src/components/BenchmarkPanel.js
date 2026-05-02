@@ -4,23 +4,23 @@ import { uiLogger } from '../logger.js';
 import {
   formattedBounces,
   formattedGpuRenderer,
+  formattedConvergence,
+  formattedConvergenceTitle,
+  formattedGpuMemory,
+  formattedGpuMemoryTitle,
   formattedMeasurementSource,
   formattedPerceptualFramesPerSecond,
   formattedPerformanceScore,
   formattedRayBandwidth,
   formattedRaysPerSecond,
   formattedResolution,
-  scoreSampleCount
+  formattedSamples,
+  formattedSamplesTitle,
+  formattedSceneComplexity,
+  formattedSceneComplexityTitle
 } from '../benchmarkStore.js';
 import { uiWindowVisibilitySignals } from '../store.js';
 import { FloatingWindow } from './FloatingWindow.js';
-
-const placeholderSignal = Object.freeze({ value: '...' });
-const formattedScoreSampleCount = {
-  get value() {
-    return scoreSampleCount.value > 0 ? String(scoreSampleCount.value) : '...';
-  }
-};
 
 const METRICS = Object.freeze([
   {
@@ -63,29 +63,29 @@ const METRICS = Object.freeze([
     key: 'samples',
     id: 'benchmark-samples',
     label: 'Samples',
-    signal: formattedScoreSampleCount,
-    title: 'Accumulated samples since the last camera, scene, or quality reset.'
+    signal: formattedSamples,
+    titleSignal: formattedSamplesTitle
   },
   {
     key: 'convergence',
     id: 'benchmark-convergence',
     label: 'Convergence',
-    signal: placeholderSignal,
-    title: 'Progress toward the convergence pause threshold.'
+    signal: formattedConvergence,
+    titleSignal: formattedConvergenceTitle
   },
   {
     key: 'gpu-memory',
     id: 'benchmark-gpu-memory',
     label: 'GPU buffers',
-    signal: placeholderSignal,
-    title: 'Estimated GPU memory held by path-tracing color buffers.'
+    signal: formattedGpuMemory,
+    titleSignal: formattedGpuMemoryTitle
   },
   {
     key: 'scene-complexity',
     id: 'benchmark-scene-complexity',
     label: 'Scene weight',
-    signal: placeholderSignal,
-    title: 'Weighted complexity score for visible renderable scene objects and materials.'
+    signal: formattedSceneComplexity,
+    titleSignal: formattedSceneComplexityTitle
   }
 ]);
 
@@ -113,13 +113,33 @@ export function BenchmarkPanel({
       </div>
       <div className="benchmark-grid">
         ${METRICS.map((metric) => html`
-          <div key=${metric.key} className="benchmark-metric" title=${metric.title}>
+          <div key=${metric.key} className="benchmark-metric" title=${metric.titleSignal ? metric.titleSignal.value : metric.title}>
             <strong id=${metric.id}>${metric.signal.value}</strong>
             <span>${metric.label}</span>
           </div>
         `)}
       </div>
       <div id="benchmark-gpu-renderer" className="benchmark-gpu-label">${formattedGpuRenderer.value}</div>
+      <div id="particle-fluid-controls" className="benchmark-runner" hidden>
+        <div className="section-title">Particle fluid</div>
+        <div className="button-row two-up">
+          <label>
+            Count
+            <input id="particle-fluid-count" type="number" min="8" max="48" step="1" value="24" />
+          </label>
+          <label>
+            Radius
+            <input id="particle-fluid-radius" type="number" min="0.035" max="0.095" step="0.005" value="0.06" />
+          </label>
+        </div>
+        <div className="button-row two-up">
+          <label>
+            Stiffness
+            <input id="particle-fluid-stiffness" type="number" min="40" max="240" step="5" value="120" />
+          </label>
+          <button type="button" data-action="apply-particle-fluid-settings">Apply Fluid Settings</button>
+        </div>
+      </div>
       <div className="benchmark-runner">
         <div className="section-title">Benchmark sequence</div>
         <div className="button-row two-up">

@@ -6,8 +6,41 @@
  Modernized local runtime changes copyright (c) 2026.
 */
 
-import { updateBenchmarkSignals } from './src/benchmarkStore.js';
+import { effect } from '@preact/signals';
+import {
+  formattedBounces,
+  formattedConvergence,
+  formattedConvergenceTitle,
+  formattedGpuMemory,
+  formattedGpuMemoryTitle,
+  formattedGpuRenderer,
+  formattedMeasurementSource,
+  formattedPerceptualFramesPerSecond,
+  formattedPerformanceScore,
+  formattedRayBandwidth,
+  formattedRaysPerSecond,
+  formattedResolution,
+  formattedSamples,
+  formattedSamplesTitle,
+  formattedSceneComplexity,
+  formattedSceneComplexityTitle,
+  setBenchmarkGpuRenderer,
+  updateBenchmarkSignals
+} from './src/benchmarkStore.js';
+import { applyRenderCanvasCssProperties } from './src/components/RenderCanvas.js';
 import { captureLoggerEntry } from './src/logger.js';
+import { bindLegacyApplicationStateObject } from './src/store.js';
+import { setUiWindowVisible } from './src/store.js';
+import {
+  cancelScheduledRenderFrame,
+  invokeWebGlRenderer,
+  registerRenderCanvas,
+  scheduleRenderFrame
+} from './src/renderBridge.js';
+import {
+  SPONZA_GLB_REFERENCE_MODEL,
+  SUZANNE_LOW_REFERENCE_MODEL
+} from './src/referenceModelData.js';
 import {
   DEFAULT_MATERIAL_GLOSSINESS,
   DEFAULT_MATERIAL_UV_BLEND_SHARPNESS,
@@ -454,7 +487,7 @@ const MAX_PERCEPTUAL_FRAMES_PER_SECOND = 240;
 const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 100000;
 const PERFORMANCE_SCORE_READY_TRACE_SAMPLE_COUNT = 12;
 const PERFORMANCE_SCORE_QUANTUM = 5;
-const DEFAULT_BENCHMARK_SCENE_NAME = 'standard';
+const DEFAULT_BENCHMARK_SCENE_NAME = 'benchmarkSponzaAtrium';
 const BENCHMARK_CAMERA_AUTO_ROTATION_SPEED = CAMERA_AUTO_ROTATION_SPEED;
 const NANOSECONDS_PER_MILLISECOND = 1000000;
 const RANDOM_SAMPLE_SEQUENCE_WRAP = 1048576;
@@ -900,6 +933,25 @@ const intersectSphereSource = [
   `    if(tFar > ${SHADER_EPSILON}) return tFar;`,
   '  }',
   `  return ${SHADER_INFINITY};`,
+  '}'
+].join('');
+
+const intersectTriangleSource = [
+  'float intersectTriangle(vec3 origin, vec3 ray, vec3 a, vec3 b, vec3 c) {',
+  '  vec3 edge1 = b - a;',
+  '  vec3 edge2 = c - a;',
+  '  vec3 pvec = cross(ray, edge2);',
+  '  float det = dot(edge1, pvec);',
+  `  if(abs(det) < ${SHADER_EPSILON}) return ${SHADER_INFINITY};`,
+  '  float invDet = 1.0 / det;',
+  '  vec3 tvec = origin - a;',
+  '  float u = dot(tvec, pvec) * invDet;',
+  `  if(u < 0.0 || u > 1.0) return ${SHADER_INFINITY};`,
+  '  vec3 qvec = cross(tvec, edge1);',
+  '  float v = dot(ray, qvec) * invDet;',
+  `  if(v < 0.0 || u + v > 1.0) return ${SHADER_INFINITY};`,
+  '  float t = dot(edge2, qvec) * invDet;',
+  `  return t > ${SHADER_EPSILON} ? t : ${SHADER_INFINITY};`,
   '}'
 ].join('');
 
@@ -3055,7 +3107,12 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).enabled;
       },
       set(isEnabled) {
-        ensureSceneObjectPhysicsComponent(this).enabled = Boolean(isEnabled);
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextIsEnabled = Boolean(isEnabled);
+        if (component.enabled !== nextIsEnabled) {
+          component.enabled = nextIsEnabled;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     },
     physicsBodyType: {
@@ -3065,7 +3122,12 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).bodyType;
       },
       set(bodyType) {
-        ensureSceneObjectPhysicsComponent(this).bodyType = normalizePhysicsBodyType(bodyType, getDefaultPhysicsBodyType(this));
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextBodyType = normalizePhysicsBodyType(bodyType, getDefaultPhysicsBodyType(this));
+        if (component.bodyType !== nextBodyType) {
+          component.bodyType = nextBodyType;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     },
     physicsFriction: {
@@ -3075,12 +3137,17 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).friction;
       },
       set(friction) {
-        ensureSceneObjectPhysicsComponent(this).friction = normalizeBoundedNumber(
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextFriction = normalizeBoundedNumber(
           Number(friction),
           getDefaultPhysicsFriction(this),
           MIN_PHYSICS_SURFACE_COEFFICIENT,
           MAX_PHYSICS_SURFACE_COEFFICIENT
         );
+        if (component.friction !== nextFriction) {
+          component.friction = nextFriction;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     },
     physicsRestitution: {
@@ -3090,12 +3157,17 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).restitution;
       },
       set(restitution) {
-        ensureSceneObjectPhysicsComponent(this).restitution = normalizeBoundedNumber(
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextRestitution = normalizeBoundedNumber(
           Number(restitution),
           getDefaultPhysicsRestitution(this),
           MIN_PHYSICS_SURFACE_COEFFICIENT,
           MAX_PHYSICS_SURFACE_COEFFICIENT
         );
+        if (component.restitution !== nextRestitution) {
+          component.restitution = nextRestitution;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     },
     physicsMass: {
@@ -3105,12 +3177,17 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).mass;
       },
       set(mass) {
-        ensureSceneObjectPhysicsComponent(this).mass = normalizeBoundedNumber(
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextMass = normalizeBoundedNumber(
           Number(mass),
           getDefaultPhysicsMass(this),
           MIN_PHYSICS_MASS,
           MAX_PHYSICS_MASS
         );
+        if (component.mass !== nextMass) {
+          component.mass = nextMass;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     },
     physicsGravityScale: {
@@ -3120,12 +3197,17 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).gravityScale;
       },
       set(gravityScale) {
-        ensureSceneObjectPhysicsComponent(this).gravityScale = normalizeBoundedNumber(
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextGravityScale = normalizeBoundedNumber(
           Number(gravityScale),
           getDefaultPhysicsGravityScale(this),
           MIN_PHYSICS_GRAVITY_SCALE,
           MAX_PHYSICS_GRAVITY_SCALE
         );
+        if (component.gravityScale !== nextGravityScale) {
+          component.gravityScale = nextGravityScale;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     },
     collideWithObjects: {
@@ -3135,7 +3217,12 @@ const defineSceneObjectPhysicsAccessors = (sceneObject) => {
         return ensureSceneObjectPhysicsComponent(this).collideWithObjects;
       },
       set(collideWithObjects) {
-        ensureSceneObjectPhysicsComponent(this).collideWithObjects = Boolean(collideWithObjects);
+        const component = ensureSceneObjectPhysicsComponent(this);
+        const nextCollideWithObjects = Boolean(collideWithObjects);
+        if (component.collideWithObjects !== nextCollideWithObjects) {
+          component.collideWithObjects = nextCollideWithObjects;
+          markSceneObjectPhysicsRebuildDirty(this);
+        }
       }
     }
   });
@@ -3619,6 +3706,35 @@ const writeFpsCameraTarget = (outputVector, eyePosition, cameraAngleX, cameraAng
   return outputVector;
 };
 
+const readFpsCameraAnglesFromEyeTarget = (eyePosition, targetPosition) => {
+  const deltaX = targetPosition[0] - eyePosition[0];
+  const deltaY = targetPosition[1] - eyePosition[1];
+  const deltaZ = targetPosition[2] - eyePosition[2];
+  const distance = Math.hypot(deltaX, deltaY, deltaZ);
+  if (distance <= Number.EPSILON) {
+    return Object.freeze({
+      cameraAngleX: 0,
+      cameraAngleY: 0,
+      cameraDistance: 0
+    });
+  }
+
+  const forwardX = deltaX / distance;
+  const forwardY = deltaY / distance;
+  const forwardZ = deltaZ / distance;
+  const cameraAngleX = Math.asin(clampNumber(-forwardY, -1, 1));
+  const cosCameraAngleX = Math.cos(cameraAngleX);
+  const cameraAngleY = Math.abs(cosCameraAngleX) > Number.EPSILON
+    ? Math.atan2(-forwardX / cosCameraAngleX, -forwardZ / cosCameraAngleX)
+    : 0;
+
+  return Object.freeze({
+    cameraAngleX,
+    cameraAngleY,
+    cameraDistance: distance
+  });
+};
+
 const readHaltonBase2 = (sequenceIndex) => {
   let reversedBits = sequenceIndex >>> 0;
   reversedBits = ((reversedBits << 16) | (reversedBits >>> 16)) >>> 0;
@@ -3974,6 +4090,7 @@ const createTracerFragmentSource = (sceneObjects, renderSettings) => {
     intersectCubeDistanceSource,
     normalForCubeSource,
     intersectSphereSource,
+    intersectTriangleSource,
     sceneUsesSphereShadowTests(sceneObjects) ? shadowSphereSource : '',
     normalForSphereSource,
     randomSource,
@@ -4042,6 +4159,139 @@ const createLinkedProgram = (webGlContext, vertexSource, fragmentSource, label) 
   }
 
   return returnSuccess(program);
+};
+
+const readParallelShaderCompileExtension = (webGlContext) => {
+  if (!webGlContext || typeof webGlContext.getExtension !== 'function') {
+    return null;
+  }
+  try {
+    return webGlContext.getExtension('KHR_parallel_shader_compile');
+  } catch (_error) {
+    return null;
+  }
+};
+
+const queueShaderCompilePoll = (callback, options = Object.freeze({})) => {
+  const windowObject = options.windowObject || globalThis;
+  if (typeof options.schedulePoll === 'function') {
+    options.schedulePoll(callback);
+    return;
+  }
+  if (windowObject && typeof windowObject.requestAnimationFrame === 'function') {
+    windowObject.requestAnimationFrame(() => {
+      if (typeof windowObject.setTimeout === 'function') {
+        windowObject.setTimeout(callback, 0);
+        return;
+      }
+      callback();
+    });
+    return;
+  }
+  if (windowObject && typeof windowObject.setTimeout === 'function') {
+    windowObject.setTimeout(callback, 16);
+    return;
+  }
+  callback();
+};
+
+const compileShaderSourceUnchecked = (webGlContext, source, shaderType, label) => {
+  const shader = webGlContext.createShader(shaderType);
+  if (!shader) {
+    return returnFailure('shader-create-failed', `${label} shader could not be created.`);
+  }
+
+  webGlContext.shaderSource(shader, source);
+  webGlContext.compileShader(shader);
+  return returnSuccess(shader);
+};
+
+const createLinkedProgramAsync = (webGlContext, vertexSource, fragmentSource, label, options = Object.freeze({})) => {
+  const parallelShaderCompileExtension = readParallelShaderCompileExtension(webGlContext);
+  if (!parallelShaderCompileExtension) {
+    return Promise.resolve(createLinkedProgram(webGlContext, vertexSource, fragmentSource, label));
+  }
+
+  const [vertexShader, vertexShaderError] = compileShaderSourceUnchecked(
+    webGlContext,
+    vertexSource,
+    webGlContext.VERTEX_SHADER,
+    `${label} vertex`
+  );
+  if (vertexShaderError) {
+    return Promise.resolve(returnFailure(vertexShaderError.code, vertexShaderError.message, vertexShaderError.details));
+  }
+
+  const [fragmentShader, fragmentShaderError] = compileShaderSourceUnchecked(
+    webGlContext,
+    fragmentSource,
+    webGlContext.FRAGMENT_SHADER,
+    `${label} fragment`
+  );
+  if (fragmentShaderError) {
+    webGlContext.deleteShader(vertexShader);
+    return Promise.resolve(returnFailure(fragmentShaderError.code, fragmentShaderError.message, fragmentShaderError.details));
+  }
+
+  const program = webGlContext.createProgram();
+  if (!program) {
+    webGlContext.deleteShader(vertexShader);
+    webGlContext.deleteShader(fragmentShader);
+    return Promise.resolve(returnFailure('program-create-failed', `${label} program could not be created.`));
+  }
+
+  webGlContext.attachShader(program, vertexShader);
+  webGlContext.attachShader(program, fragmentShader);
+  webGlContext.linkProgram(program);
+
+  return new Promise((resolve) => {
+    const finishIfComplete = () => {
+      if (!webGlContext.getProgramParameter(program, parallelShaderCompileExtension.COMPLETION_STATUS_KHR)) {
+        queueShaderCompilePoll(finishIfComplete, options);
+        return;
+      }
+
+      const vertexShaderCompiled = webGlContext.getShaderParameter(vertexShader, webGlContext.COMPILE_STATUS);
+      if (!vertexShaderCompiled) {
+        const shaderInfo = webGlContext.getShaderInfoLog(vertexShader) || 'No shader log was provided.';
+        webGlContext.detachShader(program, vertexShader);
+        webGlContext.detachShader(program, fragmentShader);
+        webGlContext.deleteShader(vertexShader);
+        webGlContext.deleteShader(fragmentShader);
+        webGlContext.deleteProgram(program);
+        resolve(returnFailure('shader-compile-failed', `${label} vertex shader failed to compile.`, shaderInfo));
+        return;
+      }
+
+      const fragmentShaderCompiled = webGlContext.getShaderParameter(fragmentShader, webGlContext.COMPILE_STATUS);
+      if (!fragmentShaderCompiled) {
+        const shaderInfo = webGlContext.getShaderInfoLog(fragmentShader) || 'No shader log was provided.';
+        webGlContext.detachShader(program, vertexShader);
+        webGlContext.detachShader(program, fragmentShader);
+        webGlContext.deleteShader(vertexShader);
+        webGlContext.deleteShader(fragmentShader);
+        webGlContext.deleteProgram(program);
+        resolve(returnFailure('shader-compile-failed', `${label} fragment shader failed to compile.`, shaderInfo));
+        return;
+      }
+
+      webGlContext.detachShader(program, vertexShader);
+      webGlContext.detachShader(program, fragmentShader);
+      webGlContext.deleteShader(vertexShader);
+      webGlContext.deleteShader(fragmentShader);
+
+      if (!webGlContext.getProgramParameter(program, webGlContext.LINK_STATUS)) {
+        const programInfo = webGlContext.getProgramInfoLog(program) || 'No program log was provided.';
+        webGlContext.deleteProgram(program);
+        resolve(returnFailure('program-link-failed', `${label} program failed to link.`, programInfo));
+        return;
+      }
+
+      resolve(returnSuccess(program));
+    };
+
+    queueShaderCompilePoll(finishIfComplete, options);
+  });
 };
 
 const createBufferWithData = (webGlContext, target, typedArray, usage, label) => {
@@ -4437,24 +4687,28 @@ class SphereSceneObject {
   setTemporaryTranslation(translationVector) {
     writeVec3(this.temporaryTranslation, translationVector[0], translationVector[1], translationVector[2]);
     this.isUniformCenterDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
   commitTranslation(translationVector) {
     writeAddVec3(this.centerPosition, this.centerPosition, translationVector);
     this.isUniformCenterDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
   setCenterPosition(centerPosition) {
     writeVec3(this.centerPosition, centerPosition[0], centerPosition[1], centerPosition[2]);
     this.isUniformCenterDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
   setCenterPositionComponents(xPosition, yPosition, zPosition) {
     writeVec3(this.centerPosition, xPosition, yPosition, zPosition);
     this.isUniformCenterDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
@@ -4632,6 +4886,7 @@ class CubeSceneObject {
   setTemporaryTranslation(translationVector) {
     writeVec3(this.temporaryTranslation, translationVector[0], translationVector[1], translationVector[2]);
     this.areUniformBoundsDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
@@ -4639,6 +4894,7 @@ class CubeSceneObject {
     writeAddVec3(this.minCorner, this.minCorner, translationVector);
     writeAddVec3(this.maxCorner, this.maxCorner, translationVector);
     this.areUniformBoundsDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
@@ -4653,6 +4909,7 @@ class CubeSceneObject {
     writeAddVec3(this.minCorner, this.minCorner, deltaPosition);
     writeAddVec3(this.maxCorner, this.maxCorner, deltaPosition);
     this.areUniformBoundsDirty = true;
+    markSceneObjectPhysicsRebuildDirty(this);
     return returnSuccess(undefined);
   }
 
@@ -4703,6 +4960,310 @@ class CubeSceneObject {
   intersectRay(originPosition, rayDirection) {
     const intersectionDistance = intersectCube(originPosition, rayDirection, this.getMinCorner(), this.getMaxCorner());
     return returnSuccess(intersectionDistance);
+  }
+}
+
+const DEFAULT_REFERENCE_MESH_MODEL_KEY = 'suzanneLow';
+const REFERENCE_MESH_MODELS = Object.freeze({
+  [DEFAULT_REFERENCE_MESH_MODEL_KEY]: SUZANNE_LOW_REFERENCE_MODEL
+});
+
+const readReferenceMeshModelKey = (modelKey) => (
+  Object.prototype.hasOwnProperty.call(REFERENCE_MESH_MODELS, modelKey)
+    ? modelKey
+    : DEFAULT_REFERENCE_MESH_MODEL_KEY
+);
+
+const readReferenceMeshModel = (modelKey) => REFERENCE_MESH_MODELS[readReferenceMeshModelKey(modelKey)];
+
+const formatReferenceShaderFloat = (value) => {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return '0.0';
+  }
+  const normalizedValue = Math.abs(numericValue) < 1e-8 ? 0 : numericValue;
+  const text = Number(normalizedValue.toFixed(8)).toString();
+  return /[.e]/iu.test(text) ? text : `${text}.0`;
+};
+
+const formatReferenceShaderVec3 = (x, y, z) => (
+  `vec3(${formatReferenceShaderFloat(x)}, ${formatReferenceShaderFloat(y)}, ${formatReferenceShaderFloat(z)})`
+);
+
+const createReferenceMeshIntersectionSource = (sceneObject) => {
+  const positions = sceneObject.referenceModel.positions;
+  const normals = sceneObject.referenceModel.normals;
+  const localOriginName = `meshOrigin${sceneObject.objectId}`;
+  const candidateName = `meshCandidate${sceneObject.objectId}`;
+  const lines = [
+    `float ${sceneObject.intersectionName} = ${SHADER_INFINITY};`,
+    `vec3 ${sceneObject.normalName} = vec3(0.0, 1.0, 0.0);`,
+    `vec3 ${localOriginName} = origin - ${sceneObject.offsetUniformName};`,
+    `float ${candidateName};`
+  ];
+
+  for (let triangleIndex = 0; triangleIndex < sceneObject.triangleCount; triangleIndex += 1) {
+    const positionOffset = triangleIndex * 9;
+    const normalOffset = triangleIndex * 3;
+    lines.push(
+      `${candidateName} = intersectTriangle(${localOriginName}, ray, ` +
+      `${formatReferenceShaderVec3(positions[positionOffset], positions[positionOffset + 1], positions[positionOffset + 2])}, ` +
+      `${formatReferenceShaderVec3(positions[positionOffset + 3], positions[positionOffset + 4], positions[positionOffset + 5])}, ` +
+      `${formatReferenceShaderVec3(positions[positionOffset + 6], positions[positionOffset + 7], positions[positionOffset + 8])});` +
+      `if(${candidateName} < ${sceneObject.intersectionName}) {` +
+      `${sceneObject.intersectionName} = ${candidateName};` +
+      `${sceneObject.normalName} = ${formatReferenceShaderVec3(normals[normalOffset], normals[normalOffset + 1], normals[normalOffset + 2])};` +
+      '}'
+    );
+  }
+
+  return lines.join('');
+};
+
+const createReferenceMeshShadowSource = (sceneObject) => {
+  if (isTransparentMaterial(sceneObject.material)) {
+    return '';
+  }
+  const positions = sceneObject.referenceModel.positions;
+  const localOriginName = `meshShadowOrigin${sceneObject.objectId}`;
+  const candidateName = `meshShadowCandidate${sceneObject.objectId}`;
+  const lines = [
+    `vec3 ${localOriginName} = origin - ${sceneObject.offsetUniformName};`,
+    `float ${candidateName};`
+  ];
+
+  for (let triangleIndex = 0; triangleIndex < sceneObject.triangleCount; triangleIndex += 1) {
+    const positionOffset = triangleIndex * 9;
+    lines.push(
+      `${candidateName} = intersectTriangle(${localOriginName}, ray, ` +
+      `${formatReferenceShaderVec3(positions[positionOffset], positions[positionOffset + 1], positions[positionOffset + 2])}, ` +
+      `${formatReferenceShaderVec3(positions[positionOffset + 3], positions[positionOffset + 4], positions[positionOffset + 5])}, ` +
+      `${formatReferenceShaderVec3(positions[positionOffset + 6], positions[positionOffset + 7], positions[positionOffset + 8])});` +
+      `if(${candidateName} < 1.0) return 0.0;`
+    );
+  }
+
+  return lines.join('');
+};
+
+const intersectTriangleRay = (originPosition, rayDirection, a, b, c) => {
+  const edge1 = createVec3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const edge2 = createVec3(c[0] - a[0], c[1] - a[1], c[2] - a[2]);
+  const pvec = createVec3(0, 0, 0);
+  writeCrossVec3(pvec, rayDirection, edge2);
+  const det = dotVec3(edge1, pvec);
+  if (Math.abs(det) < 1e-8) {
+    return MAX_INTERSECTION_DISTANCE;
+  }
+
+  const invDet = 1 / det;
+  const tvec = createVec3(originPosition[0] - a[0], originPosition[1] - a[1], originPosition[2] - a[2]);
+  const u = dotVec3(tvec, pvec) * invDet;
+  if (u < 0 || u > 1) {
+    return MAX_INTERSECTION_DISTANCE;
+  }
+
+  const qvec = createVec3(0, 0, 0);
+  writeCrossVec3(qvec, tvec, edge1);
+  const v = dotVec3(rayDirection, qvec) * invDet;
+  if (v < 0 || u + v > 1) {
+    return MAX_INTERSECTION_DISTANCE;
+  }
+
+  const t = dotVec3(edge2, qvec) * invDet;
+  return t > 1e-6 ? t : MAX_INTERSECTION_DISTANCE;
+};
+
+class ReferenceMeshSceneObject {
+  constructor(referenceModel, centerPosition, objectId, material = MATERIAL.DIFFUSE, modelKey = DEFAULT_REFERENCE_MESH_MODEL_KEY) {
+    this.objectId = objectId;
+    this.entityId = String(objectId);
+    this.parentEntityId = null;
+    this.displayName = '';
+    this.sceneItemKind = 'referenceMesh';
+    this.kind = 'referenceMesh';
+    this.type = 'referenceMesh';
+    this.isHidden = false;
+    this.isLocked = false;
+    this.modelKey = readReferenceMeshModelKey(modelKey);
+    this.referenceModel = referenceModel || readReferenceMeshModel(this.modelKey);
+    this.assetPath = this.referenceModel.assetPath || '';
+    this.triangleCount = Math.floor(Number(this.referenceModel.triangleCount) || 0);
+    this.centerPosition = cloneVec3(centerPosition);
+    this.materialComponent = createSceneObjectMaterialComponent(material);
+    defineSceneObjectMaterialAccessors(this);
+    this.isEmissionEnabled = this.material === MATERIAL.EMISSIVE;
+    this.emissiveColor = createDefaultEmissiveColor();
+    this.emissiveIntensity = DEFAULT_EMISSIVE_INTENSITY;
+    this.offsetUniformName = `meshOffset${objectId}`;
+    this.intersectionName = `tMesh${objectId}`;
+    this.normalName = `nMesh${objectId}`;
+    this.temporaryTranslation = createVec3(0, 0, 0);
+    this.uniformOffset = createVec3(0, 0, 0);
+    this.previousUniformOffset = createVec3(Number.NaN, Number.NaN, Number.NaN);
+    this.translatedOffset = createVec3(0, 0, 0);
+    this.boundsMinCorner = createVec3(0, 0, 0);
+    this.boundsMaxCorner = createVec3(0, 0, 0);
+    this.baseMinCorner = createVec3(
+      this.referenceModel.bounds.min[0],
+      this.referenceModel.bounds.min[1],
+      this.referenceModel.bounds.min[2]
+    );
+    this.baseMaxCorner = createVec3(
+      this.referenceModel.bounds.max[0],
+      this.referenceModel.bounds.max[1],
+      this.referenceModel.bounds.max[2]
+    );
+    this.components = createSceneObjectComponentMap(this);
+    this.offsetUniformLocation = null;
+    this.isUniformOffsetDirty = true;
+  }
+
+  getGlobalCode() {
+    return `uniform vec3 ${this.offsetUniformName};`;
+  }
+
+  getIntersectCode() {
+    return createReferenceMeshIntersectionSource(this);
+  }
+
+  getShadowTestCode() {
+    return '';
+  }
+
+  getMinimumIntersectCode() {
+    return `if(${this.intersectionName} < t) t = ${this.intersectionName};`;
+  }
+
+  getNormalCalculationCode() {
+    const surfaceNormalName = `meshSurfaceNormal${this.objectId}`;
+    return [
+      `else if(t == ${this.intersectionName}) {`,
+      `vec3 ${surfaceNormalName} = normalize(${this.normalName});`,
+      `normal = dot(${surfaceNormalName}, ray) > 0.0 ? -${surfaceNormalName} : ${surfaceNormalName};`,
+      sceneObjectUsesSurfaceShaderUtilities(this) ? `surfaceObjectPoint = hit - ${this.offsetUniformName};` : '',
+      createObjectSurfaceShaderSource(this.material, this),
+      '}'
+    ].join('');
+  }
+
+  setMaterial(material) {
+    this.material = normalizeMaterial(material);
+    if (this.material === MATERIAL.EMISSIVE) {
+      this.isEmissionEnabled = true;
+    }
+    return returnSuccess(undefined);
+  }
+
+  cloneForDuplicate(objectId) {
+    const duplicateObject = new ReferenceMeshSceneObject(
+      this.referenceModel,
+      this.centerPosition,
+      objectId,
+      this.material,
+      this.modelKey
+    );
+    duplicateObject.displayName = this.displayName ? `${this.displayName} Copy` : '';
+    duplicateObject.glossiness = this.glossiness;
+    copySceneObjectEmissiveSettings(this, duplicateObject);
+    copySceneObjectMaterialProjectionSettings(this, duplicateObject);
+    return duplicateObject;
+  }
+
+  cacheUniformLocations(webGlContext, program, uniformLocationCache) {
+    this.offsetUniformLocation = readUniformLocation(webGlContext, program, uniformLocationCache, this.offsetUniformName);
+    writeVec3(this.previousUniformOffset, Number.NaN, Number.NaN, Number.NaN);
+    this.isUniformOffsetDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  setUniforms(webGlContext) {
+    if (this.offsetUniformLocation !== null && this.isUniformOffsetDirty) {
+      writeAddVec3(this.uniformOffset, this.centerPosition, this.temporaryTranslation);
+      setChangedCachedVec3UniformValue(
+        webGlContext,
+        this.offsetUniformLocation,
+        this.uniformOffset,
+        this.previousUniformOffset
+      );
+      this.isUniformOffsetDirty = false;
+    }
+  }
+
+  setTemporaryTranslation(translationVector) {
+    writeVec3(this.temporaryTranslation, translationVector[0], translationVector[1], translationVector[2]);
+    this.isUniformOffsetDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  commitTranslation(translationVector) {
+    writeAddVec3(this.centerPosition, this.centerPosition, translationVector);
+    this.isUniformOffsetDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  setCenterPosition(centerPosition) {
+    writeVec3(this.centerPosition, centerPosition[0], centerPosition[1], centerPosition[2]);
+    this.isUniformOffsetDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  setCenterPositionComponents(xPosition, yPosition, zPosition) {
+    writeVec3(this.centerPosition, xPosition, yPosition, zPosition);
+    this.isUniformOffsetDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  getTranslatedOffset() {
+    return writeAddVec3(this.translatedOffset, this.centerPosition, this.temporaryTranslation);
+  }
+
+  getMinCorner() {
+    const translatedOffset = this.getTranslatedOffset();
+    return writeVec3(
+      this.boundsMinCorner,
+      this.baseMinCorner[0] + translatedOffset[0],
+      this.baseMinCorner[1] + translatedOffset[1],
+      this.baseMinCorner[2] + translatedOffset[2]
+    );
+  }
+
+  getMaxCorner() {
+    const translatedOffset = this.getTranslatedOffset();
+    return writeVec3(
+      this.boundsMaxCorner,
+      this.baseMaxCorner[0] + translatedOffset[0],
+      this.baseMaxCorner[1] + translatedOffset[1],
+      this.baseMaxCorner[2] + translatedOffset[2]
+    );
+  }
+
+  intersectRay(originPosition, rayDirection) {
+    const positions = this.referenceModel.positions;
+    const translatedOffset = this.getTranslatedOffset();
+    let closestDistance = MAX_INTERSECTION_DISTANCE;
+
+    for (let triangleIndex = 0; triangleIndex < this.triangleCount; triangleIndex += 1) {
+      const positionOffset = triangleIndex * 9;
+      const a = createVec3(
+        positions[positionOffset] + translatedOffset[0],
+        positions[positionOffset + 1] + translatedOffset[1],
+        positions[positionOffset + 2] + translatedOffset[2]
+      );
+      const b = createVec3(
+        positions[positionOffset + 3] + translatedOffset[0],
+        positions[positionOffset + 4] + translatedOffset[1],
+        positions[positionOffset + 5] + translatedOffset[2]
+      );
+      const c = createVec3(
+        positions[positionOffset + 6] + translatedOffset[0],
+        positions[positionOffset + 7] + translatedOffset[1],
+        positions[positionOffset + 8] + translatedOffset[2]
+      );
+      closestDistance = Math.min(closestDistance, intersectTriangleRay(originPosition, rayDirection, a, b, c));
+    }
+
+    return returnSuccess(closestDistance);
   }
 }
 
@@ -5625,6 +6186,9 @@ const calculateGeometryComplexityWeight = (sceneObject) => {
   if (sceneObject instanceof CubeSceneObject) {
     return 1.0;
   }
+  if (sceneObject instanceof ReferenceMeshSceneObject) {
+    return Math.min(6.0, 1.2 + sceneObject.triangleCount / 80);
+  }
   return 0.8;
 };
 
@@ -6134,6 +6698,139 @@ const createRapierCuboidBodyCollider = (rapierRuntime, halfExtents, friction, re
     .setMass(mass)
 );
 
+const SCENE_OBJECT_PHYSICS_REBUILD_DIRTY_FLAG = '__pathTracerPhysicsRebuildDirty';
+const PHYSICS_WORKER_STEP_STATE_INDEX = 0;
+const PHYSICS_WORKER_SHARED_STATE_SLOT_COUNT = 8;
+const PHYSICS_WORKER_SHARED_MEMORY_REQUIREMENTS = Object.freeze({
+  crossOriginOpenerPolicyHeader: 'Cross-Origin-Opener-Policy: same-origin',
+  crossOriginEmbedderPolicyHeader: 'Cross-Origin-Embedder-Policy: require-corp',
+  reason: 'SharedArrayBuffer physics workers require a cross-origin isolated page.'
+});
+
+const markSceneObjectPhysicsRebuildDirty = (sceneObject) => {
+  if (sceneObject && typeof sceneObject === 'object') {
+    sceneObject[SCENE_OBJECT_PHYSICS_REBUILD_DIRTY_FLAG] = true;
+  }
+  return returnSuccess(undefined);
+};
+
+const clearSceneObjectPhysicsRebuildDirty = (sceneObject) => {
+  if (sceneObject && typeof sceneObject === 'object') {
+    sceneObject[SCENE_OBJECT_PHYSICS_REBUILD_DIRTY_FLAG] = false;
+  }
+  return returnSuccess(undefined);
+};
+
+const isSceneObjectPhysicsRebuildDirty = (sceneObject) => (
+  Boolean(sceneObject && sceneObject[SCENE_OBJECT_PHYSICS_REBUILD_DIRTY_FLAG] === true)
+);
+
+const readPhysicsSignatureNumber = (numberValue) => (
+  Number.isFinite(Number(numberValue)) ? Number(numberValue).toFixed(6) : 'nan'
+);
+
+const appendPhysicsSignatureVector = (signatureParts, vectorValue) => {
+  signatureParts.push(
+    readPhysicsSignatureNumber(vectorValue && vectorValue[0]),
+    readPhysicsSignatureNumber(vectorValue && vectorValue[1]),
+    readPhysicsSignatureNumber(vectorValue && vectorValue[2])
+  );
+};
+
+const readPhysicsSceneRoomSignature = (applicationState) => (
+  applicationState && applicationState.environment === ENVIRONMENT.OPEN_SKY_STUDIO
+    ? 'open-sky-studio'
+    : 'bounded-room'
+);
+
+const hasConfiguredPhysicsSpringJoints = (sceneObjects) => (
+  sceneObjects.some((sceneObject) => (
+    Array.isArray(sceneObject.physicsSpringJoints) && sceneObject.physicsSpringJoints.length > 0
+  ))
+);
+
+const readSceneObjectPhysicsRebuildSignature = (sceneObject) => {
+  const signatureParts = [
+    sceneObject && sceneObject.constructor ? sceneObject.constructor.name : 'unknown',
+    sceneObject && sceneObject.entityId !== undefined ? String(sceneObject.entityId) : '',
+    sceneObject && sceneObject.objectId !== undefined ? String(sceneObject.objectId) : '',
+    sceneObject && sceneObject.isHidden ? 'hidden' : 'visible'
+  ];
+
+  if (isPhysicsSupportedSceneObject(sceneObject)) {
+    signatureParts.push(
+      sceneObject.isPhysicsEnabled === false ? 'physics-off' : 'physics-on',
+      readSceneObjectPhysicsBodyType(sceneObject),
+      readPhysicsSignatureNumber(readSceneObjectPhysicsFriction(sceneObject)),
+      readPhysicsSignatureNumber(readSceneObjectPhysicsRestitution(sceneObject)),
+      readPhysicsSignatureNumber(readSceneObjectPhysicsMass(sceneObject)),
+      readPhysicsSignatureNumber(readSceneObjectPhysicsGravityScale(sceneObject)),
+      sceneObject.collideWithObjects !== false ? 'collide' : 'ghost'
+    );
+    if (sceneObject instanceof SphereSceneObject) {
+      appendPhysicsSignatureVector(signatureParts, sceneObject.getTranslatedCenter());
+      signatureParts.push(readPhysicsSignatureNumber(sceneObject.radius));
+    } else if (sceneObject instanceof CubeSceneObject) {
+      appendPhysicsSignatureVector(signatureParts, sceneObject.getMinCorner());
+      appendPhysicsSignatureVector(signatureParts, sceneObject.getMaxCorner());
+    }
+    return signatureParts.join('|');
+  }
+
+  if (sceneObject instanceof RoundedBoxSceneObject && sceneObject.isPhysicsEnabled === true) {
+    signatureParts.push('rounded-box-physics-on');
+    appendPhysicsSignatureVector(signatureParts, sceneObject.getTranslatedCenter());
+    appendPhysicsSignatureVector(signatureParts, sceneObject.boundsHalfExtents);
+    signatureParts.push(
+      readPhysicsSignatureNumber(readSceneObjectPhysicsFriction(sceneObject)),
+      readPhysicsSignatureNumber(readSceneObjectPhysicsRestitution(sceneObject))
+    );
+  }
+
+  return signatureParts.join('|');
+};
+
+const createRapierPhysicsWorkerCapability = (
+  hostGlobal = (typeof globalThis !== 'undefined' ? globalThis : null)
+) => {
+  const hasWorker = Boolean(hostGlobal && typeof hostGlobal.Worker === 'function');
+  const hasSharedArrayBuffer = Boolean(hostGlobal && typeof hostGlobal.SharedArrayBuffer === 'function');
+  const hasAtomics = Boolean(hostGlobal && hostGlobal.Atomics && typeof hostGlobal.Atomics.wait === 'function');
+  const isCrossOriginIsolated = Boolean(hostGlobal && hostGlobal.crossOriginIsolated === true);
+  const isSupported = hasWorker && hasSharedArrayBuffer && hasAtomics && isCrossOriginIsolated;
+  return Object.freeze({
+    isSupported,
+    hasWorker,
+    hasSharedArrayBuffer,
+    hasAtomics,
+    isCrossOriginIsolated,
+    sharedMemoryRequirements: PHYSICS_WORKER_SHARED_MEMORY_REQUIREMENTS
+  });
+};
+
+const createRapierPhysicsWorkerSharedStepState = (
+  workerCapability,
+  hostGlobal = (typeof globalThis !== 'undefined' ? globalThis : null)
+) => {
+  if (!workerCapability || workerCapability.isSupported !== true) {
+    return returnFailure(
+      'rapier-physics-worker-shared-memory-unavailable',
+      'Rapier physics worker shared memory is unavailable.',
+      workerCapability ? workerCapability.sharedMemoryRequirements : PHYSICS_WORKER_SHARED_MEMORY_REQUIREMENTS
+    );
+  }
+  const sharedBuffer = new hostGlobal.SharedArrayBuffer(
+    Int32Array.BYTES_PER_ELEMENT * PHYSICS_WORKER_SHARED_STATE_SLOT_COUNT
+  );
+  const stepState = new Int32Array(sharedBuffer);
+  hostGlobal.Atomics.store(stepState, PHYSICS_WORKER_STEP_STATE_INDEX, 0);
+  return returnSuccess(Object.freeze({
+    sharedBuffer,
+    stepState,
+    stepStateIndex: PHYSICS_WORKER_STEP_STATE_INDEX
+  }));
+};
+
 class RapierPhysicsWorld {
   constructor(rapierRuntime, world) {
     this.rapierRuntime = rapierRuntime;
@@ -6150,13 +6847,40 @@ class RapierPhysicsWorld {
     this.gravityVectorBuffer = createVec3(0, PHYSICS_GRAVITY_Y, 0);
     this.appliedGravityVector = createVec3(Number.NaN, Number.NaN, Number.NaN);
     this.rebuildSceneCallCount = 0;
+    this.fullRebuildSceneCallCount = 0;
+    this.incrementalRebuildSceneCallCount = 0;
+    this.noopRebuildSceneCallCount = 0;
+    this.hasCompletedPhysicsSceneRebuild = false;
+    this.previousPhysicsSceneObjects = new Set();
+    this.scenePhysicsMetadata = new WeakMap();
+    this.previousPhysicsSceneObjectCount = 0;
+    this.previousPhysicsRoomSignature = '';
+    this.collisionEventQueue = this.createCollisionEventQueue();
+    this.didDrainCollisionEventsLastStep = false;
+    this.hasKnownAwakeDynamicPhysicsObjects = false;
+    this.isDynamicPhysicsAwakeCacheDirty = true;
+    this.awakeDynamicPhysicsSleepScanCount = 0;
+    this.workerCapability = createRapierPhysicsWorkerCapability();
   }
 
   rebuildScene(sceneObjects, applicationState) {
+    this.rebuildSceneCallCount += 1;
+    const rebuildPlan = this.createIncrementalRebuildPlan(sceneObjects, applicationState);
+    if (rebuildPlan.canSkipRebuild) {
+      return this.skipUnchangedSceneRebuild(sceneObjects, applicationState, rebuildPlan);
+    }
+    if (rebuildPlan.canRebuildIncrementally) {
+      return this.rebuildSceneIncrementally(sceneObjects, applicationState, rebuildPlan);
+    }
+    return this.rebuildSceneFully(sceneObjects, applicationState);
+  }
+
+  rebuildSceneFully(sceneObjects, applicationState) {
     const rebuildStartMilliseconds = readCurrentMilliseconds();
     const previousDynamicBodyCount = this.dynamicPhysicsObjects.length;
-    this.rebuildSceneCallCount += 1;
+    this.fullRebuildSceneCallCount += 1;
     this.world = createRapierWorld(this.rapierRuntime);
+    this.collisionEventQueue = this.createCollisionEventQueue();
     this.physicsBodies = new Map();
     this.dynamicPhysicsBodies = new Map();
     this.dynamicPhysicsObjects = [];
@@ -6164,6 +6888,7 @@ class RapierPhysicsWorld {
     this.physicsAccumulatorSeconds = 0;
     this.sleepCheckCooldownSeconds = 0;
     this.shouldCheckDynamicPhysicsSleep = true;
+    this.resetDynamicPhysicsAwakeTracking(false);
     clearScenePhysicsSpringJointHandles(sceneObjects);
     const [, gravityError] = this.applyGlobalGravity(applicationState);
     if (gravityError) {
@@ -6296,11 +7021,304 @@ class RapierPhysicsWorld {
 
     logDiagnostic('debug', 'physics', 'Rapier physics scene rebuilt.', Object.freeze({
       rebuildSceneCallCount: this.rebuildSceneCallCount,
+      fullRebuildSceneCallCount: this.fullRebuildSceneCallCount,
       sceneObjectCount: sceneObjects.length,
       dynamicBodyCount: this.dynamicPhysicsObjects.length,
       durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - rebuildStartMilliseconds)
     }));
 
+    this.rememberPhysicsSceneRebuild(sceneObjects, applicationState);
+    return returnSuccess(undefined);
+  }
+
+  createCollisionEventQueue() {
+    if (!this.rapierRuntime || typeof this.rapierRuntime.EventQueue !== 'function') {
+      return null;
+    }
+    try {
+      return new this.rapierRuntime.EventQueue(true);
+    } catch (errorValue) {
+      logDiagnostic('debug', 'physics', 'Rapier collision EventQueue could not be created.', Object.freeze({
+        details: readErrorDetails(errorValue)
+      }));
+      return null;
+    }
+  }
+
+  resetDynamicPhysicsAwakeTracking(hasKnownAwakeDynamicPhysicsObjects) {
+    this.hasKnownAwakeDynamicPhysicsObjects = Boolean(hasKnownAwakeDynamicPhysicsObjects);
+    this.isDynamicPhysicsAwakeCacheDirty = false;
+    return returnSuccess(undefined);
+  }
+
+  markDynamicPhysicsAwake() {
+    this.hasKnownAwakeDynamicPhysicsObjects = true;
+    this.isDynamicPhysicsAwakeCacheDirty = false;
+    this.shouldCheckDynamicPhysicsSleep = false;
+    this.sleepCheckCooldownSeconds = 0;
+    return returnSuccess(undefined);
+  }
+
+  markDynamicPhysicsAwakeCacheDirty() {
+    this.isDynamicPhysicsAwakeCacheDirty = true;
+    return returnSuccess(undefined);
+  }
+
+  rememberPhysicsSceneRebuild(sceneObjects, applicationState) {
+    this.previousPhysicsSceneObjects = new Set(sceneObjects);
+    this.previousPhysicsSceneObjectCount = sceneObjects.length;
+    this.previousPhysicsRoomSignature = readPhysicsSceneRoomSignature(applicationState);
+    for (const sceneObject of sceneObjects) {
+      this.scenePhysicsMetadata.set(sceneObject, Object.freeze({
+        signature: readSceneObjectPhysicsRebuildSignature(sceneObject),
+        isSupported: isPhysicsSupportedSceneObject(sceneObject),
+        isActive: this.isSceneObjectActiveInPhysics(sceneObject),
+        bodyType: isPhysicsSupportedSceneObject(sceneObject)
+          ? readSceneObjectPhysicsBodyType(sceneObject)
+          : null
+      }));
+      clearSceneObjectPhysicsRebuildDirty(sceneObject);
+    }
+    this.hasCompletedPhysicsSceneRebuild = true;
+    return returnSuccess(undefined);
+  }
+
+  isSceneObjectActiveInPhysics(sceneObject) {
+    return Boolean(
+      sceneObject &&
+      !sceneObject.isHidden &&
+      sceneObject.isPhysicsEnabled !== false &&
+      (
+        isPhysicsSupportedSceneObject(sceneObject) ||
+        sceneObject instanceof RoundedBoxSceneObject
+      )
+    );
+  }
+
+  createIncrementalRebuildPlan(sceneObjects, applicationState) {
+    if (!this.hasCompletedPhysicsSceneRebuild) {
+      return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'initial-rebuild' });
+    }
+
+    if (hasConfiguredPhysicsSpringJoints(sceneObjects)) {
+      return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'spring-joints-configured' });
+    }
+
+    if (this.previousPhysicsSceneObjectCount !== sceneObjects.length) {
+      return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'scene-object-count-changed' });
+    }
+
+    const currentSceneObjects = new Set(sceneObjects);
+    for (const previousSceneObject of this.previousPhysicsSceneObjects) {
+      if (!currentSceneObjects.has(previousSceneObject)) {
+        return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'scene-object-membership-changed' });
+      }
+    }
+
+    const roomSignature = readPhysicsSceneRoomSignature(applicationState);
+    if (roomSignature !== this.previousPhysicsRoomSignature) {
+      return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'room-boundary-changed' });
+    }
+
+    const changedSceneObjects = [];
+    for (const sceneObject of sceneObjects) {
+      const previousMetadata = this.scenePhysicsMetadata.get(sceneObject);
+      if (!previousMetadata) {
+        return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'missing-object-metadata' });
+      }
+      const nextSignature = readSceneObjectPhysicsRebuildSignature(sceneObject);
+      if (isSceneObjectPhysicsRebuildDirty(sceneObject) || previousMetadata.signature !== nextSignature) {
+        changedSceneObjects.push(sceneObject);
+      }
+    }
+
+    if (changedSceneObjects.length === 0) {
+      return Object.freeze({
+        canRebuildIncrementally: false,
+        canSkipRebuild: true,
+        changedSceneObjects: Object.freeze([]),
+        reason: 'unchanged'
+      });
+    }
+
+    for (const sceneObject of changedSceneObjects) {
+      const previousMetadata = this.scenePhysicsMetadata.get(sceneObject);
+      if (!isPhysicsSupportedSceneObject(sceneObject)) {
+        return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'unsupported-object-changed' });
+      }
+      if (previousMetadata.isActive && !this.physicsBodies.has(sceneObject)) {
+        return Object.freeze({ canRebuildIncrementally: false, canSkipRebuild: false, reason: 'previous-body-not-removable' });
+      }
+    }
+
+    return Object.freeze({
+      canRebuildIncrementally: true,
+      canSkipRebuild: false,
+      changedSceneObjects: Object.freeze(changedSceneObjects),
+      reason: 'dirty-supported-objects'
+    });
+  }
+
+  skipUnchangedSceneRebuild(sceneObjects, applicationState, rebuildPlan) {
+    this.noopRebuildSceneCallCount += 1;
+    const [, gravityError] = this.applyGlobalGravity(applicationState);
+    if (gravityError) {
+      return returnDiagnosticFailure(
+        'error',
+        'physics',
+        'Rapier physics world gravity could not be applied during unchanged scene rebuild.',
+        gravityError
+      );
+    }
+    logDiagnostic('debug', 'physics', 'Rapier physics scene rebuild skipped.', Object.freeze({
+      rebuildSceneCallCount: this.rebuildSceneCallCount,
+      noopRebuildSceneCallCount: this.noopRebuildSceneCallCount,
+      sceneObjectCount: sceneObjects.length,
+      reason: rebuildPlan.reason
+    }));
+    return returnSuccess(undefined);
+  }
+
+  rebuildSceneIncrementally(sceneObjects, applicationState, rebuildPlan) {
+    const rebuildStartMilliseconds = readCurrentMilliseconds();
+    this.incrementalRebuildSceneCallCount += 1;
+    const [, gravityError] = this.applyGlobalGravity(applicationState);
+    if (gravityError) {
+      return returnDiagnosticFailure(
+        'error',
+        'physics',
+        'Rapier physics world gravity could not be applied during incremental scene rebuild.',
+        gravityError
+      );
+    }
+
+    for (const sceneObject of rebuildPlan.changedSceneObjects) {
+      const [, removeError] = this.removePhysicsBodyForSceneObject(sceneObject);
+      if (removeError) {
+        return returnDiagnosticFailure(
+          'error',
+          'physics',
+          'Rapier physics body removal failed during incremental scene rebuild.',
+          removeError,
+          Object.freeze({
+            objectId: sceneObject.objectId,
+            entityId: sceneObject.entityId,
+            displayName: sceneObject.displayName || '',
+            details: removeError.details === undefined ? null : removeError.details
+          })
+        );
+      }
+
+      if (sceneObject.isHidden || sceneObject.isPhysicsEnabled === false) {
+        const [, clearError] = sceneObject.clearPhysicsRigidBody();
+        if (clearError) {
+          return returnFailure(clearError.code, clearError.message, clearError.details);
+        }
+        this.recordSceneObjectPhysicsMetadata(sceneObject);
+        continue;
+      }
+
+      const [, addError] = this.addSupportedSceneObjectPhysics(sceneObject);
+      if (addError) {
+        return returnDiagnosticFailure(
+          'error',
+          'physics',
+          'Rapier physics body create failed during incremental scene rebuild.',
+          addError,
+          Object.freeze({
+            objectId: sceneObject.objectId,
+            entityId: sceneObject.entityId,
+            displayName: sceneObject.displayName || '',
+            details: addError.details === undefined ? null : addError.details
+          })
+        );
+      }
+      this.recordSceneObjectPhysicsMetadata(sceneObject);
+    }
+
+    const [, validationError] = this.validateDynamicPhysicsObjectsHaveBodies(sceneObjects);
+    if (validationError) {
+      return returnDiagnosticFailure(
+        'error',
+        'physics',
+        'Rapier physics body validation failed after incremental scene rebuild.',
+        validationError
+      );
+    }
+
+    logDiagnostic('debug', 'physics', 'Rapier physics scene incrementally rebuilt.', Object.freeze({
+      rebuildSceneCallCount: this.rebuildSceneCallCount,
+      incrementalRebuildSceneCallCount: this.incrementalRebuildSceneCallCount,
+      changedObjectCount: rebuildPlan.changedSceneObjects.length,
+      dynamicBodyCount: this.dynamicPhysicsObjects.length,
+      durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - rebuildStartMilliseconds)
+    }));
+
+    return returnSuccess(undefined);
+  }
+
+  recordSceneObjectPhysicsMetadata(sceneObject) {
+    this.scenePhysicsMetadata.set(sceneObject, Object.freeze({
+      signature: readSceneObjectPhysicsRebuildSignature(sceneObject),
+      isSupported: isPhysicsSupportedSceneObject(sceneObject),
+      isActive: this.isSceneObjectActiveInPhysics(sceneObject),
+      bodyType: isPhysicsSupportedSceneObject(sceneObject)
+        ? readSceneObjectPhysicsBodyType(sceneObject)
+        : null
+    }));
+    clearSceneObjectPhysicsRebuildDirty(sceneObject);
+    return returnSuccess(undefined);
+  }
+
+  addSupportedSceneObjectPhysics(sceneObject) {
+    const bodyType = readSceneObjectPhysicsBodyType(sceneObject);
+    if (sceneObject instanceof SphereSceneObject) {
+      return bodyType === PHYSICS_BODY_TYPE.DYNAMIC
+        ? this.addDynamicSphere(sceneObject)
+        : (bodyType === PHYSICS_BODY_TYPE.KINEMATIC
+            ? this.addKinematicSphere(sceneObject)
+            : this.addFixedSphere(sceneObject));
+    }
+    if (sceneObject instanceof CubeSceneObject) {
+      return bodyType === PHYSICS_BODY_TYPE.DYNAMIC
+        ? this.addDynamicCube(sceneObject)
+        : (bodyType === PHYSICS_BODY_TYPE.KINEMATIC
+            ? this.addKinematicCube(sceneObject)
+            : this.addFixedCube(sceneObject));
+    }
+    return returnFailure('unsupported-incremental-physics-object', 'Scene item cannot be rebuilt incrementally by the physics world.');
+  }
+
+  removePhysicsBodyForSceneObject(sceneObject) {
+    const rigidBody = this.physicsBodies.get(sceneObject);
+    if (rigidBody) {
+      if (!this.world || typeof this.world.removeRigidBody !== 'function') {
+        return returnFailure('rapier-body-removal-unavailable', 'Rapier world cannot remove rigid bodies incrementally.');
+      }
+      try {
+        this.world.removeRigidBody(rigidBody);
+      } catch (errorValue) {
+        return returnFailure(
+          'rapier-body-remove-failed',
+          'Rigid body could not be removed from the Rapier world.',
+          readErrorDetails(errorValue)
+        );
+      }
+    }
+
+    this.physicsBodies.delete(sceneObject);
+    this.dynamicPhysicsBodies.delete(sceneObject);
+    const dynamicBodyIndex = this.dynamicPhysicsObjects.indexOf(sceneObject);
+    if (dynamicBodyIndex >= 0) {
+      this.dynamicPhysicsObjects.splice(dynamicBodyIndex, 1);
+      this.dynamicPhysicsRigidBodies.splice(dynamicBodyIndex, 1);
+      this.markDynamicPhysicsAwakeCacheDirty();
+    }
+
+    const [, clearError] = sceneObject.clearPhysicsRigidBody();
+    if (clearError) {
+      return returnFailure(clearError.code, clearError.message, clearError.details);
+    }
     return returnSuccess(undefined);
   }
 
@@ -6945,9 +7963,22 @@ class RapierPhysicsWorld {
     return this.attachKinematicPhysicsBody(sphereObject, rigidBody, colliderDescription);
   }
 
+  enableColliderCollisionEvents(colliderDescription) {
+    if (
+      colliderDescription &&
+      typeof colliderDescription.setActiveEvents === 'function' &&
+      this.rapierRuntime &&
+      this.rapierRuntime.ActiveEvents &&
+      this.rapierRuntime.ActiveEvents.COLLISION_EVENTS !== undefined
+    ) {
+      return colliderDescription.setActiveEvents(this.rapierRuntime.ActiveEvents.COLLISION_EVENTS);
+    }
+    return colliderDescription;
+  }
+
   attachDynamicPhysicsBody(sceneObject, rigidBody, colliderDescription) {
     try {
-      this.world.createCollider(colliderDescription, rigidBody);
+      this.world.createCollider(this.enableColliderCollisionEvents(colliderDescription), rigidBody);
     } catch (errorValue) {
       return returnDiagnosticFailure(
         'error',
@@ -6974,13 +8005,13 @@ class RapierPhysicsWorld {
     this.physicsBodies.set(sceneObject, rigidBody);
     this.dynamicPhysicsObjects.push(sceneObject);
     this.dynamicPhysicsRigidBodies.push(rigidBody);
-    this.shouldCheckDynamicPhysicsSleep = true;
+    this.markDynamicPhysicsAwake();
     return returnSuccess(undefined);
   }
 
   attachKinematicPhysicsBody(sceneObject, rigidBody, colliderDescription) {
     try {
-      this.world.createCollider(colliderDescription, rigidBody);
+      this.world.createCollider(this.enableColliderCollisionEvents(colliderDescription), rigidBody);
     } catch (errorValue) {
       return returnDiagnosticFailure(
         'error',
@@ -7009,7 +8040,7 @@ class RapierPhysicsWorld {
 
   attachFixedPhysicsBody(sceneObject, rigidBody, colliderDescription) {
     try {
-      this.world.createCollider(colliderDescription, rigidBody);
+      this.world.createCollider(this.enableColliderCollisionEvents(colliderDescription), rigidBody);
     } catch (errorValue) {
       return returnDiagnosticFailure(
         'error',
@@ -7068,6 +8099,7 @@ class RapierPhysicsWorld {
     this.dynamicPhysicsObjects.splice(bodyIndex, 1);
     this.dynamicPhysicsRigidBodies.splice(bodyIndex, 1);
     this.shouldCheckDynamicPhysicsSleep = true;
+    this.markDynamicPhysicsAwakeCacheDirty();
     return returnSuccess(undefined);
   }
 
@@ -7106,7 +8138,15 @@ class RapierPhysicsWorld {
       if (stepGravityError) {
         return returnFailure(stepGravityError.code, stepGravityError.message, stepGravityError.details);
       }
-      this.world.step();
+      if (this.collisionEventQueue) {
+        this.world.step(this.collisionEventQueue);
+      } else {
+        this.world.step();
+      }
+      const [, eventQueueError] = this.drainCollisionEvents();
+      if (eventQueueError) {
+        return returnFailure(eventQueueError.code, eventQueueError.message, eventQueueError.details);
+      }
       this.physicsAccumulatorSeconds -= PHYSICS_FIXED_TIMESTEP_SECONDS;
       didStepWorld = true;
     }
@@ -7129,20 +8169,53 @@ class RapierPhysicsWorld {
       } else {
         this.shouldCheckDynamicPhysicsSleep = false;
       }
+    } else {
+      this.markDynamicPhysicsAwake();
     }
 
     return returnSuccess(didMovePhysicsObject);
   }
 
+  drainCollisionEvents() {
+    this.didDrainCollisionEventsLastStep = false;
+    if (!this.collisionEventQueue || typeof this.collisionEventQueue.drainCollisionEvents !== 'function') {
+      return returnSuccess(false);
+    }
+
+    try {
+      this.collisionEventQueue.drainCollisionEvents(() => {
+        this.didDrainCollisionEventsLastStep = true;
+      });
+    } catch (errorValue) {
+      return returnFailure(
+        'rapier-collision-event-drain-failed',
+        'Rapier collision events could not be drained.',
+        readErrorDetails(errorValue)
+      );
+    }
+
+    if (this.didDrainCollisionEventsLastStep) {
+      this.markDynamicPhysicsAwake();
+    }
+    return returnSuccess(this.didDrainCollisionEventsLastStep);
+  }
+
   hasAwakeDynamicPhysicsObjects() {
+    if (!this.isDynamicPhysicsAwakeCacheDirty) {
+      return this.hasKnownAwakeDynamicPhysicsObjects;
+    }
+
+    this.awakeDynamicPhysicsSleepScanCount += 1;
     const rigidBodies = this.dynamicPhysicsRigidBodies;
     for (let bodyIndex = 0; bodyIndex < rigidBodies.length; bodyIndex += 1) {
       const rigidBody = rigidBodies[bodyIndex];
       if (typeof rigidBody.isSleeping !== 'function' || !rigidBody.isSleeping()) {
+        this.resetDynamicPhysicsAwakeTracking(true);
         return true;
       }
     }
 
+    this.resetDynamicPhysicsAwakeTracking(false);
     return false;
   }
 
@@ -8034,13 +9107,7 @@ class PathTracer {
     ));
   }
 
-  setObjects(sceneObjects, renderSettings) {
-    const nextFragmentSource = createTracerFragmentSource(sceneObjects, renderSettings);
-    const compileStartMilliseconds = readCurrentMilliseconds();
-    const [nextTracerProgram, tracerProgramError] = createLinkedProgram(this.webGlContext, tracerVertexSource, nextFragmentSource, 'path tracer');
-    if (tracerProgramError) {
-      return returnFailure(tracerProgramError.code, tracerProgramError.message, tracerProgramError.details);
-    }
+  commitSceneProgram(sceneObjects, renderSettings, nextTracerProgram, compileStartMilliseconds, compileMode = 'sync') {
 
     const nextTracerVertexAttribute = this.webGlContext.getAttribLocation(nextTracerProgram, 'vertex');
     if (nextTracerVertexAttribute < 0) {
@@ -8111,10 +9178,87 @@ class PathTracer {
 
     logDiagnostic('info', 'renderer', 'Path tracer shader compiled.', Object.freeze({
       objectCount: this.sceneObjects.length,
-      durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - compileStartMilliseconds)
+      durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - compileStartMilliseconds),
+      compileMode
     }));
 
     return returnSuccess(undefined);
+  }
+
+  setObjects(sceneObjects, renderSettings) {
+    const nextFragmentSource = createTracerFragmentSource(sceneObjects, renderSettings);
+    const compileStartMilliseconds = readCurrentMilliseconds();
+    const [nextTracerProgram, tracerProgramError] = createLinkedProgram(this.webGlContext, tracerVertexSource, nextFragmentSource, 'path tracer');
+    if (tracerProgramError) {
+      return returnFailure(tracerProgramError.code, tracerProgramError.message, tracerProgramError.details);
+    }
+
+    return this.commitSceneProgram(sceneObjects, renderSettings, nextTracerProgram, compileStartMilliseconds, 'sync');
+  }
+
+  async setObjectsAsync(sceneObjects, renderSettings, options = Object.freeze({})) {
+    const nextFragmentSource = createTracerFragmentSource(sceneObjects, renderSettings);
+    const compileStartMilliseconds = readCurrentMilliseconds();
+    const [nextTracerProgram, tracerProgramError] = await createLinkedProgramAsync(
+      this.webGlContext,
+      tracerVertexSource,
+      nextFragmentSource,
+      'path tracer',
+      options
+    );
+    if (tracerProgramError) {
+      return returnFailure(tracerProgramError.code, tracerProgramError.message, tracerProgramError.details);
+    }
+
+    return this.commitSceneProgram(sceneObjects, renderSettings, nextTracerProgram, compileStartMilliseconds, 'parallel');
+  }
+
+  releaseSceneProgram() {
+    const webGlContext = this.webGlContext;
+    if (this.tracerProgram) {
+      if (typeof webGlContext.flush === 'function') {
+        webGlContext.flush();
+      }
+      webGlContext.deleteProgram(this.tracerProgram);
+    }
+
+    this.tracerProgram = null;
+    this.tracerVertexAttribute = -1;
+    this.tracerUniformLocations = createUniformLocationCache();
+    this.tracerFrameUniformLocations = Object.create(null);
+    this.tracerSampleUniformLocations = Object.create(null);
+    this.tracerFrameScalarUniformValues = Object.create(null);
+    this.previousTracerFrameScalarUniformValues = Object.create(null);
+    this.sceneObjects = [];
+    this.sceneComplexity = calculateSceneComplexity(this.sceneObjects);
+    this.sampleCount = 0;
+    this.lastRenderedSampleCount = 0;
+    this.currentRaysPerPixel = DEFAULT_RAYS_PER_PIXEL;
+    this.wasInteractiveQualityThrottleActive = false;
+    this.usesMaterialAlbedoTexture = false;
+    this.usesSkyTexture = false;
+    this.hasDisplayHistory = false;
+    this.hasSetTracerSamplerUniforms = false;
+    this.hasCompleteTracerSampleUniforms = false;
+    this.hasPendingSceneUniformUpdate = true;
+    this.hasLoggedAccumulationPhase = false;
+    this.hasLoggedTemporalDisplayPhase = false;
+    this.hasLoggedDisplayCompositePhase = false;
+    writeVec3(this.previousEyePosition, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousCameraRight, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousCameraUp, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousCameraRayCenter, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousCameraRayClipX, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousCameraRayClipY, Number.NaN, Number.NaN, Number.NaN);
+    writeVec3(this.previousLightColor, Number.NaN, Number.NaN, Number.NaN);
+    useWebGlProgramIfNeeded(webGlContext, null);
+    webGlContext.bindTexture(webGlContext.TEXTURE_2D, null);
+    webGlContext.bindFramebuffer(webGlContext.FRAMEBUFFER, null);
+    if (typeof webGlContext.flush === 'function') {
+      webGlContext.flush();
+    }
+
+    return this.syncBenchmarkStaticSnapshotFields();
   }
 
   markSceneUniformsDirty() {
@@ -9316,6 +10460,27 @@ class SelectionRenderer {
     return returnSuccess(undefined);
   }
 
+  async setObjectsAsync(sceneObjects, renderSettings, options = Object.freeze({})) {
+    const visibleSceneObjects = sceneObjects.filter((sceneObject) => (
+      !sceneObject.isHidden &&
+      isRenderableSceneObject(sceneObject)
+    ));
+    const [, tracerError] = await this.pathTracer.setObjectsAsync(visibleSceneObjects, renderSettings, options);
+    if (tracerError) {
+      return returnFailure(tracerError.code, tracerError.message, tracerError.details);
+    }
+
+    this.sceneObjects = sceneObjects.slice();
+    this.pruneSelectionToSceneObjects();
+
+    return returnSuccess(undefined);
+  }
+
+  releaseSceneProgram() {
+    this.sceneObjects = [];
+    return this.pathTracer.releaseSceneProgram();
+  }
+
   resolveSelectedObject(sceneObjects = this.sceneObjects) {
     return findSceneObjectByEntityId(sceneObjects, this.selectedEntityId);
   }
@@ -9414,7 +10579,7 @@ class SelectionRenderer {
   render(applicationState, shouldDrawSelectionOutline = true) {
     this.syncSelectionFromSceneStore();
     const selectedObject = this.resolveSelectedObject();
-    const [, pathTracerError] = this.pathTracer.render(applicationState);
+    const [, pathTracerError] = invokeWebGlRenderer(this.pathTracer, applicationState);
     if (pathTracerError) {
       return returnFailure(pathTracerError.code, pathTracerError.message, pathTracerError.details);
     }
@@ -9531,35 +10696,62 @@ const readSceneObjectDisplayName = (sceneObject) => {
   return displayName;
 };
 
-class BenchmarkDisplay {
-  constructor(
-    performanceScoreElement,
-    raysPerSecondElement,
-    rayBandwidthElement,
-    perceptualFramesPerSecondElement,
-    resolutionElement,
-    bouncesElement,
-    samplesElement,
-    convergenceElement,
-    gpuMemoryElement,
-    sceneComplexityElement,
-    gpuRendererElement,
-    sourceElement,
-    applicationState,
-    gpuRendererLabel
-  ) {
-    this.performanceScoreElement = performanceScoreElement;
-    this.raysPerSecondElement = raysPerSecondElement;
-    this.rayBandwidthElement = rayBandwidthElement;
-    this.perceptualFramesPerSecondElement = perceptualFramesPerSecondElement;
-    this.resolutionElement = resolutionElement;
-    this.bouncesElement = bouncesElement;
-    this.samplesElement = samplesElement;
-    this.convergenceElement = convergenceElement;
-    this.gpuMemoryElement = gpuMemoryElement;
-    this.sceneComplexityElement = sceneComplexityElement;
-    this.gpuRendererElement = gpuRendererElement;
-    this.sourceElement = sourceElement;
+const LEGACY_BENCHMARK_SIGNAL_BINDINGS = Object.freeze([
+  Object.freeze({ elementId: 'benchmark-performance-score', valueSignal: formattedPerformanceScore }),
+  Object.freeze({ elementId: 'benchmark-rays-per-second', valueSignal: formattedRaysPerSecond }),
+  Object.freeze({ elementId: 'benchmark-ray-bandwidth', valueSignal: formattedRayBandwidth }),
+  Object.freeze({ elementId: 'benchmark-perceptual-fps', valueSignal: formattedPerceptualFramesPerSecond }),
+  Object.freeze({ elementId: 'benchmark-resolution', valueSignal: formattedResolution }),
+  Object.freeze({ elementId: 'benchmark-bounces', valueSignal: formattedBounces }),
+  Object.freeze({
+    elementId: 'benchmark-samples',
+    valueSignal: formattedSamples,
+    titleSignal: formattedSamplesTitle
+  }),
+  Object.freeze({
+    elementId: 'benchmark-convergence',
+    valueSignal: formattedConvergence,
+    titleSignal: formattedConvergenceTitle
+  }),
+  Object.freeze({
+    elementId: 'benchmark-gpu-memory',
+    valueSignal: formattedGpuMemory,
+    titleSignal: formattedGpuMemoryTitle
+  }),
+  Object.freeze({
+    elementId: 'benchmark-scene-complexity',
+    valueSignal: formattedSceneComplexity,
+    titleSignal: formattedSceneComplexityTitle
+  }),
+  Object.freeze({ elementId: 'benchmark-gpu-renderer', valueSignal: formattedGpuRenderer }),
+  Object.freeze({ elementId: 'benchmark-source', valueSignal: formattedMeasurementSource })
+]);
+
+const writeLegacyBenchmarkSignalElement = (documentObject, binding) => {
+  const element = readOptionalElement(documentObject, binding.elementId);
+  if (!element) {
+    return;
+  }
+  const nextText = String(binding.valueSignal.value ?? '');
+  if (element.textContent !== nextText) {
+    element.textContent = nextText;
+  }
+  if (binding.titleSignal && element.parentElement) {
+    const nextTitle = String(binding.titleSignal.value ?? '');
+    if (element.parentElement.title !== nextTitle) {
+      element.parentElement.title = nextTitle;
+    }
+  }
+};
+
+const attachLegacyBenchmarkSignalBindings = (documentObject) => (
+  LEGACY_BENCHMARK_SIGNAL_BINDINGS.map((binding) => effect(() => {
+    writeLegacyBenchmarkSignalElement(documentObject, binding);
+  }))
+);
+
+class BenchmarkSignalBridge {
+  constructor(applicationState, gpuRendererLabel) {
     this.applicationState = applicationState;
     this.gpuRendererLabel = gpuRendererLabel;
     this.previousUpdateMilliseconds = 0;
@@ -9575,156 +10767,15 @@ class BenchmarkDisplay {
     }
 
     this.previousUpdateMilliseconds = currentTimeMilliseconds;
-    updateBenchmarkSignals(benchmarkSnapshot, {
-      resolution: CANVAS_RENDER_RESOLUTION_LABEL,
-      bounces: this.applicationState.lightBounceCount,
-      gpuRenderer: this.gpuRendererLabel
-    });
-    const shouldShowPausedZero = isPausedBenchmarkSource(benchmarkSnapshot.measurementSource);
-    const [, performanceScoreError] = writeElementTextIfChanged(
-      this.performanceScoreElement,
-      formatPausedAwareCompactMetricValue(benchmarkSnapshot.performanceScore, shouldShowPausedZero)
-    );
-    if (performanceScoreError) {
-      return returnFailure(performanceScoreError.code, performanceScoreError.message, performanceScoreError.details);
-    }
-
-    const [, raysPerSecondError] = writeElementTextIfChanged(
-      this.raysPerSecondElement,
-      formatPausedAwareBenchmarkRateValue(benchmarkSnapshot.activeRaysPerSecond, shouldShowPausedZero)
-    );
-    if (raysPerSecondError) {
-      return returnFailure(raysPerSecondError.code, raysPerSecondError.message, raysPerSecondError.details);
-    }
-
-    const [, rayBandwidthError] = writeElementTextIfChanged(
-      this.rayBandwidthElement,
-      formatPausedAwareBandwidthValue(benchmarkSnapshot.estimatedRayBandwidthBytesPerSecond, shouldShowPausedZero)
-    );
-    if (rayBandwidthError) {
-      return returnFailure(rayBandwidthError.code, rayBandwidthError.message, rayBandwidthError.details);
-    }
-
-    const [, perceptualFramesPerSecondError] = writeElementTextIfChanged(
-      this.perceptualFramesPerSecondElement,
-      formatPausedAwareFramesPerSecondValue(benchmarkSnapshot.perceptualFramesPerSecond, shouldShowPausedZero)
-    );
-    if (perceptualFramesPerSecondError) {
-      return returnFailure(
-        perceptualFramesPerSecondError.code,
-        perceptualFramesPerSecondError.message,
-        perceptualFramesPerSecondError.details
-      );
-    }
-
-    const [, resolutionError] = writeElementTextIfChanged(
-      this.resolutionElement,
-      CANVAS_RENDER_RESOLUTION_LABEL
-    );
-    if (resolutionError) {
-      return returnFailure(resolutionError.code, resolutionError.message, resolutionError.details);
-    }
-
-    const [, bouncesError] = writeElementTextIfChanged(
-      this.bouncesElement,
-      String(this.applicationState.lightBounceCount)
-    );
-    if (bouncesError) {
-      return returnFailure(bouncesError.code, bouncesError.message, bouncesError.details);
-    }
-
-    const [, samplesError] = writeElementTextIfChanged(
-      this.samplesElement,
-      formatBenchmarkSampleCountValue(benchmarkSnapshot.accumulatedSamples)
-    );
-    if (samplesError) {
-      return returnFailure(samplesError.code, samplesError.message, samplesError.details);
-    }
-
-    const [, convergenceError] = writeElementTextIfChanged(
-      this.convergenceElement,
-      formatBenchmarkConvergenceValue(benchmarkSnapshot)
-    );
-    if (convergenceError) {
-      return returnFailure(convergenceError.code, convergenceError.message, convergenceError.details);
-    }
-
-    const [, gpuMemoryError] = writeElementTextIfChanged(
-      this.gpuMemoryElement,
-      formatByteSizeValue(benchmarkSnapshot.estimatedGpuBufferMemoryBytes)
-    );
-    if (gpuMemoryError) {
-      return returnFailure(gpuMemoryError.code, gpuMemoryError.message, gpuMemoryError.details);
-    }
-
-    const [, sceneComplexityError] = writeElementTextIfChanged(
-      this.sceneComplexityElement,
-      formatBenchmarkSceneComplexityValue(benchmarkSnapshot)
-    );
-    if (sceneComplexityError) {
-      return returnFailure(sceneComplexityError.code, sceneComplexityError.message, sceneComplexityError.details);
-    }
-
-    const [, samplesTitleError] = writeMetricTitleIfChanged(
-      this.samplesElement,
-      `Accumulated ${benchmarkSnapshot.accumulatedSamples} samples since the last reset.`
-    );
-    if (samplesTitleError) {
-      return returnFailure(samplesTitleError.code, samplesTitleError.message, samplesTitleError.details);
-    }
-
-    const [, convergenceTitleError] = writeMetricTitleIfChanged(
-      this.convergenceElement,
-      `Convergence target: ${benchmarkSnapshot.accumulatedSamples} / ${benchmarkSnapshot.convergenceSampleCount} samples.`
-    );
-    if (convergenceTitleError) {
-      return returnFailure(convergenceTitleError.code, convergenceTitleError.message, convergenceTitleError.details);
-    }
-
-    const [, memoryTitleError] = writeMetricTitleIfChanged(
-      this.gpuMemoryElement,
-      `Estimated GPU color-buffer memory: ${formatByteSizeValue(benchmarkSnapshot.estimatedGpuBufferMemoryBytes)}.`
-    );
-    if (memoryTitleError) {
-      return returnFailure(memoryTitleError.code, memoryTitleError.message, memoryTitleError.details);
-    }
-
-    const [, complexityTitleError] = writeMetricTitleIfChanged(
-      this.sceneComplexityElement,
-      [
-        `Scene complexity score ${benchmarkSnapshot.sceneComplexityScore} (${benchmarkSnapshot.sceneComplexityLabel}).`,
-        `${benchmarkSnapshot.sceneObjectCount} objects,`,
-        `${benchmarkSnapshot.sceneSdfObjectCount} SDF objects,`,
-        `${benchmarkSnapshot.sceneTransparentObjectCount} transparent objects.`
-      ].join(' ')
-    );
-    if (complexityTitleError) {
-      return returnFailure(complexityTitleError.code, complexityTitleError.message, complexityTitleError.details);
-    }
-
-    const [, gpuRendererError] = writeElementTextIfChanged(
-      this.gpuRendererElement,
-      this.gpuRendererLabel
-    );
-    if (gpuRendererError) {
-      return returnFailure(gpuRendererError.code, gpuRendererError.message, gpuRendererError.details);
-    }
-
-    const sourceLabel = formatBenchmarkSourceLabel(benchmarkSnapshot.measurementSource, benchmarkSnapshot.rendererBackend);
     const benchmarkScene = this.applicationState.isBenchmarkModeActive
       ? benchmarkScenes[this.applicationState.activeBenchmarkSceneName]
       : null;
-    const benchmarkSourceLabel = benchmarkScene
-      ? `${sourceLabel} - ${benchmarkScene.metadata.displayName}`
-      : sourceLabel;
-    const [, sourceError] = writeElementTextIfChanged(
-      this.sourceElement,
-      benchmarkSourceLabel
-    );
-    if (sourceError) {
-      return returnFailure(sourceError.code, sourceError.message, sourceError.details);
-    }
-
+    updateBenchmarkSignals(benchmarkSnapshot, {
+      resolution: CANVAS_RENDER_RESOLUTION_LABEL,
+      bounces: this.applicationState.lightBounceCount,
+      gpuRenderer: this.gpuRendererLabel,
+      benchmarkSceneLabel: benchmarkScene ? benchmarkScene.metadata.displayName : ''
+    });
     return returnSuccess(undefined);
   }
 }
@@ -11411,7 +12462,7 @@ class UserInterfaceController {
     return this.readSelectedObject();
   }
 
-  setSceneObjects(sceneObjects) {
+  prepareSceneObjectsForRenderer(sceneObjects) {
     this.cancelScheduledShaderRebuildFromInput();
     this.lightObject.isLocked = this.applicationState.isBenchmarkModeActive;
     this.sceneObjects = [this.lightObject, ...sceneObjects];
@@ -11440,7 +12491,45 @@ class UserInterfaceController {
       return returnFailure(syncError.code, syncError.message, syncError.details);
     }
 
+    return returnSuccess(undefined);
+  }
+
+  setSceneObjects(sceneObjects) {
+    const [, prepareError] = this.prepareSceneObjectsForRenderer(sceneObjects);
+    if (prepareError) {
+      return returnFailure(prepareError.code, prepareError.message, prepareError.details);
+    }
+
     return this.syncSceneObjectsToRendererAndPhysics();
+  }
+
+  async setSceneObjectsAsync(sceneObjects, options = Object.freeze({})) {
+    const [, prepareError] = this.prepareSceneObjectsForRenderer(sceneObjects);
+    if (prepareError) {
+      return returnFailure(prepareError.code, prepareError.message, prepareError.details);
+    }
+
+    return this.syncSceneObjectsToRendererAndPhysicsAsync(options);
+  }
+
+  releaseSceneRendererResources() {
+    const [, cancelShaderError] = this.cancelScheduledShaderRebuildFromInput();
+    if (cancelShaderError) {
+      return returnFailure(cancelShaderError.code, cancelShaderError.message, cancelShaderError.details);
+    }
+
+    const [, cancelFrameError] = cancelScheduledAnimationFrame(this.applicationState);
+    if (cancelFrameError) {
+      return returnFailure(cancelFrameError.code, cancelFrameError.message, cancelFrameError.details);
+    }
+
+    const [, releaseError] = this.selectionRenderer.releaseSceneProgram();
+    if (releaseError) {
+      return returnFailure(releaseError.code, releaseError.message, releaseError.details);
+    }
+
+    logDiagnostic('debug', 'sceneLoad', 'Released renderer scene program before deferred scene load.');
+    return returnSuccess(undefined);
   }
 
   cancelScheduledShaderRebuildFromInput() {
@@ -11532,6 +12621,37 @@ class UserInterfaceController {
     logDiagnostic('debug', 'sceneLoad', 'Scene objects synced to renderer and physics.', Object.freeze({
       objectCount: this.sceneObjects.length,
       durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - syncStartMilliseconds)
+    }));
+
+    return returnSuccess(undefined);
+  }
+
+  async syncSceneObjectsToRendererAndPhysicsAsync(options = Object.freeze({})) {
+    const syncStartMilliseconds = readCurrentMilliseconds();
+    const [, hierarchyError] = syncSceneGroupEntityChildren(this.sceneObjects);
+    if (hierarchyError) {
+      return returnFailure(hierarchyError.code, hierarchyError.message, hierarchyError.details);
+    }
+    setSceneStoreSceneItems(this.sceneObjects);
+
+    const [, rendererError] = await this.selectionRenderer.setObjectsAsync(
+      this.sceneObjects,
+      this.applicationState,
+      options
+    );
+    if (rendererError) {
+      return returnFailure(rendererError.code, rendererError.message, rendererError.details);
+    }
+
+    const [, physicsError] = this.physicsWorld.rebuildScene(this.sceneObjects, this.applicationState);
+    if (physicsError) {
+      return returnFailure(physicsError.code, physicsError.message, physicsError.details);
+    }
+
+    logDiagnostic('debug', 'sceneLoad', 'Scene objects synced to renderer and physics.', Object.freeze({
+      objectCount: this.sceneObjects.length,
+      durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - syncStartMilliseconds),
+      compileMode: 'parallel'
     }));
 
     return returnSuccess(undefined);
@@ -14084,6 +15204,80 @@ class UserInterfaceController {
     return returnSuccess(undefined);
   }
 
+  async loadPresetSceneAsync(presetName, options = Object.freeze({})) {
+    const sceneLoadStartMilliseconds = readCurrentMilliseconds();
+    const presetFactory = scenePresetFactories[presetName];
+    if (!presetFactory) {
+      return returnFailure('unknown-preset', `Preset "${presetName}" is not available.`);
+    }
+
+    const [, cancelError] = this.cancelActivePointerInteraction();
+    if (cancelError) {
+      return returnFailure(cancelError.code, cancelError.message, cancelError.details);
+    }
+
+    const [, stopRunnerError] = this.stopBenchmarkRunner();
+    if (stopRunnerError) {
+      return returnFailure(stopRunnerError.code, stopRunnerError.message, stopRunnerError.details);
+    }
+
+    this.applicationState.isBenchmarkModeActive = false;
+    this.applicationState.activeBenchmarkSceneName = null;
+    const [, animationClearError] = clearSceneAnimation(this.applicationState);
+    if (animationClearError) {
+      return returnFailure(animationClearError.code, animationClearError.message, animationClearError.details);
+    }
+    const [, presetMetadataError] = applySceneMetadataGravityToState(
+      this.applicationState,
+      readScenePresetMetadata(presetName)
+    );
+    if (presetMetadataError) {
+      return returnFailure(presetMetadataError.code, presetMetadataError.message, presetMetadataError.details);
+    }
+
+    const [sceneObjects, presetError] = createSceneObjectsFromFactory(
+      presetName,
+      presetFactory,
+      this.applicationState,
+      'Scene preset'
+    );
+    let nextSceneObjects = sceneObjects;
+    if (presetError) {
+      logSceneFactoryFailure('preset', 'Scene preset', presetName, presetError, ' Loading a blank scene instead.');
+      const [emptySceneObjects, emptySceneError] = createEmptyScene(this.applicationState);
+      if (emptySceneError) {
+        return returnFailure(emptySceneError.code, emptySceneError.message, emptySceneError.details);
+      }
+      nextSceneObjects = emptySceneObjects;
+    }
+
+    const [, sceneSetError] = await this.setSceneObjectsAsync(nextSceneObjects, options);
+    if (sceneSetError) {
+      return returnFailure(sceneSetError.code, sceneSetError.message, sceneSetError.details);
+    }
+    const [, syncError] = this.syncAllControlsFromState();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+    const [, frameScheduleError] = scheduleAnimationFrame(this.applicationState);
+    if (frameScheduleError) {
+      return returnFailure(frameScheduleError.code, frameScheduleError.message, frameScheduleError.details);
+    }
+
+    logDiagnostic('info', 'sceneLoad', 'Scene preset loaded.', Object.freeze({
+      sceneKey: presetName,
+      objectCount: nextSceneObjects.length,
+      didRecoverToEmptyScene: Boolean(presetError),
+      durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - sceneLoadStartMilliseconds),
+      compileMode: 'parallel'
+    }));
+
+    if (presetError) {
+      return returnFailure(presetError.code, presetError.message, presetError.details);
+    }
+    return returnSuccess(undefined);
+  }
+
   loadBenchmarkScene(benchmarkSceneName) {
     const sceneLoadStartMilliseconds = readCurrentMilliseconds();
     const benchmarkScene = benchmarkScenes[benchmarkSceneName];
@@ -14140,6 +15334,68 @@ class UserInterfaceController {
       sceneKey: benchmarkSceneName,
       objectCount: sceneObjects.length,
       durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - sceneLoadStartMilliseconds)
+    }));
+
+    return this.selectionRenderer.pathTracer.clearSamples();
+  }
+
+  async loadBenchmarkSceneAsync(benchmarkSceneName, options = Object.freeze({})) {
+    const sceneLoadStartMilliseconds = readCurrentMilliseconds();
+    const benchmarkScene = benchmarkScenes[benchmarkSceneName];
+    if (!benchmarkScene) {
+      return returnFailure('invalid-benchmark-scene', 'Benchmark scene is not available.');
+    }
+
+    const [, cancelError] = this.cancelActivePointerInteraction();
+    if (cancelError) {
+      return returnFailure(cancelError.code, cancelError.message, cancelError.details);
+    }
+
+    const [, settingsError] = applyBenchmarkSceneSettingsToState(
+      this.applicationState,
+      benchmarkScene.metadata,
+      benchmarkSceneName
+    );
+    if (settingsError) {
+      return returnFailure(settingsError.code, settingsError.message, settingsError.details);
+    }
+
+    const [sceneObjects, sceneError] = createSceneObjectsFromFactory(
+      benchmarkSceneName,
+      benchmarkScene.factory,
+      this.applicationState,
+      'Benchmark scene',
+      true
+    );
+    if (sceneError) {
+      return returnFailure(sceneError.code, sceneError.message, sceneError.details);
+    }
+
+    const [, sceneSetError] = await this.setSceneObjectsAsync(lockBenchmarkSceneObjects(sceneObjects), options);
+    if (sceneSetError) {
+      return returnFailure(sceneSetError.code, sceneSetError.message, sceneSetError.details);
+    }
+
+    const [, syncError] = this.syncAllControlsFromState();
+    if (syncError) {
+      return returnFailure(syncError.code, syncError.message, syncError.details);
+    }
+
+    const [, benchmarkError] = this.selectionRenderer.pathTracer.resetBenchmark();
+    if (benchmarkError) {
+      return returnFailure(benchmarkError.code, benchmarkError.message, benchmarkError.details);
+    }
+
+    const [, frameScheduleError] = scheduleAnimationFrame(this.applicationState);
+    if (frameScheduleError) {
+      return returnFailure(frameScheduleError.code, frameScheduleError.message, frameScheduleError.details);
+    }
+
+    logDiagnostic('info', 'sceneLoad', 'Benchmark scene loaded.', Object.freeze({
+      sceneKey: benchmarkSceneName,
+      objectCount: sceneObjects.length,
+      durationMilliseconds: roundDiagnosticMilliseconds(readCurrentMilliseconds() - sceneLoadStartMilliseconds),
+      compileMode: 'parallel'
     }));
 
     return this.selectionRenderer.pathTracer.clearSamples();
@@ -15886,7 +17142,7 @@ const allocateSceneObjectId = (applicationState) => {
   return objectId;
 };
 
-const createApplicationState = () => ({
+const createApplicationState = () => bindLegacyApplicationStateObject({
   cameraMode: CAMERA_MODE_ORBIT,
   cameraAngleX: 0,
   cameraAngleY: 0,
@@ -15959,8 +17215,7 @@ const createApplicationState = () => ({
   previousPointerY: 0,
   isInitialFrameReady: false,
   isWebGlContextLost: false,
-  animationFrameId: 0,
-  animationFrameCallback: null
+  animationFrameId: 0
 });
 
 const clearFpsMovementState = (applicationState) => {
@@ -16087,11 +17342,15 @@ const updateFocusPickButton = (toggleButton, isPickingFocus) => {
 };
 
 const advanceCameraAutoRotation = (applicationState, elapsedSeconds, pathTracer) => {
+  const cameraMode = normalizeCameraMode(applicationState.cameraMode);
   if (
-    normalizeCameraMode(applicationState.cameraMode) !== CAMERA_MODE_ORBIT ||
     !applicationState.isCameraAutoRotating ||
     applicationState.isRotatingCamera
   ) {
+    return returnSuccess(undefined);
+  }
+
+  if (cameraMode !== CAMERA_MODE_ORBIT && cameraMode !== CAMERA_MODE_FPS) {
     return returnSuccess(undefined);
   }
 
@@ -16176,20 +17435,11 @@ const scheduleAnimationFrame = (applicationState) => {
   if (applicationState.isWebGlContextLost || applicationState.isFramePaused || applicationState.animationFrameId) {
     return returnSuccess(undefined);
   }
-  if (typeof applicationState.animationFrameCallback !== 'function') {
-    return returnFailure('missing-animation-callback', 'Animation loop callback is not available.');
-  }
-
-  applicationState.animationFrameId = requestAnimationFrame(applicationState.animationFrameCallback);
-  return returnSuccess(undefined);
+  return scheduleRenderFrame(applicationState);
 };
 
 const cancelScheduledAnimationFrame = (applicationState) => {
-  if (applicationState.animationFrameId) {
-    cancelAnimationFrame(applicationState.animationFrameId);
-    applicationState.animationFrameId = 0;
-  }
-  return returnSuccess(undefined);
+  return cancelScheduledRenderFrame(applicationState);
 };
 
 const createSphereObject = (applicationState, x, y, z, radius, material = MATERIAL.DIFFUSE) => new SphereSceneObject(
@@ -16213,6 +17463,21 @@ const createCubeObject = (
   createVec3(maxX, maxY, maxZ),
   allocateSceneObjectId(applicationState),
   material
+);
+
+const createReferenceMeshObject = (
+  applicationState,
+  modelKey,
+  x,
+  y,
+  z,
+  material = MATERIAL.DIFFUSE
+) => new ReferenceMeshSceneObject(
+  readReferenceMeshModel(modelKey),
+  createVec3(x, y, z),
+  allocateSceneObjectId(applicationState),
+  material,
+  readReferenceMeshModelKey(modelKey)
 );
 
 const createCylinderObject = (
@@ -16532,6 +17797,7 @@ const SCENE_OBJECT_TYPE_ALIASES = Object.freeze({
   GroupEntity: 'group',
   SphereSceneObject: 'sphere',
   CubeSceneObject: 'cube',
+  ReferenceMeshSceneObject: 'referenceMesh',
   SdfSceneObject: 'sdf',
   CylinderSceneObject: 'cylinder',
   ConeSceneObject: 'cone',
@@ -16547,6 +17813,7 @@ const SCENE_OBJECT_TYPE_ALIASES = Object.freeze({
   MandelbulbSceneObject: 'mandelbulb',
   SdfFractalSceneObject: 'sdfFractal',
   AreaLightSceneObject: 'areaLight',
+  'reference-mesh': 'referenceMesh',
   'rounded-box': 'roundedBox',
   'triangular-prism': 'triangularPrism',
   'sdf-fractal': 'sdfFractal',
@@ -16627,6 +17894,9 @@ const readSceneObjectSnapshotType = (sceneObject) => {
   }
   if (sceneObject instanceof AreaLightSceneObject) {
     return 'areaLight';
+  }
+  if (sceneObject instanceof ReferenceMeshSceneObject) {
+    return 'referenceMesh';
   }
   if (sceneObject instanceof DiskSceneObject) {
     return 'disk';
@@ -16757,6 +18027,13 @@ const createSceneObjectSnapshot = (sceneObject) => {
   if (sceneObject instanceof CubeSceneObject) {
     objectSnapshot.minCorner = serializeSceneVec3(sceneObject.minCorner);
     objectSnapshot.maxCorner = serializeSceneVec3(sceneObject.maxCorner);
+    return objectSnapshot;
+  }
+
+  if (sceneObject instanceof ReferenceMeshSceneObject) {
+    objectSnapshot.modelKey = sceneObject.modelKey;
+    objectSnapshot.assetPath = sceneObject.assetPath;
+    objectSnapshot.centerPosition = serializeSceneVec3(sceneObject.centerPosition);
     return objectSnapshot;
   }
 
@@ -17052,6 +18329,24 @@ const createSceneObjectFromSnapshot = (applicationState, objectSnapshotValue) =>
     );
   }
 
+  if (objectType === 'referenceMesh') {
+    const modelKey = readReferenceMeshModelKey(readSceneSnapshotFirstDefined(
+      objectSnapshot.modelKey,
+      objectSnapshot.referenceModel,
+      objectSnapshot.assetKey
+    ));
+    return applySceneObjectSnapshotCommonFields(
+      new ReferenceMeshSceneObject(
+        readReferenceMeshModel(modelKey),
+        readSceneSnapshotVec3(objectSnapshot.centerPosition, createVec3(0, -0.54, 0), -8, 8),
+        allocateSceneObjectIdFromSnapshot(applicationState, objectSnapshot),
+        material,
+        modelKey
+      ),
+      objectSnapshot
+    );
+  }
+
   if (objectType === 'group') {
     const groupEntityId = readSceneObjectSnapshotEntityId(objectSnapshot);
     const numericGroupEntityId = Number(groupEntityId);
@@ -17192,6 +18487,9 @@ const readSceneSnapshotObjectRequiredFieldGroups = (objectType) => {
   if (objectType === 'cube') {
     return Object.freeze([Object.freeze(['minCorner']), Object.freeze(['maxCorner'])]);
   }
+  if (objectType === 'referenceMesh') {
+    return Object.freeze([Object.freeze(['centerPosition'])]);
+  }
   if (SCENE_OBJECT_SDF_PROTOTYPES[objectType]) {
     return Object.freeze([
       Object.freeze(['centerPosition']),
@@ -17279,6 +18577,7 @@ const logSceneSnapshotDefaultedFields = (snapshotValue) => {
       if (
         objectType !== 'sphere' &&
         objectType !== 'cube' &&
+        objectType !== 'referenceMesh' &&
         !SCENE_OBJECT_SDF_PROTOTYPES[objectType]
       ) {
         unsupportedObjectTypes.push(String(objectType));
@@ -17734,6 +19033,52 @@ const createAreaLightShowcaseSceneObjects = (applicationState) => returnSuccess(
   createPlaneObject(applicationState, 0.00, -0.98, 0.35, 0.60, 0.24, MATERIAL.PROCEDURAL)
 ]);
 
+const createSuzanneReferenceSceneObjects = (applicationState) => createConfiguredShowcaseSceneObjects(
+  applicationState,
+  Object.freeze({
+    environment: ENVIRONMENT.OPEN_SKY_STUDIO,
+    cameraDistance: 2.35,
+    cameraAngleX: -0.10,
+    cameraAngleY: 0.30,
+    cameraFieldOfViewDegrees: 48,
+    lightBounceCount: 6,
+    raysPerPixel: 12,
+    temporalBlendFrames: 18,
+    denoiserStrength: 0.48,
+    skyBrightness: 1.30,
+    lightIntensity: 0.56,
+    lightSize: 0.14,
+    lightPosition: Object.freeze([0.34, 0.74, -0.46]),
+    lightColor: Object.freeze([1.0, 0.93, 0.82]),
+    colorContrast: 1.05,
+    colorSaturation: 1.08,
+    bloomStrength: 0.08,
+    glareStrength: 0.04,
+    cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.24
+  }),
+  () => [
+    setFixedSceneObjectDisplayName(
+      createPlaneObject(applicationState, 0, -0.985, 0.06, 0.92, 0.82, MATERIAL.MATTE_PLASTIC),
+      'Suzanne Matte Ground Receiver'
+    ),
+    setFixedSceneObjectDisplayName(
+      createCubeObject(applicationState, -0.72, -0.98, -0.62, 0.72, 0.18, -0.58, MATERIAL.SNOW),
+      'Suzanne Rear Bounce Wall'
+    ),
+    setFixedSceneObjectDisplayName(
+      createReferenceMeshObject(
+        applicationState,
+        DEFAULT_REFERENCE_MESH_MODEL_KEY,
+        0,
+        -0.54,
+        0.0,
+        MATERIAL.GGX_PBR
+      ),
+      'Suzanne Low Reference Mesh'
+    )
+  ]
+);
+
 const setSceneObjectDisplayName = (sceneObject, displayName) => {
   sceneObject.displayName = displayName;
   return sceneObject;
@@ -17997,14 +19342,14 @@ const createCorridorOfLightSceneObjects = (applicationState, options = Object.fr
     raysPerPixel: 14,
     temporalBlendFrames: 18,
     denoiserStrength: 0.58,
-    lightIntensity: 0.72,
+    lightIntensity: 0.64,
     lightSize: 0.08,
     lightPosition: Object.freeze([0.0, 0.72, 0.0]),
     lightColor: Object.freeze([1.0, 0.84, 0.58]),
     fogDensity: 0,
-    bloomStrength: 0.34,
-    bloomThreshold: 0.72,
-    glareStrength: 0.30,
+    bloomStrength: 0.22,
+    bloomThreshold: 0.95,
+    glareStrength: 0.18,
     cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.45
   }),
   () => {
@@ -18102,7 +19447,7 @@ const createShadowStudySceneObjects = (applicationState) => createConfiguredShow
     lightBounceCount: 5,
     raysPerPixel: 16,
     temporalBlendFrames: 18,
-    lightIntensity: 0.88,
+    lightIntensity: 0.70,
     lightSize: 0.035,
     lightPosition: Object.freeze([-0.64, 0.74, -0.54]),
     lightColor: Object.freeze([1.0, 0.96, 0.86]),
@@ -18207,13 +19552,13 @@ const createSkySphereSceneObjects = (applicationState) => createConfiguredShowca
     lightBounceCount: 6,
     raysPerPixel: 14,
     temporalBlendFrames: 18,
-    skyBrightness: 2.65,
+    skyBrightness: 1.55,
     lightIntensity: 0.48,
     lightSize: 0.18,
     lightPosition: Object.freeze([0.22, 0.78, -0.52]),
     lightColor: Object.freeze([0.86, 0.92, 1.0]),
     colorSaturation: 1.16,
-    bloomStrength: 0.16,
+    bloomStrength: 0.10,
     cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.40
   }),
   () => [
@@ -18240,15 +19585,15 @@ const createFogCorridorSceneObjects = (applicationState) => createConfiguredShow
     raysPerPixel: 12,
     temporalBlendFrames: 18,
     denoiserStrength: 0.60,
-    fogDensity: 1.85,
-    skyBrightness: 2.35,
-    lightIntensity: 0.68,
+    fogDensity: 1.55,
+    skyBrightness: 1.45,
+    lightIntensity: 0.52,
     lightSize: 0.20,
     lightPosition: Object.freeze([0.18, 0.70, -0.62]),
     lightColor: Object.freeze([1.0, 0.78, 0.46]),
-    bloomStrength: 0.38,
-    bloomThreshold: 0.78,
-    glareStrength: 0.34,
+    bloomStrength: 0.20,
+    bloomThreshold: 1.05,
+    glareStrength: 0.12,
     cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.25
   }),
   () => {
@@ -18388,12 +19733,12 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
     lightSize: 0.02,
     lightPosition: Object.freeze([0.0, 0.54, -0.62]),
     lightColor: Object.freeze([0.35, 0.42, 0.55]),
-    colorExposure: 0.35,
-    colorContrast: 1.18,
-    colorSaturation: 1.28,
-    bloomStrength: 0.82,
-    bloomThreshold: 0.58,
-    glareStrength: 0.42,
+    colorExposure: 0.00,
+    colorContrast: 1.08,
+    colorSaturation: 1.18,
+    bloomStrength: 0.36,
+    bloomThreshold: 0.95,
+    glareStrength: 0.16,
     cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.18
   }),
   () => [
@@ -18417,7 +19762,7 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
       setSceneObjectEmissiveSettings(
         createCubeObject(applicationState, -0.62, -0.38, -0.70, -0.58, 0.22, -0.66, MATERIAL.EMISSIVE),
         Object.freeze([0.10, 0.82, 1.0]),
-        3.8
+        2.1
       ),
       'Cyan Neon Tube'
     ),
@@ -18425,7 +19770,7 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
       setSceneObjectEmissiveSettings(
         createCubeObject(applicationState, 0.56, -0.28, -0.70, 0.62, 0.30, -0.66, MATERIAL.EMISSIVE),
         Object.freeze([1.0, 0.16, 0.74]),
-        4.1
+        2.25
       ),
       'Magenta Neon Tube'
     ),
@@ -18433,7 +19778,7 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
       setSceneObjectEmissiveSettings(
         createCubeObject(applicationState, -0.34, -0.82, -0.54, 0.32, -0.76, -0.50, MATERIAL.EMISSIVE),
         Object.freeze([1.0, 0.62, 0.08]),
-        2.9
+        1.65
       ),
       'Amber Floor Strip'
     ),
@@ -18441,7 +19786,7 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
       setSceneObjectEmissiveSettings(
         createSphereObject(applicationState, -0.24, -0.70, -0.10, 0.11, MATERIAL.EMISSIVE),
         Object.freeze([0.46, 0.88, 1.0]),
-        2.8
+        1.55
       ),
       'Cyan Glow Orb'
     ),
@@ -18449,7 +19794,7 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
       setSceneObjectEmissiveSettings(
         createSphereObject(applicationState, 0.22, -0.72, 0.14, 0.13, MATERIAL.EMISSIVE),
         Object.freeze([1.0, 0.24, 0.62]),
-        3.2
+        1.75
       ),
       'Pink Glow Orb'
     ),
@@ -18459,6 +19804,133 @@ const createDemoNeonRoomSceneObjects = (applicationState) => createConfiguredSho
     )
   ]
 );
+
+const SPONZA_ATRIUM_FLAGSTONE_BAND_COUNT = 4;
+const SPONZA_ATRIUM_COLUMN_PAIR_COUNT = 3;
+const SPONZA_ATRIUM_CURTAIN_PAIR_COUNT = 2;
+
+const createBenchmarkSponzaAtriumSceneObjects = (applicationState) => {
+  const lissajousAmplitudeX = 0.45;
+  const lissajousAmplitudeY = 0.12;
+  const lissajousAmplitudeZ = 0.38;
+  const lissajousBaseY = 0.18;
+  const lissajousFreqX = 3 * 0.11;
+  const lissajousFreqY = 5 * 0.07;
+  const lissajousFreqZ = 7 * 0.09;
+  const lissajousInitialX = lissajousAmplitudeX * Math.sin(0);
+  const lissajousInitialY = lissajousBaseY + lissajousAmplitudeY * Math.abs(Math.sin(0));
+  const lissajousInitialZ = lissajousAmplitudeZ * Math.sin(0);
+  const lissajousTranslation = createVec3(0, 0, 0);
+  const sceneObjects = [];
+  const pushFixedObject = (sceneObject, displayName) => {
+    sceneObjects.push(setFixedSceneObjectDisplayName(sceneObject, displayName));
+  };
+
+  pushFixedObject(
+    createAreaLightObject(applicationState, 0.40, 0.78, -0.18, 0.18, 0.014, 0.12),
+    'Sponza Atrium Soft Skylight'
+  );
+  pushFixedObject(
+    createCubeObject(applicationState, -0.42, -0.03, -0.58, 1.00, 0.00, 0.58, MATERIAL.MARBLE),
+    'Sponza Flagstone Foundation'
+  );
+  pushFixedObject(
+    createCubeObject(applicationState, -0.42, 0.70, -0.58, 1.00, 0.76, 0.58, MATERIAL.MARBLE),
+    'Sponza Stone Ceiling'
+  );
+  pushFixedObject(
+    createCubeObject(applicationState, -0.42, 0.00, -0.62, 1.00, 0.72, -0.58, MATERIAL.MARBLE),
+    'Sponza Left Stone Arcade Wall'
+  );
+  pushFixedObject(
+    createCubeObject(applicationState, -0.42, 0.00, 0.58, 1.00, 0.72, 0.62, MATERIAL.MARBLE),
+    'Sponza Right Stone Arcade Wall'
+  );
+
+  for (let slabBandIndex = 0; slabBandIndex < SPONZA_ATRIUM_FLAGSTONE_BAND_COUNT; slabBandIndex += 1) {
+    const minZ = -0.50 + slabBandIndex * 0.25;
+    const material = slabBandIndex % 2 === 0 ? MATERIAL.SAND : MATERIAL.CERAMIC_GLAZE;
+    pushFixedObject(
+      createCubeObject(
+        applicationState,
+        -0.34,
+        0.002,
+        minZ,
+        0.92,
+        0.014,
+        minZ + 0.20,
+        material
+      ),
+      `Sponza Flagstone Band ${slabBandIndex + 1}`
+    );
+  }
+
+  for (const side of [-1, 1]) {
+    const zPosition = side * 0.42;
+    const sideLabel = side < 0 ? 'Left' : 'Right';
+    pushFixedObject(
+      createCubeObject(applicationState, -0.35, 0.61, zPosition - 0.032, 0.94, 0.66, zPosition + 0.032, MATERIAL.MARBLE),
+      `Sponza ${sideLabel} Arcade Beam`
+    );
+  }
+
+  for (let columnIndex = 0; columnIndex < SPONZA_ATRIUM_COLUMN_PAIR_COUNT; columnIndex += 1) {
+    const xPosition = -0.24 + columnIndex * 0.43;
+    for (const side of [-1, 1]) {
+      const zPosition = side * 0.42;
+      const sideLabel = side < 0 ? 'Left' : 'Right';
+      pushFixedObject(
+        createCylinderObject(applicationState, xPosition, 0.31, zPosition, 0.044, 0.31, MATERIAL.MARBLE),
+        `Sponza ${sideLabel} Column ${columnIndex + 1}`
+      );
+    }
+    pushFixedObject(
+      createCubeObject(applicationState, xPosition - 0.025, 0.64, -0.42, xPosition + 0.025, 0.69, 0.42, MATERIAL.MARBLE),
+      `Sponza Cross Vault Rib ${columnIndex + 1}`
+    );
+  }
+
+  for (let curtainIndex = 0; curtainIndex < SPONZA_ATRIUM_CURTAIN_PAIR_COUNT; curtainIndex += 1) {
+    const xPosition = -0.02 + curtainIndex * 0.58;
+    const material = curtainIndex % 2 === 0 ? MATERIAL.WOVEN_FABRIC : MATERIAL.VELVET;
+    pushFixedObject(
+      createCubeObject(applicationState, xPosition - 0.045, 0.20, -0.575, xPosition + 0.045, 0.60, -0.535, material),
+      `Sponza Left Fabric Curtain ${curtainIndex + 1}`
+    );
+    pushFixedObject(
+      createCubeObject(applicationState, xPosition - 0.045, 0.20, 0.535, xPosition + 0.045, 0.60, 0.575, material),
+      `Sponza Right Fabric Curtain ${curtainIndex + 1}`
+    );
+  }
+
+  const animatedSphere = setFixedSceneObjectDisplayName(
+    createSphereObject(applicationState, 0, lissajousBaseY, 0, 0.18, MATERIAL.GLASS),
+    'Sponza Lissajous Glass Sphere'
+  );
+  animatedSphere.physicsBodyType = PHYSICS_BODY_TYPE.STATIC;
+  sceneObjects.push(animatedSphere);
+
+  const [, animationError] = setSceneAnimationUpdate(applicationState, (elapsedSeconds) => {
+    const xPosition = lissajousAmplitudeX * Math.sin(elapsedSeconds * lissajousFreqX);
+    const yPosition = lissajousBaseY + lissajousAmplitudeY * Math.abs(Math.sin(elapsedSeconds * lissajousFreqY));
+    const zPosition = lissajousAmplitudeZ * Math.sin(elapsedSeconds * lissajousFreqZ);
+    const [, translationError] = animatedSphere.setTemporaryTranslation(writeVec3(
+      lissajousTranslation,
+      xPosition - lissajousInitialX,
+      yPosition - lissajousInitialY,
+      zPosition - lissajousInitialZ
+    ));
+    if (translationError) {
+      return returnFailure(translationError.code, translationError.message, translationError.details);
+    }
+    return returnSuccess(true);
+  });
+  if (animationError) {
+    return returnFailure(animationError.code, animationError.message, animationError.details);
+  }
+
+  return returnSuccess(sceneObjects);
+};
 
 const createBenchmarkShaderGauntletSceneObjects = (applicationState) => {
   const materialGrid = [
@@ -18989,6 +20461,28 @@ const createBenchmarkStandardSceneObjects = (applicationState) => returnSuccess(
 const benchmarkSceneRegistry = Object.freeze({
   defaultBenchmarkScene: DEFAULT_BENCHMARK_SCENE_NAME,
   scenes: Object.freeze({
+  benchmarkSponzaAtrium: Object.freeze({
+    factory: createBenchmarkSponzaAtriumSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Sponza Atrium',
+      targetBounces: 8,
+      targetRaysPerPixel: 16,
+      targetTemporalBlendFrames: 20,
+      targetDenoiserStrength: 0.56,
+      gravityScale: DEFAULT_GLOBAL_GRAVITY_SCALE,
+      referenceAssetPath: SPONZA_GLB_REFERENCE_MODEL.assetPath,
+      referenceTriangleCount: SPONZA_GLB_REFERENCE_MODEL.triangleCount,
+      description: 'Deterministic atrium benchmark with dense stone/fabric primitives and a glass Lissajous caustic driver; the bundled Sponza GLB is tracked as the mesh reference asset.',
+      cameraEyePosition: Object.freeze([0, 0.3, 0]),
+      cameraTargetPosition: Object.freeze([1, 0.2, 0]),
+      cameraFieldOfViewDegrees: 65,
+      cameraAutoRotationSpeed: BENCHMARK_CAMERA_AUTO_ROTATION_SPEED * 0.55,
+      lightIntensity: 0.54,
+      lightSize: 0.13,
+      lightPosition: Object.freeze([0.40, 0.78, -0.18]),
+      lightColor: Object.freeze([1.0, 0.92, 0.78])
+    })
+  }),
   standard: Object.freeze({
     factory: createBenchmarkStandardSceneObjects,
     metadata: Object.freeze({
@@ -19037,7 +20531,7 @@ const benchmarkSceneRegistry = Object.freeze({
       cameraAngleX: -0.12,
       cameraAngleY: 0.10,
       cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
-      lightIntensity: 0.70,
+      lightIntensity: 0.58,
       lightSize: 0.16,
       lightPosition: Object.freeze([0.42, 0.64, -0.48])
     })
@@ -19054,7 +20548,7 @@ const benchmarkSceneRegistry = Object.freeze({
       cameraAngleX: -0.08,
       cameraAngleY: 0.18,
       cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.65,
-      lightIntensity: 0.76,
+      lightIntensity: 0.62,
       lightSize: 0.14,
       lightPosition: Object.freeze([0.28, 0.66, -0.48])
     })
@@ -19090,7 +20584,7 @@ const benchmarkSceneRegistry = Object.freeze({
       cameraAngleX: -0.06,
       cameraAngleY: 0.42,
       cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED,
-      lightIntensity: 0.92,
+      lightIntensity: 0.68,
       lightSize: 0.04,
       lightPosition: Object.freeze([-0.24, 0.66, -0.44]),
       cameraFocusDistance: 2.25,
@@ -19133,8 +20627,8 @@ const benchmarkSceneRegistry = Object.freeze({
       cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.5,
       environment: ENVIRONMENT.OPEN_SKY_STUDIO,
       fogDensity: 0.8,
-      skyBrightness: 2.0,
-      lightIntensity: 0.68,
+      skyBrightness: 1.35,
+      lightIntensity: 0.52,
       lightSize: 0.18,
       lightPosition: Object.freeze([0.30, 0.62, -0.52])
     })
@@ -19199,26 +20693,58 @@ const applyBenchmarkSceneSettingsToState = (applicationState, benchmarkSceneMeta
     0,
     CAMERA_AUTO_ROTATION_SPEED
   );
-  applicationState.cameraDistance = normalizeBoundedNumber(
-    benchmarkSceneMetadata.cameraDistance,
-    INITIAL_CAMERA_DISTANCE,
-    1.5,
-    4
-  );
-  applicationState.cameraAngleX = normalizeBoundedNumber(benchmarkSceneMetadata.cameraAngleX, 0, -0.8, 0.8);
-  applicationState.cameraAngleY = normalizeBoundedNumber(
-    benchmarkSceneMetadata.cameraAngleY,
-    0,
-    -Math.PI,
-    Math.PI
-  );
-  applicationState.cameraMode = CAMERA_MODE_ORBIT;
-  writeOrbitEyePosition(
-    applicationState.fpsEyePosition,
-    applicationState.cameraAngleX,
-    applicationState.cameraAngleY,
-    applicationState.cameraDistance
-  );
+  if (
+    Array.isArray(benchmarkSceneMetadata.cameraEyePosition) &&
+    Array.isArray(benchmarkSceneMetadata.cameraTargetPosition)
+  ) {
+    const cameraEyePosition = createVec3(
+      benchmarkSceneMetadata.cameraEyePosition[0],
+      benchmarkSceneMetadata.cameraEyePosition[1],
+      benchmarkSceneMetadata.cameraEyePosition[2]
+    );
+    const cameraTargetPosition = createVec3(
+      benchmarkSceneMetadata.cameraTargetPosition[0],
+      benchmarkSceneMetadata.cameraTargetPosition[1],
+      benchmarkSceneMetadata.cameraTargetPosition[2]
+    );
+    const cameraAngles = readFpsCameraAnglesFromEyeTarget(cameraEyePosition, cameraTargetPosition);
+    applicationState.cameraMode = CAMERA_MODE_FPS;
+    applicationState.cameraAngleX = normalizeBoundedNumber(cameraAngles.cameraAngleX, 0, -0.8, 0.8);
+    applicationState.cameraAngleY = normalizeBoundedNumber(cameraAngles.cameraAngleY, 0, -Math.PI, Math.PI);
+    applicationState.cameraDistance = normalizeBoundedNumber(
+      cameraAngles.cameraDistance,
+      INITIAL_CAMERA_DISTANCE,
+      0,
+      4
+    );
+    writeVec3(
+      applicationState.fpsEyePosition,
+      cameraEyePosition[0],
+      cameraEyePosition[1],
+      cameraEyePosition[2]
+    );
+  } else {
+    applicationState.cameraDistance = normalizeBoundedNumber(
+      benchmarkSceneMetadata.cameraDistance,
+      INITIAL_CAMERA_DISTANCE,
+      1.5,
+      4
+    );
+    applicationState.cameraAngleX = normalizeBoundedNumber(benchmarkSceneMetadata.cameraAngleX, 0, -0.8, 0.8);
+    applicationState.cameraAngleY = normalizeBoundedNumber(
+      benchmarkSceneMetadata.cameraAngleY,
+      0,
+      -Math.PI,
+      Math.PI
+    );
+    applicationState.cameraMode = CAMERA_MODE_ORBIT;
+    writeOrbitEyePosition(
+      applicationState.fpsEyePosition,
+      applicationState.cameraAngleX,
+      applicationState.cameraAngleY,
+      applicationState.cameraDistance
+    );
+  }
   applicationState.isPointerLocked = false;
   clearFpsMovementState(applicationState);
   applicationState.lightIntensity = normalizeBoundedNumber(
@@ -19330,6 +20856,7 @@ const scenePresetFactories = Object.freeze({
   flatPrimitiveShowcase: createFlatPrimitiveShowcaseSceneObjects,
   implicitPrimitiveShowcase: createImplicitPrimitiveShowcaseSceneObjects,
   areaLightShowcase: createAreaLightShowcaseSceneObjects,
+  suzanneReference: createSuzanneReferenceSceneObjects,
   corridorOfLight: createCorridorOfLightSceneObjects,
   corridorOfLightGlassSphere: createCorridorOfLightGlassSphereSceneObjects,
   corridorOfLightMirrorCube: createCorridorOfLightMirrorCubeSceneObjects,
@@ -19360,6 +20887,7 @@ const scenePresetMetadata = Object.freeze({
   flatPrimitiveShowcase: createDefaultSceneMetadata(),
   implicitPrimitiveShowcase: createDefaultSceneMetadata(),
   areaLightShowcase: createDefaultSceneMetadata(),
+  suzanneReference: createDefaultSceneMetadata(),
   corridorOfLight: createDefaultSceneMetadata(),
   corridorOfLightGlassSphere: createDefaultSceneMetadata(),
   corridorOfLightMirrorCube: createDefaultSceneMetadata(),
@@ -19504,6 +21032,41 @@ const runBenchmarkSceneFactoryStartupSmokeTest = () => {
   return returnSuccess(undefined);
 };
 
+const runScenePresetFactoryStartupSmokeTest = () => {
+  const failures = [];
+  for (const [sceneKey, sceneFactory] of Object.entries(scenePresetFactories)) {
+    const smokeTestState = createApplicationState();
+    const [, sceneError] = createSceneObjectsFromFactory(
+      sceneKey,
+      sceneFactory,
+      smokeTestState,
+      'Scene preset',
+      true
+    );
+    if (!sceneError) {
+      continue;
+    }
+
+    failures.push(Object.freeze({
+      sceneKey,
+      code: sceneError.code,
+      message: sceneError.message,
+      details: sceneError.details
+    }));
+    logSceneFactoryFailure('preset', 'Scene preset', sceneKey, sceneError);
+  }
+
+  if (failures.length > 0) {
+    return returnFailure(
+      'scene-preset-smoke-test-failed',
+      `${failures.length} scene preset factory smoke test(s) failed.`,
+      Object.freeze(failures)
+    );
+  }
+
+  return returnSuccess(undefined);
+};
+
 const readInitialPresetName = (documentObject) => {
   const windowObject = documentObject.defaultView;
   if (!windowObject || !windowObject.location || !windowObject.URLSearchParams) {
@@ -19641,10 +21204,7 @@ const readRequiredCanvas = (documentObject, elementId) => {
 };
 
 const applyCanvasSizeToDocument = (documentObject, canvasElement) => {
-  documentObject.documentElement.style.setProperty('--canvas-render-size', `${CANVAS_SIZE}px`);
-  documentObject.documentElement.style.setProperty('--canvas-render-width', `${CANVAS_RENDER_WIDTH}px`);
-  documentObject.documentElement.style.setProperty('--canvas-render-height', `${CANVAS_RENDER_HEIGHT}px`);
-  documentObject.documentElement.style.setProperty('--canvas-aspect-ratio', String(CANVAS_ASPECT_RATIO));
+  applyRenderCanvasCssProperties(documentObject.documentElement, CANVAS_RENDER_WIDTH, CANVAS_RENDER_HEIGHT);
   canvasElement.width = CANVAS_RENDER_WIDTH;
   canvasElement.height = CANVAS_RENDER_HEIGHT;
   return returnSuccess(undefined);
@@ -19764,29 +21324,8 @@ const isPreferredGpuRenderer = (gpuInfo) => {
 
 const updateGpuStatus = (documentObject, webGlContext) => {
   const gpuInfo = readWebGlGpuInfo(webGlContext);
-  const gpuStatusElement = readOptionalElement(documentObject, 'gpu-status');
-  const gpuRendererElement = readOptionalElement(documentObject, 'gpu-renderer');
-  if (!gpuStatusElement || !gpuRendererElement) {
-    return returnSuccess(gpuInfo);
-  }
-
   const rendererLabel = gpuInfo.renderer || 'Renderer hidden by browser';
-  const isPreferredRenderer = isPreferredGpuRenderer(gpuInfo);
-  const isB580Renderer = /\bB580\b/i.test(`${gpuInfo.vendor} ${gpuInfo.renderer}`);
-  const statusPrefix = isB580Renderer
-    ? 'B580 active'
-    : (isPreferredRenderer ? 'Arc GPU active' : 'High-performance requested');
-
-  gpuRendererElement.textContent = `${statusPrefix}: ${rendererLabel}`;
-  gpuStatusElement.classList.toggle('is-preferred', isPreferredRenderer);
-  gpuStatusElement.classList.toggle('is-fallback', !isPreferredRenderer);
-  gpuStatusElement.title = [
-    `Vendor: ${gpuInfo.vendor || 'Unknown'}`,
-    `Renderer: ${rendererLabel}`,
-    `WebGL power preference: ${gpuInfo.powerPreference}`,
-    gpuInfo.hasDebugRendererInfo ? 'Unmasked renderer info available' : 'Renderer details are masked by the browser'
-  ].join('\n');
-
+  setBenchmarkGpuRenderer(rendererLabel);
   return returnSuccess(gpuInfo);
 };
 
@@ -19819,17 +21358,162 @@ const updateRendererBackendStatus = (documentObject) => {
   }));
 };
 
-const updateLoadingStatus = (documentObject, statusText) => {
+const DEFAULT_LOADING_DETAIL_TEXT = 'Blank frames during setup are expected while the renderer builds the scene.';
+const SCENE_LOAD_DIALOG_DETAIL_TEXT = 'The renderer is releasing old GPU resources before building the new scene assets and associated components.';
+const LOADING_STEP_STATE_LABELS = Object.freeze({
+  pending: 'Queued',
+  running: 'Running',
+  done: 'Done',
+  error: 'Failed'
+});
+const DEFERRED_SCENE_LOAD_STEPS = Object.freeze([
+  Object.freeze({
+    id: 'stop-runtime',
+    label: 'Stop active interactions, benchmark runner, and pending frames'
+  }),
+  Object.freeze({
+    id: 'release-shaders',
+    label: 'Offload the previous path-tracer shader program'
+  }),
+  Object.freeze({
+    id: 'clear-memory',
+    label: 'Clear scene uniforms, texture bindings, and accumulation history'
+  }),
+  Object.freeze({
+    id: 'yield',
+    label: 'Yield one browser frame so this dialog can paint'
+  }),
+  Object.freeze({
+    id: 'load-assets',
+    label: 'Load new scene assets and associated components'
+  }),
+  Object.freeze({
+    id: 'compile-shaders',
+    label: 'Compile shaders, cache uniforms, and rebuild physics'
+  }),
+  Object.freeze({
+    id: 'first-frame',
+    label: 'Schedule the first frame with the new scene'
+  })
+]);
+
+const clearLoadingSteps = (documentObject) => {
+  const stepsElement = readOptionalElement(documentObject, 'loading-steps');
+  if (!(stepsElement instanceof HTMLElement)) {
+    return returnSuccess(undefined);
+  }
+  stepsElement.textContent = '';
+  stepsElement.hidden = true;
+  return returnSuccess(undefined);
+};
+
+const writeLoadingSteps = (
+  documentObject,
+  stepDefinitions,
+  activeStepId,
+  completedStepIds = Object.freeze([]),
+  failedStepId = null
+) => {
+  const stepsElement = readOptionalElement(documentObject, 'loading-steps');
+  if (!(stepsElement instanceof HTMLElement)) {
+    return returnSuccess(undefined);
+  }
+
+  stepsElement.textContent = '';
+  if (!Array.isArray(stepDefinitions) || stepDefinitions.length === 0) {
+    stepsElement.hidden = true;
+    return returnSuccess(undefined);
+  }
+
+  const completedStepIdSet = new Set(completedStepIds);
+  for (const stepDefinition of stepDefinitions) {
+    const stepId = stepDefinition.id;
+    let stepState = 'pending';
+    if (failedStepId === stepId) {
+      stepState = 'error';
+    } else if (completedStepIdSet.has(stepId)) {
+      stepState = 'done';
+    } else if (activeStepId === stepId) {
+      stepState = 'running';
+    }
+
+    const itemElement = documentObject.createElement('li');
+    itemElement.className = 'loading-step';
+    itemElement.dataset.stepId = stepId;
+    itemElement.dataset.stepState = stepState;
+
+    const labelElement = documentObject.createElement('span');
+    labelElement.className = 'loading-step-label';
+    labelElement.textContent = stepDefinition.label;
+
+    const stateElement = documentObject.createElement('span');
+    stateElement.className = 'loading-step-state';
+    stateElement.textContent = LOADING_STEP_STATE_LABELS[stepState];
+
+    itemElement.append(labelElement, stateElement);
+    stepsElement.appendChild(itemElement);
+  }
+
+  stepsElement.hidden = false;
+  return returnSuccess(undefined);
+};
+
+const updateLoadingStatus = (documentObject, statusText, options = Object.freeze({})) => {
   const overlayElement = readOptionalElement(documentObject, 'loading-overlay');
   const statusElement = readOptionalElement(documentObject, 'loading-status');
+  const detailElement = readOptionalElement(documentObject, 'loading-detail');
   if (statusElement) {
     statusElement.textContent = statusText;
+  }
+  if (detailElement) {
+    detailElement.textContent = typeof options.detailText === 'string'
+      ? options.detailText
+      : DEFAULT_LOADING_DETAIL_TEXT;
   }
   if (overlayElement instanceof HTMLElement) {
     overlayElement.hidden = false;
     overlayElement.classList.remove('is-hidden');
+    overlayElement.classList.remove('is-error');
+  }
+  if (!options.preserveLoadingSteps) {
+    const [, clearStepsError] = clearLoadingSteps(documentObject);
+    if (clearStepsError) {
+      return returnFailure(clearStepsError.code, clearStepsError.message, clearStepsError.details);
+    }
+  }
+  const errorPanelElement = readOptionalElement(documentObject, 'loading-error');
+  if (errorPanelElement instanceof HTMLElement) {
+    errorPanelElement.hidden = true;
+  }
+  const errorStackElement = readOptionalElement(documentObject, 'loading-error-stack');
+  if (errorStackElement) {
+    errorStackElement.textContent = '';
   }
   return returnSuccess(undefined);
+};
+
+const updateDeferredSceneLoadDialog = (
+  documentObject,
+  statusText,
+  activeStepId,
+  completedStepIds = Object.freeze([]),
+  failedStepId = null
+) => {
+  const [, loadingError] = updateLoadingStatus(documentObject, statusText, {
+    detailText: SCENE_LOAD_DIALOG_DETAIL_TEXT,
+    preserveLoadingSteps: true
+  });
+  if (loadingError) {
+    return returnFailure(loadingError.code, loadingError.message, loadingError.details);
+  }
+
+  return writeLoadingSteps(
+    documentObject,
+    DEFERRED_SCENE_LOAD_STEPS,
+    activeStepId,
+    completedStepIds,
+    failedStepId
+  );
 };
 
 const hideLoadingOverlay = (documentObject) => {
@@ -20117,6 +21801,172 @@ const runAndDisplayError = (errorElement, action) => {
     logDiagnostic('error', 'ui', 'UI action failed.', actionError);
     return displayError(errorElement, actionError);
   }
+  return returnSuccess(undefined);
+};
+
+const DEFERRED_SCENE_LOAD_TOKENS = new WeakMap();
+
+const readNextDeferredSceneLoadToken = (documentObject) => {
+  const nextToken = (DEFERRED_SCENE_LOAD_TOKENS.get(documentObject) || 0) + 1;
+  DEFERRED_SCENE_LOAD_TOKENS.set(documentObject, nextToken);
+  return nextToken;
+};
+
+const isCurrentDeferredSceneLoadToken = (documentObject, sceneLoadToken) => (
+  DEFERRED_SCENE_LOAD_TOKENS.get(documentObject) === sceneLoadToken
+);
+
+const displayDeferredSceneLoadError = (errorElement, errorValue) => {
+  logDiagnostic('error', 'ui', 'Deferred scene load failed.', errorValue);
+  return displayError(errorElement, errorValue);
+};
+
+const createDeferredSceneLoadThrownError = (errorValue) => returnFailure(
+  'deferred-scene-load-threw',
+  'Deferred scene load failed before it could report a structured error.',
+  errorValue && errorValue.stack ? errorValue.stack : String(errorValue)
+);
+
+const isPromiseLike = (value) => Boolean(value && typeof value.then === 'function');
+
+const requestDeferredSceneLoad = (documentObject, errorElement, statusText, teardownAction, loadAction) => {
+  const sceneLoadToken = readNextDeferredSceneLoadToken(documentObject);
+  const completedStepIds = [];
+  const [, dialogError] = updateDeferredSceneLoadDialog(
+    documentObject,
+    statusText,
+    'stop-runtime',
+    completedStepIds
+  );
+  if (dialogError) {
+    return displayDeferredSceneLoadError(errorElement, dialogError);
+  }
+
+  const [, teardownError] = teardownAction();
+  if (teardownError) {
+    updateDeferredSceneLoadDialog(
+      documentObject,
+      'Scene offload failed.',
+      'stop-runtime',
+      completedStepIds,
+      'stop-runtime'
+    );
+    const [, dismissError] = queueLoadingOverlayDismiss(documentObject);
+    if (dismissError) {
+      logDiagnostic('error', 'ui', 'Deferred scene load could not dismiss loading overlay.', dismissError);
+    }
+    return displayDeferredSceneLoadError(errorElement, teardownError);
+  }
+  completedStepIds.push('stop-runtime', 'release-shaders', 'clear-memory');
+
+  const [, yieldDialogError] = updateDeferredSceneLoadDialog(
+    documentObject,
+    'Old scene resources released. Preparing new scene load...',
+    'yield',
+    completedStepIds
+  );
+  if (yieldDialogError) {
+    return displayDeferredSceneLoadError(errorElement, yieldDialogError);
+  }
+
+  const runLoadAction = () => {
+    if (!isCurrentDeferredSceneLoadToken(documentObject, sceneLoadToken)) {
+      return;
+    }
+
+    if (!completedStepIds.includes('load-assets')) {
+      completedStepIds.push('load-assets');
+    }
+    updateDeferredSceneLoadDialog(
+      documentObject,
+      'Compiling shaders and syncing scene components...',
+      'compile-shaders',
+      completedStepIds
+    );
+
+    const finishLoadAction = (actionResult) => {
+      if (!isCurrentDeferredSceneLoadToken(documentObject, sceneLoadToken)) {
+        return;
+      }
+      const [, actionError] = actionResult || returnSuccess(undefined);
+      if (actionError) {
+        updateDeferredSceneLoadDialog(
+          documentObject,
+          'New scene load failed.',
+          'compile-shaders',
+          completedStepIds,
+          'compile-shaders'
+        );
+        queueLoadingOverlayDismiss(documentObject);
+        displayDeferredSceneLoadError(errorElement, actionError);
+        return;
+      }
+
+      if (!completedStepIds.includes('compile-shaders')) {
+        completedStepIds.push('compile-shaders');
+      }
+      updateDeferredSceneLoadDialog(
+        documentObject,
+        'Scene loaded. Rendering first frame...',
+        'first-frame',
+        completedStepIds
+      );
+      completedStepIds.push('first-frame');
+      updateDeferredSceneLoadDialog(
+        documentObject,
+        'Scene loaded. Rendering first frame...',
+        null,
+        completedStepIds
+      );
+      const [, dismissError] = queueLoadingOverlayDismiss(documentObject);
+      if (dismissError) {
+        logDiagnostic('error', 'ui', 'Deferred scene load could not dismiss loading overlay.', dismissError);
+      }
+    };
+
+    let actionResult;
+    try {
+      actionResult = loadAction();
+    } catch (errorValue) {
+      finishLoadAction(createDeferredSceneLoadThrownError(errorValue));
+      return;
+    }
+
+    if (isPromiseLike(actionResult)) {
+      actionResult
+        .then(finishLoadAction)
+        .catch((errorValue) => finishLoadAction(createDeferredSceneLoadThrownError(errorValue)));
+      return;
+    }
+
+    finishLoadAction(actionResult);
+  };
+  const windowObject = documentObject.defaultView;
+  const queueAfterFrame = () => {
+    if (!isCurrentDeferredSceneLoadToken(documentObject, sceneLoadToken)) {
+      return;
+    }
+    if (!completedStepIds.includes('yield')) {
+      completedStepIds.push('yield');
+    }
+    updateDeferredSceneLoadDialog(
+      documentObject,
+      'Loading new scene assets and associated components...',
+      'load-assets',
+      completedStepIds
+    );
+    if (windowObject && typeof windowObject.setTimeout === 'function') {
+      windowObject.setTimeout(runLoadAction, 0);
+      return;
+    }
+    runLoadAction();
+  };
+  if (windowObject && typeof windowObject.requestAnimationFrame === 'function') {
+    windowObject.requestAnimationFrame(queueAfterFrame);
+  } else {
+    queueAfterFrame();
+  }
+
   return returnSuccess(undefined);
 };
 
@@ -20862,6 +22712,7 @@ const createFloatingWindowManager = (documentObject) => {
     }
 
     floatingWindowElement.hidden = false;
+    setUiWindowVisible(windowId, true);
     floatingWindowElement.classList.remove('is-collapsed');
     const [, clampError] = clampFloatingWindowToViewport(windowObject, floatingWindowElement);
     if (clampError) {
@@ -20881,6 +22732,7 @@ const createFloatingWindowManager = (documentObject) => {
     }
 
     floatingWindowElement.hidden = shouldForceShow ? false : !floatingWindowElement.hidden;
+    setUiWindowVisible(windowId, !floatingWindowElement.hidden);
     if (!floatingWindowElement.hidden) {
       floatingWindowElement.classList.remove('is-collapsed');
       const [, clampError] = clampFloatingWindowToViewport(windowObject, floatingWindowElement);
@@ -21006,14 +22858,21 @@ const createFloatingWindowManager = (documentObject) => {
       return returnSuccess(undefined);
     }
 
+    const isReactManagedButton = Boolean(targetButton.closest('[data-react-app-shell="mounted"]'));
     const targetWindowId = targetButton.dataset.windowTarget;
     if (targetWindowId) {
+      if (isReactManagedButton) {
+        return returnSuccess(undefined);
+      }
       const shouldForceShow = Boolean(targetButton.dataset.panelTarget);
       return toggleWindow(targetWindowId, shouldForceShow);
     }
 
     const windowCommand = targetButton.dataset.windowCommand;
     if (!windowCommand) {
+      return returnSuccess(undefined);
+    }
+    if (isReactManagedButton) {
       return returnSuccess(undefined);
     }
 
@@ -21028,6 +22887,9 @@ const createFloatingWindowManager = (documentObject) => {
     }
     if (windowCommand === 'close') {
       floatingWindowElement.hidden = true;
+      if (floatingWindowElement.id) {
+        setUiWindowVisible(floatingWindowElement.id, false);
+      }
       return saveStates();
     }
     return returnSuccess(undefined);
@@ -21271,22 +23133,13 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     }
     if (presetName) {
       const documentObject = controlRootElement.ownerDocument;
-      const [, loadingError] = updateLoadingStatus(documentObject, 'Loading scene and compiling shaders...');
-      if (loadingError) {
-        return displayError(errorElement, loadingError);
-      }
-
-      return runAndDisplayError(errorElement, () => {
-        const [, presetLoadError] = uiController.loadPresetScene(presetName);
-        const [, dismissError] = queueLoadingOverlayDismiss(documentObject);
-        if (dismissError) {
-          return returnFailure(dismissError.code, dismissError.message, dismissError.details);
-        }
-        if (presetLoadError) {
-          return returnFailure(presetLoadError.code, presetLoadError.message, presetLoadError.details);
-        }
-        return returnSuccess(undefined);
-      });
+      return requestDeferredSceneLoad(
+        documentObject,
+        errorElement,
+        'Loading scene and compiling shaders...',
+        () => uiController.releaseSceneRendererResources(),
+        () => uiController.loadPresetSceneAsync(presetName, { windowObject: documentObject.defaultView })
+      );
     }
 
     if (benchmarkSceneName) {
@@ -21301,29 +23154,19 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
       }
 
       const documentObject = controlRootElement.ownerDocument;
-      const [, loadingError] = updateLoadingStatus(
+      return requestDeferredSceneLoad(
         documentObject,
-        `Loading benchmark scene: ${benchmarkScene.metadata.displayName}...`
+        errorElement,
+        `Loading benchmark scene: ${benchmarkScene.metadata.displayName}...`,
+        () => {
+          const [, stopRunnerError] = uiController.stopBenchmarkRunner();
+          if (stopRunnerError) {
+            return returnFailure(stopRunnerError.code, stopRunnerError.message, stopRunnerError.details);
+          }
+          return uiController.releaseSceneRendererResources();
+        },
+        () => uiController.loadBenchmarkSceneAsync(resolvedBenchmarkSceneName, { windowObject: documentObject.defaultView })
       );
-      if (loadingError) {
-        return displayError(errorElement, loadingError);
-      }
-
-      return runAndDisplayError(errorElement, () => {
-        const [, stopRunnerError] = uiController.stopBenchmarkRunner();
-        if (stopRunnerError) {
-          return returnFailure(stopRunnerError.code, stopRunnerError.message, stopRunnerError.details);
-        }
-        const [, benchmarkLoadError] = uiController.loadBenchmarkScene(resolvedBenchmarkSceneName);
-        if (benchmarkLoadError) {
-          return returnFailure(
-            benchmarkLoadError.code,
-            benchmarkLoadError.message,
-            benchmarkLoadError.details
-          );
-        }
-        return queueLoadingOverlayDismiss(documentObject);
-      });
     }
 
     return returnSuccess(undefined);
@@ -21646,6 +23489,7 @@ const createPathTracingApplication = async (documentObject) => {
   if (canvasError) {
     return returnFailure(canvasError.code, canvasError.message, canvasError.details);
   }
+  registerRenderCanvas(canvasElement);
   applyCanvasSizeToDocument(documentObject, canvasElement);
 
   const [errorElement, errorElementError] = readRequiredElement(documentObject, 'error');
@@ -21683,118 +23527,7 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(lightCycleButtonError.code, lightCycleButtonError.message, lightCycleButtonError.details);
   }
 
-  const [benchmarkPerformanceScoreElement, benchmarkPerformanceScoreError] = readRequiredElement(
-    documentObject,
-    'benchmark-performance-score'
-  );
-  if (benchmarkPerformanceScoreError) {
-    return returnFailure(
-      benchmarkPerformanceScoreError.code,
-      benchmarkPerformanceScoreError.message,
-      benchmarkPerformanceScoreError.details
-    );
-  }
-
-  const [benchmarkRaysPerSecondElement, benchmarkRaysPerSecondError] = readRequiredElement(
-    documentObject,
-    'benchmark-rays-per-second'
-  );
-  if (benchmarkRaysPerSecondError) {
-    return returnFailure(
-      benchmarkRaysPerSecondError.code,
-      benchmarkRaysPerSecondError.message,
-      benchmarkRaysPerSecondError.details
-    );
-  }
-
-  const [benchmarkRayBandwidthElement, benchmarkRayBandwidthError] = readRequiredElement(
-    documentObject,
-    'benchmark-ray-bandwidth'
-  );
-  if (benchmarkRayBandwidthError) {
-    return returnFailure(
-      benchmarkRayBandwidthError.code,
-      benchmarkRayBandwidthError.message,
-      benchmarkRayBandwidthError.details
-    );
-  }
-
-  const [benchmarkPerceptualFramesPerSecondElement, benchmarkPerceptualFramesPerSecondError] = readRequiredElement(
-    documentObject,
-    'benchmark-perceptual-fps'
-  );
-  if (benchmarkPerceptualFramesPerSecondError) {
-    return returnFailure(
-      benchmarkPerceptualFramesPerSecondError.code,
-      benchmarkPerceptualFramesPerSecondError.message,
-      benchmarkPerceptualFramesPerSecondError.details
-    );
-  }
-
-  const [benchmarkResolutionElement, benchmarkResolutionError] = readRequiredElement(
-    documentObject,
-    'benchmark-resolution'
-  );
-  if (benchmarkResolutionError) {
-    return returnFailure(benchmarkResolutionError.code, benchmarkResolutionError.message, benchmarkResolutionError.details);
-  }
-
-  const [benchmarkBouncesElement, benchmarkBouncesError] = readRequiredElement(
-    documentObject,
-    'benchmark-bounces'
-  );
-  if (benchmarkBouncesError) {
-    return returnFailure(benchmarkBouncesError.code, benchmarkBouncesError.message, benchmarkBouncesError.details);
-  }
-
-  const [benchmarkSamplesElement, benchmarkSamplesError] = readRequiredElement(
-    documentObject,
-    'benchmark-samples'
-  );
-  if (benchmarkSamplesError) {
-    return returnFailure(benchmarkSamplesError.code, benchmarkSamplesError.message, benchmarkSamplesError.details);
-  }
-
-  const [benchmarkConvergenceElement, benchmarkConvergenceError] = readRequiredElement(
-    documentObject,
-    'benchmark-convergence'
-  );
-  if (benchmarkConvergenceError) {
-    return returnFailure(benchmarkConvergenceError.code, benchmarkConvergenceError.message, benchmarkConvergenceError.details);
-  }
-
-  const [benchmarkGpuMemoryElement, benchmarkGpuMemoryError] = readRequiredElement(
-    documentObject,
-    'benchmark-gpu-memory'
-  );
-  if (benchmarkGpuMemoryError) {
-    return returnFailure(benchmarkGpuMemoryError.code, benchmarkGpuMemoryError.message, benchmarkGpuMemoryError.details);
-  }
-
-  const [benchmarkSceneComplexityElement, benchmarkSceneComplexityError] = readRequiredElement(
-    documentObject,
-    'benchmark-scene-complexity'
-  );
-  if (benchmarkSceneComplexityError) {
-    return returnFailure(
-      benchmarkSceneComplexityError.code,
-      benchmarkSceneComplexityError.message,
-      benchmarkSceneComplexityError.details
-    );
-  }
-
-  const [benchmarkGpuRendererElement, benchmarkGpuRendererError] = readRequiredElement(
-    documentObject,
-    'benchmark-gpu-renderer'
-  );
-  if (benchmarkGpuRendererError) {
-    return returnFailure(benchmarkGpuRendererError.code, benchmarkGpuRendererError.message, benchmarkGpuRendererError.details);
-  }
-
-  const [benchmarkSourceElement, benchmarkSourceError] = readRequiredElement(documentObject, 'benchmark-source');
-  if (benchmarkSourceError) {
-    return returnFailure(benchmarkSourceError.code, benchmarkSourceError.message, benchmarkSourceError.details);
-  }
+  const benchmarkSignalBindingDisposers = attachLegacyBenchmarkSignalBindings(documentObject);
 
   const [benchmarkRunnerStatusElement, benchmarkRunnerStatusError] = readRequiredElement(
     documentObject,
@@ -22255,6 +23988,12 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(rapierError.code, rapierError.message, rapierError.details);
   }
 
+  updateLoadingStatus(documentObject, 'Checking scene presets...');
+  const [, presetSmokeError] = runScenePresetFactoryStartupSmokeTest();
+  if (presetSmokeError) {
+    displayError(errorElement, presetSmokeError);
+  }
+
   updateLoadingStatus(documentObject, 'Checking benchmark scenes...');
   const [, benchmarkSmokeError] = runBenchmarkSceneFactoryStartupSmokeTest();
   if (benchmarkSmokeError) {
@@ -22267,6 +24006,9 @@ const createPathTracingApplication = async (documentObject) => {
   }
 
   const applicationState = createApplicationState();
+  if (presetSmokeError) {
+    applicationState.startupSceneLoadError = presetSmokeError;
+  }
   if (benchmarkSmokeError) {
     applicationState.startupSceneLoadError = benchmarkSmokeError;
   }
@@ -22337,19 +24079,7 @@ const createPathTracingApplication = async (documentObject) => {
     return returnFailure(rendererError.code, rendererError.message, rendererError.details);
   }
 
-  const benchmarkDisplay = new BenchmarkDisplay(
-    benchmarkPerformanceScoreElement,
-    benchmarkRaysPerSecondElement,
-    benchmarkRayBandwidthElement,
-    benchmarkPerceptualFramesPerSecondElement,
-    benchmarkResolutionElement,
-    benchmarkBouncesElement,
-    benchmarkSamplesElement,
-    benchmarkConvergenceElement,
-    benchmarkGpuMemoryElement,
-    benchmarkSceneComplexityElement,
-    benchmarkGpuRendererElement,
-    benchmarkSourceElement,
+  const benchmarkDisplay = new BenchmarkSignalBridge(
     applicationState,
     gpuInfo.renderer || 'Renderer hidden by browser'
   );
@@ -22533,6 +24263,7 @@ const createPathTracingApplication = async (documentObject) => {
     errorElement,
     uiController,
     benchmarkDisplay,
+    benchmarkSignalBindingDisposers,
     applicationState,
     gpuInfo
   });
@@ -22542,7 +24273,6 @@ const startAnimationLoop = (application) => {
   let previousFrameTime = performance.now();
 
   const renderFrame = (currentTime) => {
-    application.applicationState.animationFrameId = 0;
     if (application.applicationState.isWebGlContextLost) {
       return returnSuccess(undefined);
     }
@@ -22675,8 +24405,7 @@ const startAnimationLoop = (application) => {
     return scheduleAnimationFrame(application.applicationState);
   };
 
-  application.applicationState.animationFrameCallback = renderFrame;
-  return scheduleAnimationFrame(application.applicationState);
+  return scheduleRenderFrame(application.applicationState, renderFrame, { canvas: application.canvasElement });
 };
 
 const startPathTracingDemo = async () => {

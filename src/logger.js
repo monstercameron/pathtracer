@@ -3,6 +3,7 @@ import { signal } from '@preact/signals';
 export const LOGGER_CHANNELS = Object.freeze([
   'renderer',
   'physics',
+  'performance',
   'sceneLoad',
   'ui',
   'assetPipeline'
@@ -255,6 +256,7 @@ export const logger = Object.freeze(Object.fromEntries(
 
 export const rendererLogger = logger.renderer;
 export const physicsLogger = logger.physics;
+export const performanceLogger = logger.performance;
 export const sceneLoadLogger = logger.sceneLoad;
 export const uiLogger = logger.ui;
 export const assetPipelineLogger = logger.assetPipeline;
