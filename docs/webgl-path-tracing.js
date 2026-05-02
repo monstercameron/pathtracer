@@ -16599,6 +16599,149 @@ const createBenchmarkMotionBlurStressSceneObjects = (applicationState) => {
   return returnSuccess(sceneObjects);
 };
 
+const attachParticleFluidSpringJoints = (
+  particleObjects,
+  particleFluidSpringRestLength,
+  particleFluidSpringStiffness,
+  particleFluidSpringDamping
+) => {
+  for (const particleObject of particleObjects) {
+    particleObject.physicsSpringJoints = [];
+  }
+
+  const springPairKeys = new Set();
+  for (let particleIndex = 0; particleIndex < particleObjects.length; particleIndex += 1) {
+    const sourceObject = particleObjects[particleIndex];
+    const sourcePosition = sourceObject.centerPosition;
+    const neighborDistances = [];
+    for (let targetIndex = 0; targetIndex < particleObjects.length; targetIndex += 1) {
+      if (targetIndex === particleIndex) {
+        continue;
+      }
+      const targetPosition = particleObjects[targetIndex].centerPosition;
+      const deltaX = targetPosition[0] - sourcePosition[0];
+      const deltaY = targetPosition[1] - sourcePosition[1];
+      const deltaZ = targetPosition[2] - sourcePosition[2];
+      neighborDistances.push(Object.freeze({
+        targetIndex,
+        distanceSquared: deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ
+      }));
+    }
+
+    neighborDistances.sort((leftNeighbor, rightNeighbor) => leftNeighbor.distanceSquared - rightNeighbor.distanceSquared);
+    const neighborLimit = Math.min(PARTICLE_FLUID_NEIGHBOR_COUNT, neighborDistances.length);
+    for (let neighborIndex = 0; neighborIndex < neighborLimit; neighborIndex += 1) {
+      const targetIndex = neighborDistances[neighborIndex].targetIndex;
+      const firstIndex = Math.min(particleIndex, targetIndex);
+      const secondIndex = Math.max(particleIndex, targetIndex);
+      const springPairKey = `${firstIndex}:${secondIndex}`;
+      if (springPairKeys.has(springPairKey)) {
+        continue;
+      }
+
+      springPairKeys.add(springPairKey);
+      sourceObject.physicsSpringJoints.push(Object.freeze({
+        targetObject: particleObjects[targetIndex],
+        restLength: particleFluidSpringRestLength,
+        stiffness: particleFluidSpringStiffness,
+        damping: particleFluidSpringDamping
+      }));
+    }
+  }
+
+  return returnSuccess(springPairKeys.size);
+};
+
+const createBenchmarkParticleFluidSceneObjects = (applicationState) => {
+  const particleFluidSettings = readApplicationStateParticleFluidSettings(applicationState);
+  const particleFluidParticleCount = particleFluidSettings.particleCount;
+  const particleFluidRadius = particleFluidSettings.radius;
+  const particleFluidSpringStiffness = particleFluidSettings.springStiffness;
+  const particleFluidSpringRestLength = Math.max(
+    DEFAULT_PARTICLE_FLUID_SPRING_REST_LENGTH,
+    particleFluidRadius * 2.25
+  );
+  const particleFluidSpringDamping = Math.max(4, Math.sqrt(particleFluidSpringStiffness) * 0.75);
+  const particleSpacing = particleFluidSpringRestLength * 0.82;
+  const columnCount = Math.ceil(Math.cbrt(particleFluidParticleCount * 1.25));
+  const rowCount = Math.ceil(Math.sqrt(particleFluidParticleCount / columnCount));
+  const layerCount = Math.ceil(particleFluidParticleCount / (columnCount * rowCount));
+  const particlesPerLayer = columnCount * rowCount;
+  const clusterCenterX = 0;
+  const clusterCenterY = -0.18;
+  const clusterCenterZ = -0.04;
+
+  const glassContainer = setSceneObjectDisplayName(
+    createRoundedBoxObject(applicationState, 0, -0.83, 0, 0.48, 0.065, 0.36, 0.055, MATERIAL.GLASS),
+    'Particle Fluid Glass Container'
+  );
+  glassContainer.isPhysicsEnabled = true;
+  glassContainer.physicsFriction = 0.18;
+  glassContainer.physicsRestitution = 0.18;
+
+  const sceneObjects = [
+    setSceneObjectDisplayName(
+      createAreaLightObject(
+        applicationState,
+        applicationState.lightPosition[0],
+        applicationState.lightPosition[1],
+        applicationState.lightPosition[2],
+        0.20,
+        0.014,
+        0.14
+      ),
+      'Particle Fluid Area Light'
+    ),
+    setSceneObjectDisplayName(
+      createPlaneObject(applicationState, 0, -0.985, 0.04, 0.92, 0.82, MATERIAL.DIFFUSE),
+      'Particle Fluid Floor'
+    ),
+    glassContainer
+  ];
+  const particleObjects = [];
+
+  for (let particleIndex = 0; particleIndex < particleFluidParticleCount; particleIndex += 1) {
+    const layerIndex = Math.floor(particleIndex / particlesPerLayer);
+    const inLayerIndex = particleIndex - layerIndex * particlesPerLayer;
+    const rowIndex = Math.floor(inLayerIndex / columnCount);
+    const columnIndex = inLayerIndex % columnCount;
+    const staggerOffset = ((rowIndex + layerIndex) % 2) * particleFluidRadius * 0.38;
+    const layerOffset = (layerIndex % 2) * particleFluidRadius * 0.34;
+    const xPosition = clusterCenterX + (columnIndex - (columnCount - 1) * 0.5) * particleSpacing + staggerOffset;
+    const yPosition = clusterCenterY + (layerIndex - (layerCount - 1) * 0.5) * particleSpacing * 0.95;
+    const zPosition = clusterCenterZ + (rowIndex - (rowCount - 1) * 0.5) * particleSpacing + layerOffset;
+    const particleObject = createSphereObject(
+      applicationState,
+      xPosition,
+      yPosition,
+      zPosition,
+      particleFluidRadius,
+      MATERIAL.SUBSURFACE
+    );
+    particleObject.physicsFriction = 0.16;
+    particleObject.physicsRestitution = 0.10;
+    particleObject.physicsMass = 0.32;
+    particleObject.physicsGravityScale = 0.92;
+    particleObjects.push(particleObject);
+    sceneObjects.push(setSceneObjectDisplayName(
+      particleObject,
+      `Fluid Particle ${particleIndex + 1}`
+    ));
+  }
+
+  const [, springError] = attachParticleFluidSpringJoints(
+    particleObjects,
+    particleFluidSpringRestLength,
+    particleFluidSpringStiffness,
+    particleFluidSpringDamping
+  );
+  if (springError) {
+    return returnFailure(springError.code, springError.message, springError.details);
+  }
+
+  return returnSuccess(sceneObjects);
+};
+
 const createBenchmarkVolumetricFogSceneObjects = (applicationState) => returnSuccess([
   setSceneObjectDisplayName(
     createPlaneObject(applicationState, 0, -0.985, 0, 0.92, 0.92, MATERIAL.DIFFUSE),
@@ -16750,6 +16893,23 @@ const benchmarkSceneRegistry = Object.freeze({
       lightIntensity: 0.70,
       lightSize: 0.16,
       lightPosition: Object.freeze([0.42, 0.64, -0.48])
+    })
+  }),
+  benchmarkParticleFluid: Object.freeze({
+    factory: createBenchmarkParticleFluidSceneObjects,
+    metadata: Object.freeze({
+      displayName: 'Particle Fluid',
+      targetBounces: 6,
+      targetRaysPerPixel: 8,
+      gravityScale: DEFAULT_GLOBAL_GRAVITY_SCALE,
+      description: 'Spring-jointed subsurface particles settling onto a static glass rounded-box container.',
+      cameraDistance: 2.65,
+      cameraAngleX: -0.08,
+      cameraAngleY: 0.18,
+      cameraAutoRotationSpeed: CAMERA_AUTO_ROTATION_SPEED * 0.65,
+      lightIntensity: 0.76,
+      lightSize: 0.14,
+      lightPosition: Object.freeze([0.28, 0.66, -0.48])
     })
   }),
   benchmarkSdfComplexity: Object.freeze({
