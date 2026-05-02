@@ -1110,6 +1110,13 @@ const surfaceShaderUtilitySource = [
   '  vec3 axis = abs(normal.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);',
   '  return normalize(cross(normal, axis));',
   '}',
+  'vec3 shaderSafeNormalize(vec3 value, vec3 fallback) {',
+  '  float lengthSquared = dot(value, value);',
+  '  return lengthSquared > 0.00000001 ? value * inversesqrt(lengthSquared) : fallback;',
+  '}',
+  'float shaderSaturate(float value) {',
+  '  return clamp(value, 0.0, 1.0);',
+  '}',
   'vec3 shaderTriplanarWeights(vec3 normal, float blendSharpness) {',
   '  vec3 axisWeights = pow(max(abs(normal), vec3(0.0001)), vec3(max(blendSharpness, 0.0001)));',
   '  return axisWeights / max(axisWeights.x + axisWeights.y + axisWeights.z, 0.0001);',
@@ -1657,16 +1664,18 @@ const iceFrostedGlassSurfaceShaderSource = [
 
 const pearlescentOpalSurfaceShaderSource = [
   'float pearlNoise = shaderFbm(surfaceObjectPoint * 7.0 + normal * 1.5);',
-  'float pearlAngle = pow(1.0 - max(dot(normalize(origin - hit), normal), 0.0), 1.7);',
+  'vec3 pearlViewDirection = shaderSafeNormalize(origin - hit, normal);',
+  'float pearlAngle = pow(1.0 - shaderSaturate(dot(pearlViewDirection, normal)), 1.7);',
   'vec3 pearlWarm = vec3(1.0, 0.78, 0.54);',
   'vec3 pearlCool = vec3(0.50, 0.78, 1.0);',
   'vec3 pearlGreen = vec3(0.66, 1.0, 0.82);',
   'surfaceColor = mix(mix(pearlWarm, pearlCool, pearlAngle), pearlGreen, pearlNoise * 0.22);',
   'surfaceColor = mix(vec3(0.92, 0.86, 0.76), surfaceColor, 0.52 + pearlAngle * 0.38);',
   'vec3 pearlNormal = normalize(normal + shaderStableTangent(normal) * (pearlNoise - 0.5) * 0.055);',
-  'ray = normalize(mix(reflect(ray, pearlNormal), cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, pearlNormal), 0.20));',
-  'vec3 pearlReflectedLight = normalize(reflect(light - hit, pearlNormal));',
-  'float pearlSpecularBase = max(0.0, dot(pearlReflectedLight, normalize(hit - origin)));',
+  'ray = shaderSafeNormalize(mix(reflect(ray, pearlNormal), cosineWeightedDirection(sampleSeed + float(bounce) * 17.0, pearlNormal), 0.20), normal);',
+  'vec3 pearlLightDirection = shaderSafeNormalize(light - hit, normal);',
+  'vec3 pearlReflectedLight = shaderSafeNormalize(reflect(pearlLightDirection, pearlNormal), pearlNormal);',
+  'float pearlSpecularBase = shaderSaturate(dot(pearlReflectedLight, -pearlViewDirection));',
   'specularHighlight = pow(pearlSpecularBase, 32.0) * (0.85 + pearlAngle * 0.90);',
   'accumulatedColor += colorMask * surfaceColor * pearlAngle * 0.035;',
   'surfaceLightResponse = 0.72 + pearlAngle * 0.34;'
@@ -3440,15 +3449,15 @@ const calculateEstimatedGpuBufferMemoryBytes = (webGlContext, textureType) => (
 
 const readRenderTextureTypes = (webGlContext) => {
   const textureTypes = [];
+  if (webGlContext.getExtension('OES_texture_float')) {
+    textureTypes.push(webGlContext.FLOAT);
+  }
   const halfFloatTextureExtension = webGlContext.getExtension('OES_texture_half_float');
   if (
     halfFloatTextureExtension &&
     typeof halfFloatTextureExtension.HALF_FLOAT_OES === 'number'
   ) {
     textureTypes.push(halfFloatTextureExtension.HALF_FLOAT_OES);
-  }
-  if (webGlContext.getExtension('OES_texture_float')) {
-    textureTypes.push(webGlContext.FLOAT);
   }
   textureTypes.push(webGlContext.UNSIGNED_BYTE);
   return textureTypes;
@@ -3895,6 +3904,7 @@ const displayTemporalAntialiasingSource = [
   '  vec3 currentColor = readCurrentFrameColor(texCoord);',
   '  if(historyAvailability <= 0.5 && denoiserStrength <= 0.0001) return currentColor;',
   '  vec3 currentYCoCg = rgbToYCoCg(currentColor);',
+  '  float currentLuminance = max(currentYCoCg.x, 0.0001);',
   '  vec3 minYCoCg = currentYCoCg;',
   '  vec3 maxYCoCg = currentYCoCg;',
   '  vec3 colorSum = currentColor;',
@@ -3914,6 +3924,8 @@ const displayTemporalAntialiasingSource = [
   '  float temporalDenoiseAmount = smoothstep(1.0, 32.0, temporalBlendFrames) * denoiserStrength;',
   '  float currentStabilizationAmount = clamp(temporalDenoiseAmount * (0.65 - edgeAmount * 0.45), 0.0, 0.75);',
   '  vec3 stabilizedCurrentColor = mix(currentColor, filteredColor, currentStabilizationAmount);',
+  '  float stabilizedLuminance = max(rgbToYCoCg(stabilizedCurrentColor).x, 0.0001);',
+  '  stabilizedCurrentColor *= clamp(currentLuminance / stabilizedLuminance, 0.5, 2.0);',
   '  vec3 stabilizedCurrentYCoCg = rgbToYCoCg(stabilizedCurrentColor);',
   '  float temporalWindow = clamp((temporalBlendFrames - 1.0) / max(temporalBlendFrames, 1.0), 0.0, 0.96875);',
   '  float motionBlend = clamp(motionBlurStrength, 0.0, 0.95) * historyAvailability;',
@@ -8915,6 +8927,8 @@ class PathTracer {
     this.currentRaysPerPixel = DEFAULT_RAYS_PER_PIXEL;
     this.lastRenderedSampleCount = 0;
     this.wasInteractiveQualityThrottleActive = false;
+    this.hasInteractiveCameraMotionDisplayHistory = false;
+    this.hasContinuousMotionDisplayHistory = false;
     this.usesMaterialAlbedoTexture = false;
     this.hasLoggedAccumulationPhase = false;
     this.hasLoggedTemporalDisplayPhase = false;
@@ -8924,6 +8938,11 @@ class PathTracer {
     this.currentTextureIndex = 0;
     this.currentDisplayTextureIndex = 0;
     this.hasDisplayHistory = false;
+    this.lastTemporalDisplayInputSampleCount = -1;
+    this.lastTemporalDisplayInputTextureIndex = -1;
+    this.lastTemporalDisplayBlendFrames = Number.NaN;
+    this.lastTemporalDisplayMotionBlurStrength = Number.NaN;
+    this.lastTemporalDisplayDenoiserStrength = Number.NaN;
     this.hasValidatedRenderFramebuffer = false;
     this.hasValidatedDisplayFramebuffer = false;
     this.hasSetTracerSamplerUniforms = false;
@@ -9163,6 +9182,8 @@ class PathTracer {
     this.hasPendingSceneUniformUpdate = true;
     this.previousTracerFrameScalarUniformValues = Object.create(null);
     this.wasInteractiveQualityThrottleActive = false;
+    this.hasInteractiveCameraMotionDisplayHistory = false;
+    this.hasContinuousMotionDisplayHistory = false;
     writeVec3(this.previousEyePosition, Number.NaN, Number.NaN, Number.NaN);
     writeVec3(this.previousCameraRight, Number.NaN, Number.NaN, Number.NaN);
     writeVec3(this.previousCameraUp, Number.NaN, Number.NaN, Number.NaN);
@@ -9172,6 +9193,7 @@ class PathTracer {
     writeVec3(this.previousLightColor, Number.NaN, Number.NaN, Number.NaN);
     this.sampleCount = 0;
     this.hasDisplayHistory = false;
+    this.resetTemporalDisplayCache();
     this.hasSetTracerSamplerUniforms = false;
     this.hasLoggedAccumulationPhase = false;
     this.hasLoggedTemporalDisplayPhase = false;
@@ -9262,9 +9284,12 @@ class PathTracer {
     this.lastRenderedSampleCount = 0;
     this.currentRaysPerPixel = DEFAULT_RAYS_PER_PIXEL;
     this.wasInteractiveQualityThrottleActive = false;
+    this.hasInteractiveCameraMotionDisplayHistory = false;
+    this.hasContinuousMotionDisplayHistory = false;
     this.usesMaterialAlbedoTexture = false;
     this.usesSkyTexture = false;
     this.hasDisplayHistory = false;
+    this.resetTemporalDisplayCache();
     this.hasSetTracerSamplerUniforms = false;
     this.hasCompleteTracerSampleUniforms = false;
     this.hasPendingSceneUniformUpdate = true;
@@ -9579,10 +9604,26 @@ class PathTracer {
     const raysPerPixel = effectiveRenderQuality.raysPerPixel;
     const activeLightBounceCount = effectiveRenderQuality.lightBounceCount;
     const sampleUniformValues = this.sampleUniformValues;
+    const wasInteractiveQualityThrottleActive = this.wasInteractiveQualityThrottleActive;
+    const isInteractiveQualityThrottleActive = effectiveRenderQuality.isInteractiveQualityThrottleActive;
     this.currentRaysPerPixel = raysPerPixel;
     this.lastRenderedSampleCount = 0;
 
-    this.wasInteractiveQualityThrottleActive = effectiveRenderQuality.isInteractiveQualityThrottleActive;
+    if (
+      wasInteractiveQualityThrottleActive &&
+      !isInteractiveQualityThrottleActive &&
+      this.hasInteractiveCameraMotionDisplayHistory
+    ) {
+      const [, clearInteractiveCameraSamplesError] = this.clearSamples();
+      if (clearInteractiveCameraSamplesError) {
+        return returnFailure(
+          clearInteractiveCameraSamplesError.code,
+          clearInteractiveCameraSamplesError.message,
+          clearInteractiveCameraSamplesError.details
+        );
+      }
+    }
+    this.wasInteractiveQualityThrottleActive = isInteractiveQualityThrottleActive;
 
     if (
       applicationState.isConvergencePauseEnabled &&
@@ -9617,6 +9658,9 @@ class PathTracer {
           clearCameraSamplesError.message,
           clearCameraSamplesError.details
         );
+      }
+      if (isInteractiveQualityThrottleActive) {
+        this.hasInteractiveCameraMotionDisplayHistory = true;
       }
 
       writeVec3(this.cameraRight, cameraRight[0], cameraRight[1], cameraRight[2]);
@@ -9808,6 +9852,7 @@ class PathTracer {
       }
       this.sampleCount = 0;
       this.hasDisplayHistory = false;
+      this.resetTemporalDisplayCache();
       this.hasValidatedRenderFramebuffer = false;
       this.hasValidatedDisplayFramebuffer = false;
 
@@ -9871,9 +9916,41 @@ class PathTracer {
     return clampNumber(this.sampleCount / temporalRampSamples, 0, 1);
   }
 
+  readTemporalHistoryAvailability(temporalBlendFrames, motionBlurStrength) {
+    if (!this.hasDisplayHistory) {
+      return 0;
+    }
+    if (motionBlurStrength > MIN_MOTION_BLUR_STRENGTH) {
+      return 1;
+    }
+    const samplesPerDisplayFrame = Math.max(this.currentRaysPerPixel, 1);
+    const temporalHistorySamples = Math.max(samplesPerDisplayFrame, temporalBlendFrames * samplesPerDisplayFrame);
+    return this.sampleCount <= temporalHistorySamples ? 1 : 0;
+  }
+
+  resetTemporalDisplayCache() {
+    this.lastTemporalDisplayInputSampleCount = -1;
+    this.lastTemporalDisplayInputTextureIndex = -1;
+    this.lastTemporalDisplayBlendFrames = Number.NaN;
+    this.lastTemporalDisplayMotionBlurStrength = Number.NaN;
+    this.lastTemporalDisplayDenoiserStrength = Number.NaN;
+  }
+
+  hasCurrentTemporalDisplayTexture(temporalBlendFrames, motionBlurStrength, denoiserStrength) {
+    return (
+      this.hasDisplayHistory &&
+      this.lastTemporalDisplayInputSampleCount === this.sampleCount &&
+      this.lastTemporalDisplayInputTextureIndex === this.currentTextureIndex &&
+      this.lastTemporalDisplayBlendFrames === temporalBlendFrames &&
+      this.lastTemporalDisplayMotionBlurStrength === motionBlurStrength &&
+      this.lastTemporalDisplayDenoiserStrength === denoiserStrength
+    );
+  }
+
   readRenderTexture(applicationState) {
     if (shouldUseDraftPostProcessBypass(applicationState)) {
       this.hasDisplayHistory = false;
+      this.resetTemporalDisplayCache();
       return this.textureSuccessResults[this.currentTextureIndex];
     }
 
@@ -9893,10 +9970,18 @@ class PathTracer {
       MIN_DENOISER_STRENGTH,
       MAX_DENOISER_STRENGTH
     );
-
     if (!this.shouldUseTemporalDisplayPass(temporalBlendFrames, motionBlurStrength, denoiserStrength)) {
       this.hasDisplayHistory = false;
+      this.resetTemporalDisplayCache();
       return this.textureSuccessResults[this.currentTextureIndex];
+    }
+
+    if (this.hasCurrentTemporalDisplayTexture(
+      temporalBlendFrames,
+      motionBlurStrength,
+      denoiserStrength
+    )) {
+      return this.displayTextureSuccessResults[this.currentDisplayTextureIndex];
     }
 
     const [, temporalDisplayError] = this.renderTemporalDisplayTexture(
@@ -9951,7 +10036,10 @@ class PathTracer {
     const temporalUniformValues = this.temporalDisplayScalarUniformValues;
     temporalUniformValues.temporalBlendFrames = temporalBlendFrames;
     temporalUniformValues.temporalFrameAge = this.readTemporalFrameAge(temporalBlendFrames);
-    temporalUniformValues.historyAvailability = this.hasDisplayHistory ? 1 : 0;
+    temporalUniformValues.historyAvailability = this.readTemporalHistoryAvailability(
+      temporalBlendFrames,
+      motionBlurStrength
+    );
     temporalUniformValues.motionBlurStrength = motionBlurStrength;
     temporalUniformValues.denoiserStrength = denoiserStrength;
 
@@ -9987,6 +10075,11 @@ class PathTracer {
 
     this.currentDisplayTextureIndex = writeDisplayTextureIndex;
     this.hasDisplayHistory = true;
+    this.lastTemporalDisplayInputSampleCount = this.sampleCount;
+    this.lastTemporalDisplayInputTextureIndex = this.currentTextureIndex;
+    this.lastTemporalDisplayBlendFrames = temporalBlendFrames;
+    this.lastTemporalDisplayMotionBlurStrength = motionBlurStrength;
+    this.lastTemporalDisplayDenoiserStrength = denoiserStrength;
     if (!this.hasLoggedTemporalDisplayPhase) {
       this.hasLoggedTemporalDisplayPhase = true;
       logDiagnostic('debug', 'renderer', 'Temporal denoise/display pass completed.', Object.freeze({
@@ -10071,13 +10164,34 @@ class PathTracer {
     this.sampleCount = 0;
     if (shouldClearDisplayHistory) {
       this.hasDisplayHistory = false;
+      this.hasInteractiveCameraMotionDisplayHistory = false;
+      this.hasContinuousMotionDisplayHistory = false;
+      this.resetTemporalDisplayCache();
     }
     return returnSuccess(undefined);
   }
 
   clearDisplayHistory() {
     this.hasDisplayHistory = false;
+    this.hasInteractiveCameraMotionDisplayHistory = false;
+    this.hasContinuousMotionDisplayHistory = false;
+    this.resetTemporalDisplayCache();
     return returnSuccess(undefined);
+  }
+
+  settleContinuousMotionDisplayHistory(didRenderMotionThisFrame) {
+    if (didRenderMotionThisFrame) {
+      this.hasContinuousMotionDisplayHistory = true;
+      return returnSuccess(false);
+    }
+    if (!this.hasContinuousMotionDisplayHistory) {
+      return returnSuccess(false);
+    }
+    const [, clearError] = this.clearSamples();
+    if (clearError) {
+      return returnFailure(clearError.code, clearError.message, clearError.details);
+    }
+    return returnSuccess(true);
   }
 
   resetBenchmark() {
@@ -12581,6 +12695,15 @@ class UserInterfaceController {
       return returnFailure(loadingError.code, loadingError.message, loadingError.details);
     }
 
+    const [, clearPendingSamplesError] = this.selectionRenderer.pathTracer.clearSamples();
+    if (clearPendingSamplesError) {
+      return returnFailure(
+        clearPendingSamplesError.code,
+        clearPendingSamplesError.message,
+        clearPendingSamplesError.details
+      );
+    }
+
     if (this.shaderRebuildInputTimerId) {
       windowObject.clearTimeout(this.shaderRebuildInputTimerId);
     }
@@ -12744,7 +12867,7 @@ class UserInterfaceController {
     }
 
     if (!didMovePhysicsObject) {
-      return returnSuccess(undefined);
+      return returnSuccess(false);
     }
 
     const [, uniformDirtyError] = this.selectionRenderer.pathTracer.markSceneUniformsDirty();
@@ -13359,7 +13482,11 @@ class UserInterfaceController {
     if (readoutError) {
       return returnFailure(readoutError.code, readoutError.message, readoutError.details);
     }
-    return this.selectionRenderer.pathTracer.clearSamples(false);
+    const [, clearSamplesError] = this.selectionRenderer.pathTracer.clearSamples(false);
+    if (clearSamplesError) {
+      return returnFailure(clearSamplesError.code, clearSamplesError.message, clearSamplesError.details);
+    }
+    return returnSuccess(true);
   }
 
   removeSelectedPhysicsJoint(jointIdValue) {
@@ -14833,12 +14960,12 @@ class UserInterfaceController {
 
   advanceLightIntensityCycle(elapsedSeconds) {
     if (!this.applicationState.isLightIntensityCycling) {
-      return returnSuccess(undefined);
+      return returnSuccess(false);
     }
 
     const span = MAX_LIGHT_INTENSITY - MIN_LIGHT_INTENSITY;
     if (span <= 0) {
-      return returnSuccess(undefined);
+      return returnSuccess(false);
     }
 
     const cycleDistance = span * 2;
@@ -14857,7 +14984,7 @@ class UserInterfaceController {
     const nextDirection = isRising ? 1 : -1;
 
     if (Math.abs(this.applicationState.lightIntensity - nextIntensity) < 0.000001) {
-      return returnSuccess(undefined);
+      return returnSuccess(false);
     }
 
     this.applicationState.lightIntensity = nextIntensity;
@@ -14870,8 +14997,11 @@ class UserInterfaceController {
     if (selectedLightSyncError) {
       return returnFailure(selectedLightSyncError.code, selectedLightSyncError.message, selectedLightSyncError.details);
     }
-    this.selectionRenderer.pathTracer.clearSamples(false);
-    return returnSuccess(undefined);
+    const [, clearSamplesError] = this.selectionRenderer.pathTracer.clearSamples(false);
+    if (clearSamplesError) {
+      return returnFailure(clearSamplesError.code, clearSamplesError.message, clearSamplesError.details);
+    }
+    return returnSuccess(true);
   }
 
   updateRaysPerPixelFromInput() {
@@ -17363,21 +17493,24 @@ const advanceCameraAutoRotation = (applicationState, elapsedSeconds, pathTracer)
     !applicationState.isCameraAutoRotating ||
     applicationState.isRotatingCamera
   ) {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   if (cameraMode !== CAMERA_MODE_ORBIT && cameraMode !== CAMERA_MODE_FPS) {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   applicationState.cameraAngleY -= applicationState.cameraAutoRotationSpeed * elapsedSeconds;
-  pathTracer.clearSamples(false);
-  return returnSuccess(undefined);
+  const [, clearError] = pathTracer.clearSamples(false);
+  if (clearError) {
+    return returnFailure(clearError.code, clearError.message, clearError.details);
+  }
+  return returnSuccess(true);
 };
 
 const advanceFpsCameraMovement = (applicationState, elapsedSeconds, pathTracer) => {
   if (normalizeCameraMode(applicationState.cameraMode) !== CAMERA_MODE_FPS) {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   const forwardSign = (
@@ -17394,7 +17527,7 @@ const advanceFpsCameraMovement = (applicationState, elapsedSeconds, pathTracer) 
   );
 
   if (forwardSign === 0 && strafeSign === 0 && verticalSign === 0) {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   const sinCameraAngleX = Math.sin(applicationState.cameraAngleX);
@@ -17407,7 +17540,7 @@ const advanceFpsCameraMovement = (applicationState, elapsedSeconds, pathTracer) 
   const movementLength = Math.hypot(moveX, moveY, moveZ);
 
   if (movementLength === 0) {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   const speedMultiplier = applicationState.isFpsMovingFast ? FPS_CAMERA_FAST_MOVE_MULTIPLIER : 1;
@@ -17418,13 +17551,16 @@ const advanceFpsCameraMovement = (applicationState, elapsedSeconds, pathTracer) 
   applicationState.fpsEyePosition[0] += moveX;
   applicationState.fpsEyePosition[1] += moveY;
   applicationState.fpsEyePosition[2] += moveZ;
-  pathTracer.clearSamples(false);
-  return returnSuccess(undefined);
+  const [, clearError] = pathTracer.clearSamples(false);
+  if (clearError) {
+    return returnFailure(clearError.code, clearError.message, clearError.details);
+  }
+  return returnSuccess(true);
 };
 
 const advanceSceneAnimation = (applicationState, elapsedSeconds, pathTracer) => {
   if (typeof applicationState.sceneAnimationUpdate !== 'function') {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   applicationState.sceneAnimationElapsedSeconds += Math.max(0, elapsedSeconds);
@@ -17436,7 +17572,7 @@ const advanceSceneAnimation = (applicationState, elapsedSeconds, pathTracer) => 
     return returnFailure(animationError.code, animationError.message, animationError.details);
   }
   if (!didUpdateScene) {
-    return returnSuccess(undefined);
+    return returnSuccess(false);
   }
 
   const [, uniformDirtyError] = pathTracer.markSceneUniformsDirty();
@@ -17444,7 +17580,11 @@ const advanceSceneAnimation = (applicationState, elapsedSeconds, pathTracer) => 
     return returnFailure(uniformDirtyError.code, uniformDirtyError.message, uniformDirtyError.details);
   }
 
-  return pathTracer.clearSamples(false);
+  const [, clearError] = pathTracer.clearSamples(false);
+  if (clearError) {
+    return returnFailure(clearError.code, clearError.message, clearError.details);
+  }
+  return returnSuccess(true);
 };
 
 const scheduleAnimationFrame = (applicationState) => {
@@ -24304,13 +24444,13 @@ const startAnimationLoop = (application) => {
     previousFrameTime = currentTime;
     const pathTracer = application.uiController.selectionRenderer.pathTracer;
 
-    const [, physicsError] = application.uiController.stepPhysics(elapsedSeconds);
+    const [didMovePhysicsObject, physicsError] = application.uiController.stepPhysics(elapsedSeconds);
     if (physicsError) {
       displayError(application.errorElement, physicsError);
       return returnFailure(physicsError.code, physicsError.message, physicsError.details);
     }
 
-    const [, sceneAnimationError] = advanceSceneAnimation(
+    const [didAnimateScene, sceneAnimationError] = advanceSceneAnimation(
       application.applicationState,
       elapsedSeconds,
       pathTracer
@@ -24320,7 +24460,7 @@ const startAnimationLoop = (application) => {
       return returnFailure(sceneAnimationError.code, sceneAnimationError.message, sceneAnimationError.details);
     }
 
-    const [, fpsMovementError] = advanceFpsCameraMovement(
+    const [didMoveFpsCamera, fpsMovementError] = advanceFpsCameraMovement(
       application.applicationState,
       elapsedSeconds,
       pathTracer
@@ -24330,7 +24470,7 @@ const startAnimationLoop = (application) => {
       return returnFailure(fpsMovementError.code, fpsMovementError.message, fpsMovementError.details);
     }
 
-    const [, autoRotationError] = advanceCameraAutoRotation(
+    const [didAutoRotateCamera, autoRotationError] = advanceCameraAutoRotation(
       application.applicationState,
       elapsedSeconds,
       pathTracer
@@ -24340,10 +24480,23 @@ const startAnimationLoop = (application) => {
       return returnFailure(autoRotationError.code, autoRotationError.message, autoRotationError.details);
     }
 
-    const [, lightCycleError] = application.uiController.advanceLightIntensityCycle(elapsedSeconds);
+    const [didCycleLightIntensity, lightCycleError] = application.uiController.advanceLightIntensityCycle(elapsedSeconds);
     if (lightCycleError) {
       displayError(application.errorElement, lightCycleError);
       return returnFailure(lightCycleError.code, lightCycleError.message, lightCycleError.details);
+    }
+
+    const didRenderMotionThisFrame = Boolean(
+      didMovePhysicsObject ||
+      didAnimateScene ||
+      didMoveFpsCamera ||
+      didAutoRotateCamera ||
+      didCycleLightIntensity
+    );
+    const [, motionSettleError] = pathTracer.settleContinuousMotionDisplayHistory(didRenderMotionThisFrame);
+    if (motionSettleError) {
+      displayError(application.errorElement, motionSettleError);
+      return returnFailure(motionSettleError.code, motionSettleError.message, motionSettleError.details);
     }
 
     const [, updateError] = application.uiController.update();

@@ -454,6 +454,14 @@ const checkFloatingWindowContracts = () => {
       benchmarkSource.includes("setUiWindowVisible('benchmark', false)") &&
       benchmarkSource.includes('is-collapsed')
   );
+  assert(
+    'standing benchmark panel has drag controls',
+    benchmarkSource.includes('data-window-drag-handle') &&
+      benchmarkSource.includes('handlePointerDown') &&
+      benchmarkSource.includes('handlePointerMove') &&
+      benchmarkSource.includes('handlePointerUp') &&
+      benchmarkSource.includes('ui:benchmark-panel-drag-end')
+  );
   assert('HTML tombstones standing benchmark panel', html.includes('react-migrated:benchmark'));
   assert('React has drag handles', source.includes('data-window-drag-handle'));
   assert('React has collapse commands', source.includes('data-window-command="collapse"'));
@@ -713,9 +721,9 @@ const checkBenchmarkSignalContracts = () => {
   ));
   assert('interactive quality throttle follows camera drag state', legacyRendererSource.includes('const isInteractiveQualityThrottleActive = Boolean(applicationState.isRotatingCamera);'));
   assert(
-    'interactive quality throttle restore preserves valid accumulation',
-    !legacyRendererSource.includes('restoreQualityClearError') &&
-      !/this\.wasInteractiveQualityThrottleActive\s*&&\s*!\s*effectiveRenderQuality\.isInteractiveQualityThrottleActive[\s\S]*this\.clearSamples/u.test(legacyRendererSource)
+    'interactive quality throttle restore clears one-ray camera seed',
+    legacyRendererSource.includes('clearInteractiveCameraSamplesError') &&
+      /wasInteractiveQualityThrottleActive\s*&&\s*!isInteractiveQualityThrottleActive\s*&&\s*this\.hasInteractiveCameraMotionDisplayHistory[\s\S]*this\.clearSamples\(\)/u.test(legacyRendererSource)
   );
 };
 
@@ -1038,9 +1046,30 @@ const checkRendererPostProcessContracts = () => {
     /readRenderTexture\(applicationState\) \{[\s\S]*shouldUseDraftPostProcessBypass\(applicationState\)[\s\S]*this\.hasDisplayHistory = false;[\s\S]*return this\.textureSuccessResults\[this\.currentTextureIndex\];/u
       .test(rendererSource)
   ));
-  assert('temporal denoise remains active after accumulation settles', (
+  assert('accumulation textures prefer full float before half-float fallback', (
+    /const readRenderTextureTypes = \(webGlContext\) => \{\s*const textureTypes = \[\];\s*if \(webGlContext\.getExtension\('OES_texture_float'\)\) \{\s*textureTypes\.push\(webGlContext\.FLOAT\);\s*\}\s*const halfFloatTextureExtension = webGlContext\.getExtension\('OES_texture_half_float'\);[\s\S]*textureTypes\.push\(halfFloatTextureExtension\.HALF_FLOAT_OES\);[\s\S]*textureTypes\.push\(webGlContext\.UNSIGNED_BYTE\);/u
+      .test(rendererSource)
+  ));
+  assert('accumulation blend keeps an unbiased running average', (
+    rendererSource.includes('gl_FragColor = vec4(mix(calculateColor(rayOrigin, rayDirection, newLight), texture, textureWeight), 1.0);') &&
+      rendererSource.includes('webGlContext.uniform1f(locations.textureWeight, sampleCount / nextSampleCount);') &&
+      rendererSource.includes('sampleUniformValues.textureWeight = this.sampleCount / nextSampleCount;')
+  ));
+  assert('temporal display remains sample-count neutral after raw accumulation updates', (
     !rendererSource.includes('shouldBypassSettledTemporalDisplay') &&
-    !rendererSource.includes('TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR')
+    !rendererSource.includes('TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR') &&
+    !rendererSource.includes('accumulationDenoiseTrust') &&
+    !rendererSource.includes('accumulationProgress') &&
+    rendererSource.includes('float temporalDenoiseAmount = smoothstep(1.0, 32.0, temporalBlendFrames) * denoiserStrength;') &&
+    rendererSource.includes('float motionBlend = clamp(motionBlurStrength, 0.0, 0.95) * historyAvailability;') &&
+    rendererSource.includes('float historyWeight = temporalWindow * historyAvailability * ageRamp;')
+  ));
+  assert('temporal display is evaluated once per accumulation state', (
+    rendererSource.includes('hasCurrentTemporalDisplayTexture(temporalBlendFrames, motionBlurStrength, denoiserStrength)') &&
+      /if \(this\.hasCurrentTemporalDisplayTexture\(\s*temporalBlendFrames,\s*motionBlurStrength,\s*denoiserStrength\s*\)\) \{\s*return this\.displayTextureSuccessResults\[this\.currentDisplayTextureIndex\];\s*\}/u.test(rendererSource) &&
+      rendererSource.includes('this.lastTemporalDisplayInputSampleCount = this.sampleCount;') &&
+      rendererSource.includes('this.lastTemporalDisplayInputTextureIndex = this.currentTextureIndex;') &&
+      rendererSource.includes('resetTemporalDisplayCache()')
   ));
   assert('temporal display pass stays enabled for denoiser-only mode', (
     /shouldUseTemporalDisplayPass\(temporalBlendFrames, motionBlurStrength, denoiserStrength\) \{[\s\S]*denoiserStrength > MIN_DENOISER_STRENGTH/u
@@ -1051,18 +1080,65 @@ const checkRendererPostProcessContracts = () => {
     rendererSource.includes('temporalBlendFrames * samplesPerDisplayFrame') &&
     rendererSource.includes('temporalUniformValues.temporalFrameAge = this.readTemporalFrameAge(temporalBlendFrames);')
   ));
+  assert('static temporal history stops before long convergence accumulation', (
+    rendererSource.includes('readTemporalHistoryAvailability(temporalBlendFrames, motionBlurStrength)') &&
+      rendererSource.includes('if (motionBlurStrength > MIN_MOTION_BLUR_STRENGTH) {') &&
+      rendererSource.includes('const temporalHistorySamples = Math.max(samplesPerDisplayFrame, temporalBlendFrames * samplesPerDisplayFrame);') &&
+      rendererSource.includes('return this.sampleCount <= temporalHistorySamples ? 1 : 0;') &&
+      rendererSource.includes('temporalUniformValues.historyAvailability = this.readTemporalHistoryAvailability(')
+  ));
   assert('temporal display preserves luminance while using history', (
     rendererSource.includes('float luminanceCorrection = clamp(targetLuminance / filteredLuminance, 0.5, 2.0);') &&
     rendererSource.includes('return temporallyFilteredColor * mix(1.0, luminanceCorrection, luminancePreservation);')
   ));
+  assert('temporal spatial denoise preserves current luminance', (
+    rendererSource.includes('float currentLuminance = max(currentYCoCg.x, 0.0001);') &&
+      rendererSource.includes('float stabilizedLuminance = max(rgbToYCoCg(stabilizedCurrentColor).x, 0.0001);') &&
+      rendererSource.includes('stabilizedCurrentColor *= clamp(currentLuminance / stabilizedLuminance, 0.5, 2.0);')
+  ));
+  const readRenderTextureFunctionMatch = rendererSource.match(
+    /readRenderTexture\(applicationState\) \{([\s\S]*?)\n  renderTemporalDisplayTexture/u
+  );
+  assert('convergence target only controls pause state and benchmark progress', (
+    readRenderTextureFunctionMatch !== null &&
+      !readRenderTextureFunctionMatch[1].includes('convergenceSampleCount') &&
+      rendererSource.includes('benchmarkSnapshot.convergenceProgress = clampNumber(sampleCount / convergenceSampleCount, 0, 1);') &&
+      /applicationState\.isConvergencePauseEnabled\s*&&\s*this\.sampleCount >= applicationState\.convergenceSampleCount/u
+        .test(rendererSource)
+  ));
+  assert('continuous motion history clears on first still frame', (
+    rendererSource.includes('settleContinuousMotionDisplayHistory(didRenderMotionThisFrame)') &&
+      rendererSource.includes('this.hasContinuousMotionDisplayHistory = true;') &&
+      /if \(!this\.hasContinuousMotionDisplayHistory\) \{\s*return returnSuccess\(false\);\s*\}[\s\S]*const \[, clearError\] = this\.clearSamples\(\);/u.test(rendererSource) &&
+      rendererSource.includes('const didRenderMotionThisFrame = Boolean(') &&
+      rendererSource.includes('didAutoRotateCamera') &&
+      rendererSource.includes('didAnimateScene') &&
+      rendererSource.includes('didCycleLightIntensity')
+  ));
+  assert('bounce-count shader rebuild clears stale accumulation immediately', (
+    /scheduleShaderRebuildFromInput\(statusText = 'Compiling shaders\.\.\.'\) \{[\s\S]*const \[, clearPendingSamplesError\] = this\.selectionRenderer\.pathTracer\.clearSamples\(\);[\s\S]*this\.shaderRebuildInputTimerId = windowObject\.setTimeout/u
+      .test(rendererSource)
+  ));
+  assert('pearlescent opal shader avoids NaN fireflies', (
+    rendererSource.includes('vec3 shaderSafeNormalize(vec3 value, vec3 fallback)') &&
+    rendererSource.includes('float shaderSaturate(float value)') &&
+    rendererSource.includes('vec3 pearlViewDirection = shaderSafeNormalize(origin - hit, normal);') &&
+    rendererSource.includes('float pearlAngle = pow(1.0 - shaderSaturate(dot(pearlViewDirection, normal)), 1.7);') &&
+    rendererSource.includes('float pearlSpecularBase = shaderSaturate(dot(pearlReflectedLight, -pearlViewDirection));')
+  ));
   assert('temporal history depends on actual camera-change invalidation', (
     !rendererSource.includes('shouldUseTemporalHistory(applicationState)') &&
-    rendererSource.includes('temporalUniformValues.historyAvailability = this.hasDisplayHistory ? 1 : 0;') &&
+    rendererSource.includes('temporalUniformValues.historyAvailability = this.readTemporalHistoryAvailability(') &&
     /if \(didCameraChange\) \{[\s\S]*const \[, clearCameraSamplesError\] = this\.clearSamples\(\);/u.test(rendererSource)
   ));
   assert('manual camera press preserves valid temporal history until movement', (
     /applicationState\.isRotatingCamera = !didSelectObject;[\s\S]{0,160}event\.preventDefault\(\);/u.test(rendererSource) &&
       !/applicationState\.isRotatingCamera = !didSelectObject;[\s\S]{0,160}clearDisplayHistory\(\)/u.test(rendererSource)
+  ));
+  assert('manual camera drag release clears interactive seed only after movement', (
+    rendererSource.includes('this.hasInteractiveCameraMotionDisplayHistory = false;') &&
+      /wasInteractiveQualityThrottleActive\s*&&\s*!isInteractiveQualityThrottleActive\s*&&\s*this\.hasInteractiveCameraMotionDisplayHistory[\s\S]*const \[, clearInteractiveCameraSamplesError\] = this\.clearSamples\(\);/u.test(rendererSource) &&
+      /if \(isInteractiveQualityThrottleActive\) \{\s*this\.hasInteractiveCameraMotionDisplayHistory = true;\s*\}/u.test(rendererSource)
   ));
   assert('camera playback pause preserves temporal display history', (
     /toggleCameraAutoRotation\(toggleButton\) \{[\s\S]*this\.applicationState\.isCameraAutoRotating = !this\.applicationState\.isCameraAutoRotating;[\s\S]*updateCameraAutoRotationButton/u
