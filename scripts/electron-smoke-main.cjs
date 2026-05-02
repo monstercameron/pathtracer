@@ -12,6 +12,7 @@ const failures = [];
 const pageErrors = [];
 const externalRequests = [];
 const staticServerRequests = [];
+const staticServerFailures = [];
 const userDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'pathtracer-electron-profile-'));
 
 const argumentValue = (name) => {
@@ -67,27 +68,48 @@ const sendStaticResponse = (response, statusCode, body, headers = {}) => {
   response.end(body);
 };
 
-const startStaticServer = (rootDirectory) => new Promise((resolve, reject) => {
+const normalizeBasePath = (basePath) => {
+  if (!basePath || basePath === '/') {
+    return '/';
+  }
+  const withLeadingSlash = basePath.startsWith('/') ? basePath : `/${basePath}`;
+  return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`;
+};
+
+const startStaticServer = (rootDirectory, options = {}) => new Promise((resolve, reject) => {
   const normalizedRoot = path.resolve(rootDirectory);
   const normalizedRootLower = normalizedRoot.toLowerCase();
+  const basePath = normalizeBasePath(options.basePath || '/');
   const server = http.createServer((request, response) => {
     try {
       staticServerRequests.push(request.url || '/');
       const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
-      const decodedPath = decodeURIComponent(requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname);
-      const requestedPath = path.resolve(normalizedRoot, `.${decodedPath}`);
+      const requestPathname = decodeURIComponent(requestUrl.pathname);
+      if (!requestPathname.startsWith(basePath)) {
+        if (requestPathname !== '/favicon.ico') {
+          staticServerFailures.push(`${request.url || '/'} outside ${basePath}`);
+        }
+        sendStaticResponse(response, 404, 'Not found');
+        return;
+      }
+
+      const relativePathname = requestPathname.slice(basePath.length) || 'index.html';
+      const requestedPath = path.resolve(normalizedRoot, ...relativePathname.split('/').filter(Boolean));
       const requestedPathLower = requestedPath.toLowerCase();
       if (
         requestedPathLower !== normalizedRootLower &&
         !requestedPathLower.startsWith(`${normalizedRootLower}${path.sep}`)
       ) {
+        staticServerFailures.push(`${request.url || '/'} escaped static root`);
         sendStaticResponse(response, 403, 'Forbidden');
         return;
       }
 
       fs.readFile(requestedPath, (readError, fileBuffer) => {
         if (readError) {
-          sendStaticResponse(response, readError.code === 'ENOENT' ? 404 : 500, readError.message);
+          const statusCode = readError.code === 'ENOENT' ? 404 : 500;
+          staticServerFailures.push(`${request.url || '/'} -> ${statusCode}`);
+          sendStaticResponse(response, statusCode, readError.message);
           return;
         }
         const contentType = mimeTypes[path.extname(requestedPath).toLowerCase()] || 'application/octet-stream';
@@ -102,7 +124,8 @@ const startStaticServer = (rootDirectory) => new Promise((resolve, reject) => {
     const address = server.address();
     resolve({
       server,
-      url: `http://127.0.0.1:${address.port}/index.html`
+      basePath,
+      url: `http://127.0.0.1:${address.port}${basePath}`
     });
   });
 });
@@ -360,6 +383,46 @@ const keyboardSmokeScript = `(async () => {
     document.removeEventListener('click', clickListener, true);
   }
   return results;
+})()`;
+
+const menuDropdownSmokeScript = `(async () => {
+  const menuElement = document.getElementById('app-menu');
+  const trigger = menuElement && menuElement.querySelector('.menu-trigger');
+  if (!(menuElement instanceof HTMLElement) || !(trigger instanceof HTMLButtonElement)) {
+    return { ok: false, reason: 'missing menu trigger' };
+  }
+
+  trigger.focus();
+  trigger.click();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+
+  const popover = trigger.closest('.menu-group')?.querySelector('.menu-popover');
+  if (!(popover instanceof HTMLElement)) {
+    return { ok: false, reason: 'missing menu popover' };
+  }
+
+  const menuRect = menuElement.getBoundingClientRect();
+  const popoverRect = popover.getBoundingClientRect();
+  const sampleX = Math.floor(popoverRect.left + Math.min(24, Math.max(1, popoverRect.width / 2)));
+  const sampleY = Math.floor(popoverRect.top + Math.min(16, Math.max(1, popoverRect.height / 2)));
+  const hitElement = document.elementFromPoint(sampleX, sampleY);
+  const hitPopover = hitElement instanceof Element ? hitElement.closest('.menu-popover') : null;
+
+  return {
+    ok: (
+      getComputedStyle(popover).display !== 'none' &&
+      popoverRect.top >= menuRect.bottom &&
+      popoverRect.height > 20 &&
+      hitPopover === popover
+    ),
+    display: getComputedStyle(popover).display,
+    menuBottom: Math.round(menuRect.bottom),
+    popoverTop: Math.round(popoverRect.top),
+    popoverHeight: Math.round(popoverRect.height),
+    sampleX,
+    sampleY,
+    hitElement: hitElement ? hitElement.outerHTML.slice(0, 180) : null
+  };
 })()`;
 
 const floatingSmokeScript = `(async () => {
@@ -641,6 +704,11 @@ const runKeyboardSmoke = async (window) => {
   assert('keyboard smoke covered all keydown-map shortcuts', results.length === 19, `covered ${results.length}`);
 };
 
+const runMenuDropdownSmoke = async (window) => {
+  const menuResult = await executeJavaScript(window.webContents, menuDropdownSmokeScript);
+  assert('main menu dropdown renders below the menu bar', menuResult && menuResult.ok, JSON.stringify(menuResult));
+};
+
 const runFloatingSmoke = async (window) => {
   const floatingResult = await executeJavaScript(window.webContents, floatingSmokeScript);
   assert('floating window drag moved benchmark panel', floatingResult && floatingResult.moved, JSON.stringify(floatingResult));
@@ -734,26 +802,45 @@ const runSmoke = async () => {
   });
 
   if (rootWindow) {
+    await runMenuDropdownSmoke(rootWindow);
     await runKeyboardSmoke(rootWindow);
     await runBenchmarkThrottleSmoke(rootWindow);
     await runFloatingSmoke(rootWindow);
   }
 
-  const staticServer = await startStaticServer(path.join(repoRoot, 'docs'));
+  const staticRequestStart = staticServerRequests.length;
+  const staticFailureStart = staticServerFailures.length;
+  const staticServer = await startStaticServer(path.join(repoRoot, 'docs'), { basePath: '/pathtracer/' });
   try {
     const serverCheck = await readLocalHttpUrl(staticServer.url);
     assert(
-      'browser docs local server serves index',
+      'browser docs project-path local server serves index',
       serverCheck.statusCode === 200 && serverCheck.body.includes('<script type="importmap">'),
       `status ${serverCheck.statusCode}: ${serverCheck.body.slice(0, 160)}`
     );
     const docsWindow = await loadSmokePage({
-      label: 'browser-docs-http',
+      label: 'browser-docs-project-http',
       url: staticServer.url
     });
     if (docsWindow) {
       docsWindow.destroy();
     }
+
+    const docsServerRequests = staticServerRequests.slice(staticRequestStart);
+    const offProjectPathRequests = docsServerRequests.filter((requestUrl) => {
+      const requestPathname = decodeURIComponent(new URL(requestUrl, 'http://127.0.0.1').pathname);
+      return requestPathname !== '/favicon.ico' && !requestPathname.startsWith(staticServer.basePath);
+    });
+    assert(
+      'browser docs local server used GitHub Pages project path',
+      docsServerRequests.length > 0 && offProjectPathRequests.length === 0,
+      JSON.stringify(docsServerRequests)
+    );
+    assert(
+      'browser docs local server resolved every requested asset',
+      staticServerFailures.length === staticFailureStart,
+      JSON.stringify(staticServerFailures.slice(staticFailureStart))
+    );
   } finally {
     await closeServer(staticServer.server);
   }
@@ -771,7 +858,8 @@ const writeResultAndQuit = async () => {
     failures,
     pageErrors,
     externalRequests,
-    staticServerRequests
+    staticServerRequests,
+    staticServerFailures
   };
   if (outputPath) {
     fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));

@@ -401,7 +401,10 @@ const checkBenchmarkSignalContracts = () => {
     /this\.previousUpdateMilliseconds = currentTimeMilliseconds;\s*updateBenchmarkSignals\(benchmarkSnapshot, \{/u.test(legacyRendererSource)
   );
   assert('interactive quality throttle uses one ray per pixel', legacyRendererSource.includes('const INTERACTIVE_QUALITY_RAYS_PER_PIXEL = 1;'));
-  assert('interactive quality throttle uses two bounces', legacyRendererSource.includes('const INTERACTIVE_QUALITY_LIGHT_BOUNCE_COUNT = 2;'));
+  assert('interactive quality throttle preserves configured bounces', (
+    !legacyRendererSource.includes('INTERACTIVE_QUALITY_LIGHT_BOUNCE_COUNT') &&
+    legacyRendererSource.includes('lightBounceCount: configuredLightBounceCount')
+  ));
   assert('interactive quality throttle follows camera drag state', legacyRendererSource.includes('const isInteractiveQualityThrottleActive = Boolean(applicationState.isRotatingCamera);'));
   assert(
     'interactive quality throttle clears after restore',
@@ -442,6 +445,48 @@ const checkBenchmarkSceneContracts = () => {
   ));
 };
 
+const checkPhysicsJointContracts = () => {
+  const legacyRendererSource = readUtf8('webgl-path-tracing.js');
+  const html = readUtf8('index.html');
+  const decisions = readUtf8('docs', 'workstream-decisions.md');
+
+  assert('spring joint fallback controls exist', (
+    html.includes('id="selected-physics-spring-connect-controls"') &&
+    html.includes('id="selected-physics-spring-rest-length"') &&
+    html.includes('id="selected-physics-spring-stiffness"') &&
+    html.includes('id="selected-physics-spring-damping"') &&
+    htmlHasButtonSelector(html, 'button[data-action="connect-selected-spring"]')
+  ));
+  assert('spring joint connected list exists', (
+    html.includes('id="selected-physics-joints-section"') &&
+    html.includes('id="selected-physics-joint-list"')
+  ));
+  assert('spring joints use two selected physics objects', (
+    legacyRendererSource.includes('readSelectedPhysicsJointObjects()') &&
+    legacyRendererSource.includes('selectedObjects.length !== 2') &&
+    legacyRendererSource.includes('isPhysicsSpringJointSelectableSceneObject')
+  ));
+  assert('spring joints create Rapier spring data', (
+    legacyRendererSource.includes('JointData.spring') &&
+    legacyRendererSource.includes('connectSelectedPhysicsSpringJointFromControls')
+  ));
+  assert('spring joints record handles on both endpoints', (
+    legacyRendererSource.includes('writePhysicsSpringJointHandleToObjectRecord(') &&
+    legacyRendererSource.includes('jointHandle') &&
+    legacyRendererSource.includes('impulseJoint')
+  ));
+  assert('spring joints remove through Rapier', (
+    legacyRendererSource.includes('removeSpringJoint(jointRecord)') &&
+    legacyRendererSource.includes('removeImpulseJoint') &&
+    legacyRendererSource.includes('removeSelectedPhysicsJoint')
+  ));
+  assert('spring joints annotate fallback scene tree', (
+    legacyRendererSource.includes('formatSceneObjectSpringJointSceneTreeAnnotation') &&
+    legacyRendererSource.includes('[spring selection]')
+  ));
+  assert('spring joint decision note exists', decisions.includes('## Physics Spring Joints'));
+};
+
 const checkEmissionModifierContracts = () => {
   const rendererSource = readUtf8('webgl-path-tracing.js');
   const objectPanelSource = readUtf8('src', 'components', 'panels', 'ObjectPanel.js');
@@ -463,6 +508,127 @@ const checkEmissionModifierContracts = () => {
   assert('legacy emissive material enables modifier', rendererSource.includes('this.isEmissionEnabled = this.material === MATERIAL.EMISSIVE'));
   assert('object panel exposes emission checkbox', objectPanelSource.includes('id="emission-enabled"'));
   assert('object panel allows emission on any material object', objectPanelSource.includes('Number.isFinite(Number(selectedItem.material))'));
+};
+
+const checkMaterialPresetTextureContracts = () => {
+  const storeSource = readUtf8('src', 'store.js');
+  const materialComponentSource = readUtf8('src', 'components', 'MaterialComponent.js');
+  const objectPanelSource = readUtf8('src', 'components', 'panels', 'ObjectPanel.js');
+  const rendererSource = readUtf8('webgl-path-tracing.js');
+  const decisions = readUtf8('docs', 'workstream-decisions.md');
+
+  assert(
+    'material projection renderer mirror parity',
+    fileHash(repoPath('webgl-path-tracing.js')) === fileHash(repoPath('docs', 'webgl-path-tracing.js')),
+    'webgl-path-tracing.js differs from docs/webgl-path-tracing.js'
+  );
+  assert('material presets store default library', storeSource.includes('export const DEFAULT_SAVED_MATERIAL_PRESETS'));
+  assert('material presets store active id signal', storeSource.includes('activeMaterialPresetId'));
+  assert('material presets store save helper', storeSource.includes('export const saveMaterialPreset'));
+  assert('material presets store apply helper', storeSource.includes('export const applyMaterialPreset'));
+  assert('material texture store channel list', storeSource.includes('export const MATERIAL_TEXTURE_CHANNELS'));
+  assert('material texture store assignment setter', storeSource.includes('export const setMaterialTextureAssignment'));
+  assert('material texture store swap helper', storeSource.includes('export const swapMaterialTextureAssignments'));
+  for (const textureChannel of ['albedo', 'normal', 'metallicRoughness', 'emissive', 'ambientOcclusion']) {
+    assert(`material texture channel ${textureChannel}`, storeSource.includes(`key: '${textureChannel}'`));
+  }
+  assert('material projection store exposes modes', (
+    storeSource.includes('MATERIAL_UV_PROJECTION_MODES') &&
+    materialComponentSource.includes("key: 'uv'") &&
+    materialComponentSource.includes("key: 'tri-planar'")
+  ));
+  assert('material projection store exposes setters', (
+    storeSource.includes('export const setMaterialUvProjectionMode') &&
+    storeSource.includes('export const setMaterialUvScale') &&
+    storeSource.includes('export const setMaterialUvBlendSharpness')
+  ));
+
+  assert('object panel imports material preset helpers', objectPanelSource.includes('saveMaterialPreset') && objectPanelSource.includes('applyMaterialPreset'));
+  assert('object panel exposes preset controls', objectPanelSource.includes('data-material-preset-controls'));
+  assert('object panel exposes apply preset action', objectPanelSource.includes('data-action="apply-material-preset"'));
+  assert('object panel exposes save preset action', objectPanelSource.includes('data-action="save-material-preset"'));
+  assert('object panel exposes texture controls', objectPanelSource.includes('data-material-texture-controls'));
+  assert('object panel exposes texture file input', objectPanelSource.includes('id="material-texture-file"'));
+  assert('object panel exposes texture assign action', objectPanelSource.includes('data-action="assign-material-texture"'));
+  assert('object panel exposes texture swap action', objectPanelSource.includes('data-action="swap-material-textures"'));
+  assert('object panel exposes texture clear action', objectPanelSource.includes('data-action="clear-material-texture"'));
+  assert('object panel tags texture channels', objectPanelSource.includes('data-texture-channel'));
+  assert('object panel exposes UV projection controls', (
+    objectPanelSource.includes('id="material-uv-projection-mode"') &&
+    objectPanelSource.includes('setMaterialUvProjectionMode') &&
+    objectPanelSource.includes('id="material-uv-scale"') &&
+    objectPanelSource.includes('id="material-uv-blend-sharpness"')
+  ));
+
+  assert('tri-planar projection shader samples material albedo texture', (
+    rendererSource.includes('uniform sampler2D materialAlbedoTexture') &&
+    rendererSource.includes('createProceduralMaterialAlbedoTexture') &&
+    rendererSource.includes('sampleTriplanarAlbedo(') &&
+    rendererSource.includes('materialAlbedoTexture,')
+  ));
+  assert('tri-planar projection shader computes axis weights', (
+    rendererSource.includes('vec3 shaderTriplanarWeights') &&
+    rendererSource.includes('pow(max(abs(normal)') &&
+    rendererSource.includes('axisWeights.x + axisWeights.y + axisWeights.z')
+  ));
+  assert('tri-planar projection participates in object shader source', (
+    rendererSource.includes('createMaterialTextureShaderSource') &&
+    rendererSource.includes('composeObjectSurfaceShaderSource') &&
+    rendererSource.includes('sceneObjectUsesSurfaceShaderUtilities')
+  ));
+  assert('tri-planar projection serializes scene material metadata', (
+    rendererSource.includes('objectSnapshot.textureProjection =') &&
+    rendererSource.includes('textureProjectionSnapshot') &&
+    rendererSource.includes('uvBlendSharpness')
+  ));
+
+  assert('decisions document material presets and texture assignments', decisions.includes('## Material Presets And Texture Assignment'));
+  assert('decisions document tri-planar projection', decisions.includes('## Material Texture Projection'));
+};
+
+const checkRendererPostProcessContracts = () => {
+  const rendererSource = readUtf8('webgl-path-tracing.js');
+  const docsRendererPath = repoPath('docs', 'webgl-path-tracing.js');
+
+  assert(
+    'postprocess renderer mirror parity',
+    fileHash(repoPath('webgl-path-tracing.js')) === fileHash(docsRendererPath),
+    'webgl-path-tracing.js differs from docs/webgl-path-tracing.js'
+  );
+  assert('draft postprocess detects draft preset state', (
+    rendererSource.includes('const isDraftQualityPresetState') &&
+    rendererSource.includes('QUALITY_PRESET_STATE_KEYS.every') &&
+    rendererSource.includes('QUALITY_PRESETS.draft[stateKey]')
+  ));
+  const draftPostProcessBypassMatch = rendererSource.match(
+    /const shouldUseDraftPostProcessBypass = \(applicationState\) => \(([\s\S]*?)\);/u
+  );
+  assert('draft postprocess does not darken camera drag', (
+    draftPostProcessBypassMatch !== null &&
+    draftPostProcessBypassMatch[1].includes('isDraftQualityPresetState(applicationState)') &&
+    !draftPostProcessBypassMatch[1].includes('isRotatingCamera')
+  ));
+  assert('draft postprocess skips temporal texture pass', (
+    /readRenderTexture\(applicationState\) \{[\s\S]*shouldUseDraftPostProcessBypass\(applicationState\)[\s\S]*this\.hasDisplayHistory = false;[\s\S]*return this\.textureSuccessResults\[this\.currentTextureIndex\];/u
+      .test(rendererSource)
+  ));
+  assert('temporal denoise remains active after accumulation settles', (
+    !rendererSource.includes('shouldBypassSettledTemporalDisplay') &&
+    !rendererSource.includes('TEMPORAL_DISPLAY_SETTLED_SAMPLE_FLOOR')
+  ));
+  assert('temporal display pass stays enabled for denoiser-only mode', (
+    /shouldUseTemporalDisplayPass\(temporalBlendFrames, motionBlurStrength, denoiserStrength\) \{[\s\S]*denoiserStrength > MIN_DENOISER_STRENGTH/u
+      .test(rendererSource)
+  ));
+  assert('draft postprocess disables bloom and glare shader taps', (
+    rendererSource.includes('const effectiveBloomStrength = shouldBypassDraftPostProcess ? 0 : applicationState.bloomStrength;') &&
+    rendererSource.includes('const effectiveGlareStrength = shouldBypassDraftPostProcess ? 0 : applicationState.glareStrength;') &&
+    rendererSource.includes('renderUniformValues.bloomStrength = effectiveBloomStrength;') &&
+    rendererSource.includes('renderUniformValues.glareStrength = effectiveGlareStrength;')
+  ));
+  assert('draft postprocess logs bypass mode', (
+    rendererSource.includes("postProcessMode: shouldBypassDraftPostProcess ? 'draft-bypass' : 'full'")
+  ));
 };
 
 const checkTodoEvidence = () => {
@@ -495,12 +661,30 @@ const checkTodoEvidence = () => {
   assert('evidence physics component exists', existsSync(physicsComponentPath) && existsSync(docsPhysicsComponentPath));
   assert('evidence physics component mirror parity', fileHash(physicsComponentPath) === fileHash(docsPhysicsComponentPath));
   assert('evidence renderer mirror parity', fileHash(repoPath('webgl-path-tracing.js')) === fileHash(docsLegacyRendererPath));
-  assert('evidence renderer imports material component', legacyRenderer.includes("import { DEFAULT_MATERIAL_GLOSSINESS, MaterialComponent } from './src/components/MaterialComponent.js';"));
+  assert('evidence renderer imports material component', (
+    legacyRenderer.includes("from './src/components/MaterialComponent.js';") &&
+    legacyRenderer.includes('DEFAULT_MATERIAL_GLOSSINESS') &&
+    legacyRenderer.includes('MaterialComponent')
+  ));
   assert('evidence renderer imports physics component', legacyRenderer.includes("import { PhysicsComponent } from './src/components/PhysicsComponent.js';"));
   assert('evidence renderer uses material component storage', legacyRenderer.includes('this.materialComponent = createSceneObjectMaterialComponent(material);'));
   assert('evidence renderer uses physics component storage', legacyRenderer.includes('this.physicsComponent = createSceneObjectPhysicsComponent({'));
   assert('evidence renderer preserves material accessor', legacyRenderer.includes('return ensureSceneObjectMaterialComponent(this).material;'));
   assert('evidence renderer preserves physics rigid body accessor', legacyRenderer.includes('return ensureSceneObjectPhysicsComponent(this).physicsRigidBody;'));
+  assert('evidence renderer stores selected entity id', legacyRenderer.includes('this.selectedEntityId = null;') && legacyRenderer.includes('this.selectedEntityIds = Object.freeze([]);'));
+  assert('evidence renderer resolves selection by entity id', legacyRenderer.includes('resolveSelectedObject(sceneObjects = this.sceneObjects)') && legacyRenderer.includes('findSceneObjectByEntityId(sceneObjects, this.selectedEntityId)'));
+  assert('evidence renderer syncs sceneStore selection signal', legacyRenderer.includes('sceneStoreSelectedItemId') && legacyRenderer.includes('setSceneStoreSelectedItemIds(this.selectedEntityIds, this.selectedEntityId)'));
+  assert('evidence renderer supports viewport modifier selection', legacyRenderer.includes('handleCanvasPress(xPosition, yPosition, selectionOptions = {})') && legacyRenderer.includes('isRangeSelection: event.shiftKey') && legacyRenderer.includes('isToggleSelection: event.ctrlKey || event.metaKey'));
+  assert('evidence renderer supports tree modifier selection', legacyRenderer.includes('sceneEntityId !== undefined') && legacyRenderer.includes('uiController.selectSceneObjectByEntityId(') && legacyRenderer.includes('selectSceneObjectByIndex('));
+  assert('evidence renderer keys tree buttons by entity id', legacyRenderer.includes('this.sceneTreeButtons = new Map();') && legacyRenderer.includes('itemButton.dataset.sceneEntityId = entityId'));
+  assert('evidence renderer orders tree by ECS parent ids', legacyRenderer.includes('createSceneTreeDisplayEntries') && legacyRenderer.includes('childrenByParentEntityId') && legacyRenderer.includes('parentObject.childEntityIds'));
+  assert('evidence renderer defines runtime GroupEntity', legacyRenderer.includes('class GroupEntity') && legacyRenderer.includes("this.sceneItemKind = 'group';") && legacyRenderer.includes('this.childEntityIds = childEntityIds;'));
+  assert('evidence renderer defines group renderability guards', legacyRenderer.includes('const isGroupEntitySceneObject = (sceneObject) =>') && legacyRenderer.includes('const isRenderableSceneObject = (sceneObject) =>') && legacyRenderer.includes('!isGroupEntitySceneObject(sceneObject)'));
+  assert('evidence renderer shader joins skip groups', /const joinObjectShaderCode = \(sceneObjects, readShaderCode\) => \{[\s\S]*if \(!isRenderableSceneObject\(sceneObject\)\) \{[\s\S]*continue;[\s\S]*shaderParts\.push\(readShaderCode\(sceneObject\)\);/u.test(legacyRenderer));
+  assert('evidence selection renderer traces renderable visible objects', /class SelectionRenderer[\s\S]*setObjects\(sceneObjects, renderSettings\) \{[\s\S]*const visibleSceneObjects = sceneObjects\.filter\(\(sceneObject\) => \([\s\S]*!sceneObject\.isHidden[\s\S]*isRenderableSceneObject\(sceneObject\)[\s\S]*this\.pathTracer\.setObjects\(visibleSceneObjects, renderSettings\)/u.test(legacyRenderer));
+  assert('evidence renderer serializes group hierarchy ids', /if \(type === 'group'\) \{[\s\S]*entityId: readSceneObjectEntityId\(sceneObject\),[\s\S]*childEntityIds: normalizeSceneEntityIdList\(sceneObject\.childEntityIds\),[\s\S]*const parentEntityId = readSceneObjectParentEntityId\(sceneObject\);[\s\S]*objectSnapshot\.parentEntityId = parentEntityId;/u.test(legacyRenderer));
+  assert('evidence renderer loads group scene objects', /if \(objectType === 'group'\) \{[\s\S]*const groupEntity = new GroupEntity\(\{[\s\S]*childEntityIds: objectSnapshot\.childEntityIds,[\s\S]*return applySceneObjectSnapshotIdentityFields\(groupEntity, objectSnapshot\);/u.test(legacyRenderer));
+  assert('evidence renderer syncs sceneStore scene items', legacyRenderer.includes('setSceneItems as setSceneStoreSceneItems') && /setSceneObjects\(sceneObjects\) \{[\s\S]*syncSceneGroupEntityChildren\(this\.sceneObjects\);[\s\S]*setSceneStoreSceneItems\(this\.sceneObjects\);/u.test(legacyRenderer));
   assert('evidence ECS doc notes material migration', ecs.includes('store material state in `MaterialComponent` instances'));
   assert('evidence ECS doc notes physics migration', ecs.includes('store body settings and the transient Rapier handle in `PhysicsComponent` instances'));
 };
@@ -557,13 +741,32 @@ const importSceneStoreForSmoke = async () => {
 const checkSceneStoreGroupingSmoke = async () => {
   const sceneStore = await importSceneStoreForSmoke();
   const result = sceneStore.runSceneStoreSmokeSamples();
+  const isNear = (actual, expected, epsilon = 1e-9) => Math.abs(actual - expected) <= epsilon;
 
   assert('scene store smoke creates GroupEntity', result.groupEntityClassName === 'GroupEntity', JSON.stringify(result));
   assert('scene store smoke records group id', result.groupId === 'group-test', JSON.stringify(result));
   assert('scene store smoke groups selected children', result.groupedChildCount === 2 && result.groupedChildEntityIds.join(',') === 'sphere-a,cube-b', JSON.stringify(result));
+  assert('scene store smoke creates transform animation component', result.transformAnimationComponentType === 'procedural-transform-animation', JSON.stringify(result));
+  assert('scene store smoke stacks group animations', result.groupedAnimationIds.join(',') === 'transform-spin,transform-bob', JSON.stringify(result));
+  assert('scene store smoke toggles animation enabled state', result.didDisableBobAnimation === true && result.groupedAnimationEnabledFlags.join(',') === 'true,false', JSON.stringify(result));
+  assert('scene store smoke summarizes animation stack', result.groupedAnimationSummary === '1/2 enabled: Spin, Bob', JSON.stringify(result));
+  assert('scene store smoke exposes animation component rows', ['animation', 'animation-transform-spin', 'animation-transform-bob'].every((rowKey) => result.groupedAnimationRowKeys.includes(rowKey)), JSON.stringify(result));
+  assert('scene store smoke updates orbit config', result.didUpdateOrbitAnimation === true, JSON.stringify(result));
+  assert('scene store smoke removes individual animation', result.didRemoveWobbleAnimation === true && result.sphereAnimationIdsAfterRemove.join(',') === 'transform-pulse,transform-orbit', JSON.stringify(result));
+  assert('scene store smoke covers pulse orbit types after remove', result.sphereAnimationTypesAfterRemove.join(',') === 'pulse,orbit', JSON.stringify(result));
+  assert('scene store smoke evaluates enabled spin only on group', result.groupAnimationAppliedIdsAtOneSecond.join(',') === 'transform-spin' && isNear(result.groupAnimationRotationYAtOneSecond, 90) && isNear(result.groupAnimationPositionYAtOneSecond, 0), JSON.stringify(result));
+  assert('scene store smoke evaluates pulse orbit wobble stack', (
+    result.sphereAnimationAppliedIdsBeforeRemove.join(',') === 'transform-pulse,transform-orbit,transform-wobble' &&
+    isNear(result.sphereAnimationPositionBeforeRemove[0], 1) &&
+    isNear(result.sphereAnimationPositionBeforeRemove[1], 0) &&
+    isNear(result.sphereAnimationPositionBeforeRemove[2], 3) &&
+    isNear(result.sphereAnimationScaleBeforeRemove[0], 1.2) &&
+    result.sphereAnimationRotationBeforeRemove.some((value) => Math.abs(value) > 0.1)
+  ), JSON.stringify(result));
   assert('scene store smoke selects group subtree', result.groupedSelectedItemId === 'group-test' && result.groupedSelectedItemIds.join(',') === 'group-test,sphere-a,cube-b', JSON.stringify(result));
   assert('scene store smoke expands group selection', result.expandedGroupSelectionIds.join(',') === 'group-test,sphere-a,cube-b', JSON.stringify(result));
   assert('scene store smoke preserves parent ids through serialize round trip', result.roundTripGroupParent === null && result.roundTripChildParentIds.every((parentId) => parentId === 'group-test'), JSON.stringify(result));
+  assert('scene store smoke preserves animation stacks through serialize round trip', result.roundTripGroupAnimationCount === 2 && result.roundTripSphereAnimationCount === 2, JSON.stringify(result));
   assert('scene store smoke ungroups to root', result.didUngroup === true && result.ungroupedItemCount === 3 && ['sphere-a', 'cube-b', 'light'].every((itemId) => result.ungroupedRootIds.includes(itemId)), JSON.stringify(result));
   assert('scene store smoke applies bulk hide lock', result.didHideSelection === true && result.didLockSelection === true && result.bulkEditedItemIds.join(',') === 'sphere-a,cube-b', JSON.stringify(result));
   assert('scene store smoke deletes selected children', result.didDeleteSelection === true && result.deletedItemCount === 1 && result.deletedRemainingIds.join(',') === 'light', JSON.stringify(result));
@@ -597,6 +800,9 @@ const checkEditorGroupingContracts = () => {
   assert('scene store syncs childEntityIds from parent ids', sceneStoreSource.includes('syncSceneGroupChildEntityIds'));
   assert('scene store exposes grouping actions', ['canGroupSceneItems', 'groupSelectedSceneItems', 'canUngroupSceneItems', 'ungroupSelectedSceneItems'].every((name) => sceneStoreSource.includes(`export const ${name}`)));
   assert('scene store exposes bulk scene actions', ['deleteSelectedSceneItems', 'toggleSelectedSceneItemsHidden', 'toggleSelectedSceneItemsLocked'].every((name) => sceneStoreSource.includes(`export const ${name}`)));
+  assert('scene store defines transform animation component', sceneStoreSource.includes('export class TransformAnimationComponent') && sceneStoreSource.includes("TRANSFORM_ANIMATION_COMPONENT_TYPE = 'procedural-transform-animation'"));
+  assert('scene store exposes transform animation actions', ['attachTransformAnimationToSceneItem', 'updateTransformAnimationConfig', 'setTransformAnimationEnabled', 'removeTransformAnimationFromSceneItem', 'detachTransformAnimationFromSceneItem'].every((name) => sceneStoreSource.includes(`export const ${name}`)));
+  assert('scene store evaluates procedural transform animations', ['TRANSFORM_ANIMATION_TYPES.SPIN', 'TRANSFORM_ANIMATION_TYPES.BOB', 'TRANSFORM_ANIMATION_TYPES.PULSE', 'TRANSFORM_ANIMATION_TYPES.ORBIT', 'TRANSFORM_ANIMATION_TYPES.WOBBLE', 'evaluateSceneItemTransformAnimations'].every((name) => sceneStoreSource.includes(name)));
 
   assert('menu exposes group shortcuts', menuSource.includes("shortcut: 'Ctrl+G'") && menuSource.includes("shortcut: 'Ctrl+Shift+G'"));
   assert('menu handles Ctrl+G keyboard action', menuSource.includes("event.code !== 'KeyG'") && menuSource.includes("event.shiftKey ? 'ungroup-selection' : 'group-selection'"));
@@ -610,6 +816,9 @@ const checkEditorGroupingContracts = () => {
   assert('inspector exposes bulk controls', inspectorSource.includes('data-selection-bulk-controls') && inspectorSource.includes('selectedCount > 1 || canUngroupSelection'));
   assert('inspector exposes bulk hide lock delete', ['toggleSelectedSceneItemsHidden', 'toggleSelectedSceneItemsLocked', 'deleteSelectedSceneItems'].every((name) => inspectorSource.includes(name)));
   assert('inspector exposes group ungroup bulk actions', inspectorSource.includes('groupSelectedSceneItems()') && inspectorSource.includes('ungroupSelectedSceneItems()'));
+  assert('inspector exposes transform animation controls', inspectorSource.includes('data-transform-animation-controls') && inspectorSource.includes('attachTransformAnimationToSceneItem') && inspectorSource.includes('TRANSFORM_ANIMATION_TYPE_OPTIONS'));
+  assert('inspector exposes animation enable remove controls', inspectorSource.includes('data-action="toggle-transform-animation-enabled"') && inspectorSource.includes('data-action="remove-transform-animation"'));
+  assert('inspector exposes animation config editors', inspectorSource.includes('updateTransformAnimationConfig') && inspectorSource.includes('speedDegreesPerSecond') && inspectorSource.includes('frequencyHertz') && inspectorSource.includes('amplitudeDegrees'));
 };
 
 checkSyntax();
@@ -624,7 +833,10 @@ if (!syntaxOnly) {
   checkReactCanvasCssContracts();
   checkBenchmarkSignalContracts();
   checkBenchmarkSceneContracts();
+  checkPhysicsJointContracts();
   checkEmissionModifierContracts();
+  checkMaterialPresetTextureContracts();
+  checkRendererPostProcessContracts();
   checkTodoEvidence();
   checkEditorGroupingContracts();
   await checkLoaderSmoke();

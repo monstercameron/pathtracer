@@ -9,8 +9,9 @@
     "check:syntax": "node scripts/smoke-check.mjs --syntax-only",
     "start": "electron .",
     "start:b580": "electron .",
-    "test": "npm run test:smoke && npm run test:electron-smoke",
+    "test": "npm run test:smoke && npm run test:pages-deploy && npm run test:electron-smoke",
     "test:smoke": "node scripts/smoke-check.mjs",
+    "test:pages-deploy": "node scripts/pages-deploy-smoke.mjs",
     "test:electron-smoke": "node scripts/electron-smoke-check.mjs"
   },
   "devDependencies": {
