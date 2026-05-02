@@ -2,9 +2,28 @@
 
 Changes are grouped by commit date, newest first. Each bullet represents one commit.
 
+## 2026-05-02
+
+- This commit - Update changelog for grouped runtime work:
+  - Record the grouped scene-store, runtime, verification, and TODO audit commits.
+- `e13cea8` - Refresh TODO audit and workstream notes:
+  - Mark completed ECS grouping, procedural transform animation, spring joint, material preset, texture assignment, tri-planar projection, and verification items.
+  - Update ECS and workstream decision docs for active runtime groups, material projection metadata, spring joints, and renderer post-process behavior.
+- `30574eb` - Expand smoke and deploy verification:
+  - Add GitHub Pages project-path smoke coverage and wire it into the default test command.
+  - Extend Electron/browser smoke checks for project-path asset resolution and main-menu dropdown placement.
+  - Add renderer smoke contracts for post-process bypass, temporal denoise, camera-drag brightness, material projection, spring joints, and runtime ECS groups.
+- `fc825f5` - Wire runtime ECS groups and material projection:
+  - Add active runtime `GroupEntity` support, entity-ID selection, group hierarchy save/load, spring joint controls, and scene-store runtime synchronization.
+  - Add material presets, texture assignment descriptors, emission modifiers, UV projection controls, and tri-planar checker projection in the WebGL shader path.
+  - Keep temporal denoise active after accumulation settles and preserve configured bounces/post-processing while dragging the camera.
+- `8963dc5` - Add scene-store grouping and transform animations:
+  - Add serializable `GroupEntity` and procedural transform animation records to `sceneStore`.
+  - Add inspector controls for stackable spin, bob, pulse, orbit, and wobble animation components.
+
 ## 2026-05-01
 
-- This commit - Update changelog and TODO audit:
+- `2965be9` - Update changelog and TODO audit:
   - Record the grouped commit hashes for editor, import, Particle Fluid, smoke, and docs work.
   - Mark verified completed TODOs while leaving unfinished viewport, model-scene, CSG, and WebGPU items open.
 - `36e3a6c` - Cover Particle Fluid benchmark smoke:
