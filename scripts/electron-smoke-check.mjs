@@ -42,6 +42,7 @@ try {
 
   if (!existsSync(outputPath)) {
     console.error('Electron smoke did not write a result file.');
+    console.error(`Electron exit status: ${result.status ?? 'null'}, signal: ${result.signal ?? 'null'}`);
     process.exit(result.status || 1);
   }
 
