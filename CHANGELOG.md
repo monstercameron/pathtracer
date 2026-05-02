@@ -4,6 +4,10 @@ Changes are grouped by commit date, newest first. Each bullet represents one com
 
 ## 2026-05-02
 
+- This commit - Refine benchmark UI and scoring:
+  - Convert the benchmark from a floating window to a standing panel with collapse/close controls while keeping scene tree and inspector floating-window persistence.
+  - Add nested menu submenus for grouped scene, benchmark, panel, render, and export actions, with README and smoke coverage aligned to the migrated controls.
+  - Normalize frame-estimated benchmark scores to a fixed 512 x 512 reference target and add smoke coverage for environment switching after signal sync.
 - This commit - Render bundled reference mesh scene:
   - Add generated Suzanne/Sponza reference metadata, including normalized low-triangle Suzanne triangle data and Sponza GLB triangle-count metadata.
   - Add the `Suzanne Reference Mesh` Scene preset, renderable reference mesh scene-object support, menu/preset-panel entries, and Electron smoke coverage that compiles the new preset.

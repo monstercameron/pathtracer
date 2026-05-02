@@ -215,7 +215,9 @@ const requiredDomScript = `(() => {
     '#canvas',
     '#scene-tree-window[data-floating-window]',
     '#controls[data-floating-window]',
-    '#benchmark[data-floating-window]',
+    '#benchmark[data-standing-panel]',
+    '#benchmark button[data-window-command="collapse"]',
+    '#benchmark button[data-window-command="close"]',
     '#benchmark-performance-score',
     '#benchmark-source',
     '#benchmark-gpu-renderer'
@@ -401,9 +403,21 @@ const menuDropdownSmokeScript = `(async () => {
   if (!(popover instanceof HTMLElement)) {
     return { ok: false, reason: 'missing menu popover' };
   }
+  const submenuTrigger = popover.querySelector('.menu-submenu-trigger');
+  if (!(submenuTrigger instanceof HTMLButtonElement)) {
+    return { ok: false, reason: 'missing submenu trigger' };
+  }
+
+  submenuTrigger.focus();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const submenuPopover = submenuTrigger.closest('.menu-submenu')?.querySelector('.menu-submenu-popover');
+  if (!(submenuPopover instanceof HTMLElement)) {
+    return { ok: false, reason: 'missing submenu popover' };
+  }
 
   const menuRect = menuElement.getBoundingClientRect();
   const popoverRect = popover.getBoundingClientRect();
+  const submenuRect = submenuPopover.getBoundingClientRect();
   const sampleX = Math.floor(popoverRect.left + Math.min(24, Math.max(1, popoverRect.width / 2)));
   const sampleY = Math.floor(popoverRect.top + Math.min(16, Math.max(1, popoverRect.height / 2)));
   const hitElement = document.elementFromPoint(sampleX, sampleY);
@@ -412,29 +426,162 @@ const menuDropdownSmokeScript = `(async () => {
   return {
     ok: (
       getComputedStyle(popover).display !== 'none' &&
+      getComputedStyle(submenuPopover).display !== 'none' &&
       popoverRect.top >= menuRect.bottom &&
       popoverRect.height > 20 &&
+      submenuRect.width > 120 &&
+      submenuRect.height > 20 &&
       hitPopover === popover
     ),
     display: getComputedStyle(popover).display,
+    submenuDisplay: getComputedStyle(submenuPopover).display,
     menuBottom: Math.round(menuRect.bottom),
     popoverTop: Math.round(popoverRect.top),
     popoverHeight: Math.round(popoverRect.height),
+    submenuLeft: Math.round(submenuRect.left),
+    submenuTop: Math.round(submenuRect.top),
+    submenuHeight: Math.round(submenuRect.height),
     sampleX,
     sampleY,
     hitElement: hitElement ? hitElement.outerHTML.slice(0, 180) : null
   };
 })()`;
 
+const benchmarkPanelControlsScript = `(async () => {
+  const panel = document.getElementById('benchmark');
+  const panelBody = panel && panel.querySelector('.benchmark-panel-body');
+  const collapseButton = panel && panel.querySelector('button[data-window-command="collapse"]');
+  const closeButton = panel && panel.querySelector('button[data-window-command="close"]');
+  const showButton = document.querySelector('button[data-window-target="benchmark"]');
+  if (
+    !(panel instanceof HTMLElement) ||
+    !(panelBody instanceof HTMLElement) ||
+    !(collapseButton instanceof HTMLButtonElement) ||
+    !(closeButton instanceof HTMLButtonElement) ||
+    !(showButton instanceof HTMLButtonElement)
+  ) {
+    return { ok: false, reason: 'missing benchmark panel controls' };
+  }
+
+  if (panel.hidden) {
+    showButton.click();
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+  collapseButton.click();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const collapsed = panel.classList.contains('is-collapsed') && getComputedStyle(panelBody).display === 'none';
+
+  collapseButton.click();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const expanded = !panel.classList.contains('is-collapsed') && getComputedStyle(panelBody).display !== 'none';
+
+  closeButton.click();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const hidden = panel.hidden;
+
+  showButton.click();
+  const showStartMilliseconds = performance.now();
+  while (
+    (panel.hidden || panel.classList.contains('is-collapsed')) &&
+    performance.now() - showStartMilliseconds < 1200
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const shown = !panel.hidden && !panel.classList.contains('is-collapsed');
+
+  return {
+    ok: collapsed && expanded && hidden && shown,
+    collapsed,
+    expanded,
+    hidden,
+    shown,
+    pressed: showButton.getAttribute('aria-pressed')
+  };
+})()`;
+
+const environmentSwitchScript = `(async () => {
+  const select = document.getElementById('environment');
+  const canvas = document.getElementById('canvas');
+  const cameraPlaybackButton = document.getElementById('camera-playback');
+  if (!(select instanceof HTMLSelectElement) || !(canvas instanceof HTMLCanvasElement)) {
+    return { ok: false, reason: 'missing environment select or canvas' };
+  }
+
+  if (cameraPlaybackButton instanceof HTMLButtonElement && cameraPlaybackButton.getAttribute('aria-pressed') === 'true') {
+    cameraPlaybackButton.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  if (!gl) {
+    return { ok: false, reason: 'missing WebGL context' };
+  }
+
+  const readSamples = () => {
+    const width = gl.drawingBufferWidth || canvas.width;
+    const height = gl.drawingBufferHeight || canvas.height;
+    if (width <= 0 || height <= 0) {
+      return [];
+    }
+    const points = [
+      [0.18, 0.42],
+      [0.32, 0.58],
+      [0.50, 0.48],
+      [0.68, 0.58],
+      [0.82, 0.42]
+    ];
+    return points.flatMap(([xRatio, yRatio]) => {
+      const x = Math.min(width - 1, Math.max(0, Math.round(width * xRatio)));
+      const y = Math.min(height - 1, Math.max(0, Math.round(height * (1 - yRatio))));
+      const pixel = new Uint8Array(4);
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      return [pixel[0], pixel[1], pixel[2]];
+    });
+  };
+
+  const calculateDifference = (leftSamples, rightSamples) => (
+    leftSamples.reduce((total, value, index) => total + Math.abs(value - (rightSamples[index] || 0)), 0)
+  );
+
+  const beforeValue = select.value;
+  const nextValue = beforeValue === '1' ? '0' : '1';
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const beforeSamples = readSamples();
+  select.value = nextValue;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+
+  let afterSamples = [];
+  let difference = 0;
+  const startMilliseconds = performance.now();
+  while (performance.now() - startMilliseconds < 7000) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    afterSamples = readSamples();
+    difference = calculateDifference(beforeSamples, afterSamples);
+    if (difference >= 180) {
+      break;
+    }
+  }
+
+  return {
+    ok: select.value === nextValue && difference >= 180,
+    beforeValue,
+    afterValue: select.value,
+    difference,
+    beforeSamples,
+    afterSamples
+  };
+})()`;
+
 const floatingSmokeScript = `(async () => {
   const storageKey = 'pathtracer.floatingWindows.v1';
-  const windowElement = document.getElementById('benchmark');
+  const windowElement = document.getElementById('scene-tree-window');
   const dragHandle = windowElement && windowElement.querySelector('[data-window-drag-handle]');
   if (!(windowElement instanceof HTMLElement) || !(dragHandle instanceof HTMLElement)) {
-    return { ok: false, reason: 'missing benchmark floating window' };
+    return { ok: false, reason: 'missing scene tree floating window' };
   }
   localStorage.removeItem(storageKey);
-  const showButton = document.querySelector('button[data-window-target="benchmark"]');
+  const showButton = document.querySelector('button[data-window-target="scene-tree-window"]');
   if (windowElement.hidden && showButton instanceof HTMLButtonElement) {
     showButton.click();
   }
@@ -487,7 +634,7 @@ const floatingSmokeScript = `(async () => {
   const collapsed = windowElement.classList.contains('is-collapsed');
   closeButton.click();
   await new Promise((resolve) => setTimeout(resolve, 160));
-  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
+  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}')['scene-tree-window'] || null;
   return {
     ok: true,
     before: { left: Math.round(before.left), top: Math.round(before.top) },
@@ -501,9 +648,9 @@ const floatingSmokeScript = `(async () => {
 
 const floatingPersistenceScript = `(async () => {
   const storageKey = 'pathtracer.floatingWindows.v1';
-  const windowElement = document.getElementById('benchmark');
-  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
-  const quickActionButton = document.querySelector('#menu-quick-actions button[data-window-target="benchmark"]');
+  const windowElement = document.getElementById('scene-tree-window');
+  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}')['scene-tree-window'] || null;
+  const quickActionButton = document.querySelector('#menu-quick-actions button[data-window-target="scene-tree-window"]');
   const beforeShow = {
     hidden: windowElement ? windowElement.hidden : null,
     collapsed: windowElement ? windowElement.classList.contains('is-collapsed') : null,
@@ -512,7 +659,7 @@ const floatingPersistenceScript = `(async () => {
     quickActionPressed: quickActionButton ? quickActionButton.getAttribute('aria-pressed') : null
   };
   const targetButton = quickActionButton ||
-    document.querySelector('button[data-window-target="benchmark"]');
+    document.querySelector('button[data-window-target="scene-tree-window"]');
   if (targetButton) {
     targetButton.click();
   }
@@ -539,9 +686,9 @@ const floatingPersistenceScript = `(async () => {
 
 const floatingReloadStateScript = `(() => {
   const storageKey = 'pathtracer.floatingWindows.v1';
-  const windowElement = document.getElementById('benchmark');
-  const quickActionButton = document.querySelector('#menu-quick-actions button[data-window-target="benchmark"]');
-  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
+  const windowElement = document.getElementById('scene-tree-window');
+  const quickActionButton = document.querySelector('#menu-quick-actions button[data-window-target="scene-tree-window"]');
+  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}')['scene-tree-window'] || null;
   return {
     ready: Boolean(
       windowElement &&
@@ -805,9 +952,27 @@ const runMenuDropdownSmoke = async (window) => {
   assert('main menu dropdown renders below the menu bar', menuResult && menuResult.ok, JSON.stringify(menuResult));
 };
 
+const runBenchmarkPanelControlsSmoke = async (window) => {
+  const panelControlsResult = await executeJavaScript(window.webContents, benchmarkPanelControlsScript);
+  assert(
+    'benchmark standing panel collapse and close controls work',
+    panelControlsResult && panelControlsResult.ok,
+    JSON.stringify(panelControlsResult)
+  );
+};
+
+const runEnvironmentSwitchSmoke = async (window) => {
+  const environmentResult = await executeJavaScript(window.webContents, environmentSwitchScript);
+  assert(
+    'render panel environment select rebuilds rendered scene',
+    environmentResult && environmentResult.ok,
+    JSON.stringify(environmentResult)
+  );
+};
+
 const runFloatingSmoke = async (window) => {
   const floatingResult = await executeJavaScript(window.webContents, floatingSmokeScript);
-  assert('floating window drag moved benchmark panel', floatingResult && floatingResult.moved, JSON.stringify(floatingResult));
+  assert('floating window drag moved scene tree panel', floatingResult && floatingResult.moved, JSON.stringify(floatingResult));
   assert('floating window collapse command applied class', floatingResult && floatingResult.collapsed, JSON.stringify(floatingResult));
   assert('floating window close command hides panel', floatingResult && floatingResult.hidden, JSON.stringify(floatingResult));
   assert(
@@ -937,6 +1102,8 @@ const runSmoke = async () => {
   if (rootWindow) {
     await runMenuDropdownSmoke(rootWindow);
     await runKeyboardSmoke(rootWindow);
+    await runBenchmarkPanelControlsSmoke(rootWindow);
+    await runEnvironmentSwitchSmoke(rootWindow);
     await runBenchmarkThrottleSmoke(rootWindow);
     await runSceneLoadPacingSmoke(rootWindow);
     await runFloatingSmoke(rootWindow);

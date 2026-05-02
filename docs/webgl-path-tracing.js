@@ -487,6 +487,7 @@ const MAX_PERCEPTUAL_FRAMES_PER_SECOND = 240;
 const PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT = 100000;
 const PERFORMANCE_SCORE_READY_TRACE_SAMPLE_COUNT = 12;
 const PERFORMANCE_SCORE_QUANTUM = 5;
+const PERFORMANCE_SCORE_REFERENCE_RENDER_PIXELS = DEFAULT_CANVAS_SIZE * DEFAULT_CANVAS_SIZE;
 const DEFAULT_BENCHMARK_SCENE_NAME = 'benchmarkSponzaAtrium';
 const BENCHMARK_CAMERA_AUTO_ROTATION_SPEED = CAMERA_AUTO_ROTATION_SPEED;
 const NANOSECONDS_PER_MILLISECOND = 1000000;
@@ -3393,8 +3394,27 @@ const calculatePerformanceScore = (benchmarkSnapshot) => {
     return 0;
   }
 
-  const rayScore = benchmarkSnapshot.activeRaysPerSecond / PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT;
+  const rayScore = calculatePerformanceScoreRaysPerSecond(benchmarkSnapshot) / PERFORMANCE_SCORE_RAYS_PER_SECOND_UNIT;
   return Math.max(0, Math.round(rayScore / PERFORMANCE_SCORE_QUANTUM) * PERFORMANCE_SCORE_QUANTUM);
+};
+
+const shouldNormalizePerformanceScoreForRenderResolution = (measurementSource) => (
+  measurementSource === 'frame-estimate' ||
+  measurementSource === 'frame-estimate-pending'
+);
+
+const calculatePerformanceScoreRaysPerSecond = (benchmarkSnapshot) => {
+  const activeRaysPerSecond = Number.isFinite(benchmarkSnapshot.activeRaysPerSecond)
+    ? benchmarkSnapshot.activeRaysPerSecond
+    : 0;
+  if (!shouldNormalizePerformanceScoreForRenderResolution(benchmarkSnapshot.measurementSource)) {
+    return activeRaysPerSecond;
+  }
+
+  const renderPixelCount = Number.isFinite(benchmarkSnapshot.renderPixelCount) && benchmarkSnapshot.renderPixelCount > 0
+    ? benchmarkSnapshot.renderPixelCount
+    : ACTIVE_RAYS_PER_SAMPLE;
+  return activeRaysPerSecond * PERFORMANCE_SCORE_REFERENCE_RENDER_PIXELS / renderPixelCount;
 };
 
 const calculateTraceMemoryBytesPerSample = (webGlContext, textureType) => {
@@ -8505,6 +8525,7 @@ const createBenchmarkSnapshot = () => ({
   perceptualFrameMilliseconds: 0,
   scoreSampleCount: 0,
   performanceScore: 0,
+  renderPixelCount: ACTIVE_RAYS_PER_SAMPLE,
   measurementSource: 'warming-up',
   accumulatedSamples: 0,
   convergenceSampleCount: CONVERGED_SAMPLE_COUNT,
@@ -8705,6 +8726,7 @@ class RollingBenchmarkWindow {
       : 0;
     benchmarkSnapshot.perceptualFrameMilliseconds = this.totalFrameMilliseconds / frameSampleCount;
     benchmarkSnapshot.measurementSource = this.measurementSource;
+    benchmarkSnapshot.renderPixelCount = ACTIVE_RAYS_PER_SAMPLE;
     benchmarkSnapshot.performanceScore = calculatePerformanceScore(benchmarkSnapshot);
     return returnSuccess(undefined);
   }
@@ -14506,10 +14528,6 @@ class UserInterfaceController {
     const nextEnvironment = Number.parseInt(this.environmentSelect.value, 10);
     if (Number.isNaN(nextEnvironment)) {
       return returnFailure('invalid-environment', 'Selected environment is invalid.');
-    }
-
-    if (this.applicationState.environment === nextEnvironment) {
-      return returnSuccess(undefined);
     }
 
     this.applicationState.environment = nextEnvironment;

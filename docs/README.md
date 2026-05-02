@@ -20,13 +20,13 @@ You can:
 - Add spheres, cubes, and extended primitives to the scene.
 - Let Rapier physics move eligible sphere and cube scene items.
 - Change FOV, depth of field, light bounces, rays per pixel, light size, light intensity, fog, bloom, glare, and denoising.
-- Use the File/Edit/View/Create/Scene/Render/Help menu bar to run commands, load scenes, and open floating panels.
+- Use the File/Edit/View/Create/Scene/Render/Help menu bar with nested submenus for file/export commands, panel visibility, creation groups, scene collections, benchmark scenes, render quality, and debug views.
 - Use polished top-menu quick actions for one-click scene presets, common primitives, panels, benchmark, fullscreen, pause, and PNG actions.
 - Save and load editable scene JSON from the File menu.
 - Rename, duplicate, hide, lock, and position selected scene items from the inspector.
 - Switch between orbit camera and FPS camera modes.
 - Change render scale or exact render dimensions, keep the visible canvas fitted to the page, use canvas-only or panel-preserving fullscreen, and export a clean PNG without the editor selection outline.
-- Move, collapse, close, and reopen the floating inspector, scene tree, and benchmark panels.
+- Move, collapse, close, and reopen the floating inspector and scene tree; toggle the standing benchmark panel.
 - Toggle camera rotation.
 - Load preset, demo, and benchmark scenes.
 - Review rolling benchmark metrics, copy stable JSON results, create shareable result URLs, save score-card PNGs, and compare against a local baseline.
@@ -43,9 +43,10 @@ Open the page and let the image settle for a few seconds. Higher rays per pixel 
 
 Useful controls:
 
-- Menu bar: uses File/Edit/View/Create/Scene/Render/Help menus for global commands, creation, scene loading, render controls, panel visibility, benchmark scenes, and export.
+- Menu bar: uses File/Edit/View/Create/Scene/Render/Help menus with nested submenus that mirror the quick-action clusters: quick presets, primitive creation, panel visibility, render controls, benchmark scenes, and export.
 - Top-menu quick actions: mirrors the most-used scene, primitive, panel, benchmark, fullscreen, pause, and export actions with compact buttons, hover labels, and synced pressed states.
-- Floating panels: move, collapse, close, and reopen the scene tree, accordion inspector, and benchmark windows; panel layout is restored in the browser.
+- Floating panels: move, collapse, close, and reopen the scene tree and accordion inspector; panel layout is restored in the browser.
+- Benchmark panel: opens as a regular vertical standing panel with rolling metrics, GPU context, benchmark sequence controls, and result export actions.
 - File menu: saves and loads scene JSON, and exports PNG snapshots.
 - Scene tree: mirrors the active scene, owns the add-item `+` popover for all primitives and visible area lights, exposes settings-panel shortcuts, and stays synced with canvas selection and the selected-object inspector.
 - Object: rename, duplicate, hide/show, lock/unlock, and edit the selected item's position numerically.
@@ -68,12 +69,12 @@ Useful controls:
 - `Frame Blend` and `Denoiser`: smooth temporal noise.
 - `Bloom`, `Glare`, and color controls: tune the final image.
 - `Output`: shows the active renderer backend, separates canvas/stage size, render resolution, and UI canvas size, derives the default 1x render target from the canvas stage aspect, keeps render scale as a slider with separate Fractional HQ and Pixel Perfect modes, keeps exact 256/512/1024 buttons, accepts arbitrary custom width and height values, fits the UI canvas to the render aspect ratio, opens fullscreen, and saves the current canvas as PNG. Applying a render-size change reloads the page so the WebGL target and related framebuffers are recreated cleanly.
-- Fullscreen panels: turn on `Fullscreen Panels` from the View menu or top-menu quick actions before entering fullscreen to keep the menu bar, floating panels, and benchmark visible over the canvas.
+- Fullscreen panels: turn on `Fullscreen Panels` from the View menu or top-menu quick actions before entering fullscreen to keep the menu bar, floating panels, and standing benchmark panel visible over the canvas.
 - Shortcuts: `Ctrl+1` opens the scene-tree add popover, `Ctrl+2` through `Ctrl+6` open the matching inspector accordion sections, `Ctrl+N` starts a new scene, `1`/`2`/`3` apply Draft/Preview/Final quality, `C` toggles camera auto-rotate, `P` pauses frames, `K` pauses rays at convergence, `F` toggles canvas fullscreen, `I` toggles the inspector, `T` toggles the scene tree, `B` toggles benchmark, `L` selects the light, and `Ctrl+S` saves PNG.
 
 Click objects in the canvas to select and move them.
 
-The benchmark score is a 60-second rolling active-rays-per-second score, rounded to reduce jitter. The benchmark source labels the active backend, such as WebGL GPU timer or WebGL frame estimate. The benchmark panel tracks score, active rays/s, estimated ray memory bandwidth, perceptual FPS, render resolution, bounces, accumulated samples, convergence, estimated GPU buffer memory, and scene complexity. It can share the current score as a `#result=` URL, save an 800 x 400 score-card PNG, run the full sequence with configurable warm-up and measurement windows, then show min/max/median/P5/P95 scene summaries, copy stable JSON results, and save a local baseline that flags median-score drops of more than 10 percent on later runs. Shared result URLs hydrate the benchmark summary on page load.
+The benchmark score is a 60-second rolling active-rays-per-second score, rounded to reduce jitter. When the browser uses frame-estimated timing, the score is normalized to a fixed 512 x 512 reference target so changing render resolution does not dominate the score; the raw active rays/s metric still reports the current render target throughput. The benchmark source labels the active backend, such as WebGL GPU timer or WebGL frame estimate. The benchmark panel tracks score, active rays/s, estimated ray memory bandwidth, perceptual FPS, render resolution, bounces, accumulated samples, convergence, estimated GPU buffer memory, and scene complexity. It can share the current score as a `#result=` URL, save an 800 x 400 score-card PNG, run the full sequence with configurable warm-up and measurement windows, then show min/max/median/P5/P95 scene summaries, copy stable JSON results, and save a local baseline that flags median-score drops of more than 10 percent on later runs. Shared result URLs hydrate the benchmark summary on page load.
 
 If startup fails, the loading overlay remains visible and shows the startup error message plus stack/details in a scrollable panel. Use the copy button in that panel when reporting WebGL, shader-compile, or browser-support failures.
 

@@ -16,109 +16,103 @@ import {
 import { MenuGroup } from './MenuGroup.js';
 import { QuickActions } from './QuickActions.js';
 
+const freezeItems = (items) => Object.freeze(items);
+const group = (key, label, items) => Object.freeze({ key, label, items: freezeItems(items) });
+const submenu = (key, label, items) => Object.freeze({ key, label, items: freezeItems(items) });
+
 export const MENU_GROUPS = Object.freeze([
-  {
-    key: 'file',
-    label: 'File',
-    items: Object.freeze([
+  group('file', 'File', [
+    submenu('file-scene', 'Scene File', [
       { key: 'new-scene', label: 'New Scene', action: 'reset-all', shortcut: 'Ctrl+N' },
       { key: 'reset-scene', label: 'Reset Scene', action: 'reset-all' },
-      { key: 'file-output-separator', type: 'separator' },
       { key: 'save-scene-json', label: 'Save Scene JSON', action: 'save-scene-json' },
-      { key: 'load-scene-json', label: 'Load Scene JSON', action: 'load-scene-json' },
-      { key: 'file-scene-json-separator', type: 'separator' },
+      { key: 'load-scene-json', label: 'Load Scene JSON', action: 'load-scene-json' }
+    ]),
+    submenu('file-export', 'Export', [
       { key: 'output-settings', label: 'Output Settings', panelTarget: 'output-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+5' },
       { key: 'save-png', label: 'Save PNG', action: 'save-bitmap', shortcut: 'Ctrl+S' }
     ])
-  },
-  {
-    key: 'edit',
-    label: 'Edit',
-    items: Object.freeze([
+  ]),
+  group('edit', 'Edit', [
+    submenu('edit-history', 'History', [
       { key: 'undo', label: 'Undo', shortcut: 'Ctrl+Z', disabled: true },
       { key: 'redo', label: 'Redo', shortcut: 'Ctrl+Y', disabled: true },
-      { key: 'edit-separator', type: 'separator' },
+      { key: 'duplicate-selected', label: 'Duplicate Selected', shortcut: 'Ctrl+D', disabled: true }
+    ]),
+    submenu('edit-selection', 'Selection', [
       { key: 'select-light', label: 'Select Light', action: 'select-light', shortcut: 'L' },
       { key: 'delete-selection', label: 'Delete Selection', action: 'delete-selection', shortcut: 'Del' },
       { key: 'group-selection', label: 'Group Selected', action: 'group-selection', shortcut: 'Ctrl+G' },
-      { key: 'ungroup-selection', label: 'Ungroup', action: 'ungroup-selection', shortcut: 'Ctrl+Shift+G' },
-      { key: 'duplicate-selected', label: 'Duplicate Selected', shortcut: 'Ctrl+D', disabled: true }
+      { key: 'ungroup-selection', label: 'Ungroup', action: 'ungroup-selection', shortcut: 'Ctrl+Shift+G' }
     ])
-  },
-  {
-    key: 'view',
-    label: 'View',
-    items: Object.freeze([
+  ]),
+  group('view', 'View', [
+    submenu('view-panels', 'Panels', [
       { key: 'inspector', label: 'Inspector', windowTarget: 'controls', shortcut: 'I' },
       { key: 'scene-tree', label: 'Scene Tree', windowTarget: 'scene-tree-window', shortcut: 'T' },
       { key: 'benchmark', label: 'Benchmark', windowTarget: 'benchmark', shortcut: 'B' },
-      { key: 'log-panel', label: 'Log Panel', windowTarget: 'log-panel' },
-      { key: 'view-separator', type: 'separator' },
+      { key: 'log-panel', label: 'Log Panel', windowTarget: 'log-panel' }
+    ]),
+    submenu('view-camera-fullscreen', 'Camera And Fullscreen', [
       { key: 'camera-mode', id: 'camera-mode-toggle', label: 'Camera: Orbit', action: 'toggle-camera-mode', labelDataAttribute: 'camera-mode-label', pressed: false },
       { key: 'camera-auto-rotate', label: 'Camera Auto-Rotate', action: 'toggle-camera-playback', shortcut: 'C', pressed: true },
       { key: 'fullscreen', id: 'canvas-fullscreen', label: 'Fullscreen', action: 'toggle-canvas-fullscreen', shortcut: 'F', labelDataAttribute: 'fullscreen-label', pressed: false },
       { key: 'fullscreen-panels', id: 'fullscreen-panels-toggle', label: 'Fullscreen Panels', action: 'toggle-fullscreen-panels', labelDataAttribute: 'fullscreen-panels-label', pressed: false }
     ])
-  },
-  {
-    key: 'create',
-    label: 'Create',
-    items: Object.freeze([
-      { key: 'core-label', type: 'label', label: 'Core' },
+  ]),
+  group('create', 'Create', [
+    submenu('create-quick', 'Quick Primitives', [
       { key: 'add-sphere', label: 'Sphere', action: 'add-sphere' },
       { key: 'add-cube', label: 'Cube', action: 'add-cube' },
-      { key: 'add-area-light', label: 'Area Light', action: 'add-area-light' },
-      { key: 'curved-separator', type: 'separator' },
-      { key: 'curved-label', type: 'label', label: 'Curved' },
+      { key: 'add-area-light', label: 'Area Light', action: 'add-area-light' }
+    ]),
+    submenu('create-curved', 'Curved', [
       { key: 'add-cylinder', label: 'Cylinder', action: 'add-cylinder' },
       { key: 'add-cone', label: 'Cone', action: 'add-cone' },
       { key: 'add-frustum', label: 'Frustum', action: 'add-frustum' },
       { key: 'add-capsule', label: 'Capsule', action: 'add-capsule' },
       { key: 'add-ellipsoid', label: 'Ellipsoid', action: 'add-ellipsoid' },
       { key: 'add-torus', label: 'Torus', action: 'add-torus' },
-      { key: 'add-rounded-box', label: 'Rounded Box', action: 'add-rounded-box' },
-      { key: 'flat-separator', type: 'separator' },
-      { key: 'flat-label', type: 'label', label: 'Flat' },
+      { key: 'add-rounded-box', label: 'Rounded Box', action: 'add-rounded-box' }
+    ]),
+    submenu('create-flat', 'Flat', [
       { key: 'add-plane', label: 'Plane', action: 'add-plane' },
       { key: 'add-disk', label: 'Disk', action: 'add-disk' },
       { key: 'add-triangle', label: 'Triangle', action: 'add-triangle' },
       { key: 'add-wedge', label: 'Wedge', action: 'add-wedge' },
-      { key: 'add-prism', label: 'Prism', action: 'add-prism' },
-      { key: 'implicit-separator', type: 'separator' },
-      { key: 'implicit-label', type: 'label', label: 'Implicit' },
+      { key: 'add-prism', label: 'Prism', action: 'add-prism' }
+    ]),
+    submenu('create-implicit', 'Implicit And Fractal', [
       { key: 'add-metaballs', label: 'Metaballs', action: 'add-metaballs' },
       { key: 'add-csg-shape', label: 'CSG Shape', action: 'add-csg-shape' },
       { key: 'add-mandelbulb', label: 'Mandelbulb', action: 'add-mandelbulb' },
       { key: 'add-sdf-fractal', label: 'SDF Fractal', action: 'add-sdf-fractal' }
     ])
-  },
-  {
-    key: 'scene',
-    label: 'Scene',
-    items: Object.freeze([
-      { key: 'core-presets-label', type: 'label', label: 'Core presets' },
+  ]),
+  group('scene', 'Scene', [
+    submenu('scene-quick-presets', 'Quick Presets', [
       { key: 'preset-sphere-column', label: 'Sphere Column', preset: 'sphereColumn' },
+      { key: 'preset-shader-showcase', label: 'Shader Showcase', preset: 'shaderShowcase' },
+      { key: 'preset-primitive-showcase', label: 'Primitive Showcase', preset: 'primitiveShowcase' },
+      { key: 'preset-area-light', label: 'Area Light Studio', preset: 'areaLightShowcase' }
+    ]),
+    submenu('scene-core-presets', 'Core Presets', [
       { key: 'preset-sphere-pyramid', label: 'Sphere Pyramid', preset: 'spherePyramid' },
       { key: 'preset-sphere-and-cube', label: 'Sphere and Cube', preset: 'sphereAndCube' },
       { key: 'preset-cube-and-spheres', label: 'Cube and Spheres', preset: 'cubeAndSpheres' },
       { key: 'preset-table-and-chair', label: 'Table and Chair', preset: 'tableAndChair' },
-      { key: 'preset-stacks', label: 'Stacks', preset: 'stacks' },
-      { key: 'shader-presets-separator', type: 'separator' },
-      { key: 'shader-presets-label', type: 'label', label: 'Shader and recursive' },
-      { key: 'preset-shader-showcase', label: 'Shader Showcase', preset: 'shaderShowcase' },
+      { key: 'preset-stacks', label: 'Stacks', preset: 'stacks' }
+    ]),
+    submenu('scene-showcases', 'Showcases', [
       { key: 'preset-recursive-spheres', label: 'Recursive Spheres', preset: 'recursiveSpheres' },
-      { key: 'primitive-presets-separator', type: 'separator' },
-      { key: 'primitive-presets-label', type: 'label', label: 'Primitive and light showcases' },
-      { key: 'preset-primitive-showcase', label: 'Primitive Showcase', preset: 'primitiveShowcase' },
       { key: 'preset-curved-primitives', label: 'Curved Primitives', preset: 'curvedPrimitiveShowcase' },
       { key: 'preset-flat-primitives', label: 'Flat Primitives', preset: 'flatPrimitiveShowcase' },
-      { key: 'preset-implicit-primitives', label: 'Implicit Primitives', preset: 'implicitPrimitiveShowcase' },
-      { key: 'preset-area-light', label: 'Area Light Studio', preset: 'areaLightShowcase' },
-      { key: 'reference-presets-separator', type: 'separator' },
-      { key: 'reference-presets-label', type: 'label', label: 'Reference models' },
-      { key: 'preset-suzanne-reference', label: 'Suzanne Reference Mesh', preset: 'suzanneReference' },
-      { key: 'benchmark-scenes-separator', type: 'separator' },
-      { key: 'benchmark-scenes-label', type: 'label', label: 'Benchmark scenes' },
+      { key: 'preset-implicit-primitives', label: 'Implicit Primitives', preset: 'implicitPrimitiveShowcase' }
+    ]),
+    submenu('scene-reference-models', 'Reference Models', [
+      { key: 'preset-suzanne-reference', label: 'Suzanne Reference Mesh', preset: 'suzanneReference' }
+    ]),
+    submenu('scene-benchmark-scenes', 'Benchmark Scenes', [
       { key: 'benchmark-standard', label: 'Standard Benchmark', benchmarkScene: 'standard', shortcut: 'Fixed' },
       { key: 'benchmark-sponza-atrium', label: 'Sponza Atrium', benchmarkScene: 'benchmarkSponzaAtrium' },
       { key: 'benchmark-shader-gauntlet', label: 'Shader Gauntlet', benchmarkScene: 'benchmarkShaderGauntlet' },
@@ -128,10 +122,10 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'benchmark-caustic-pool', label: 'Caustic Pool', benchmarkScene: 'benchmarkCausticPool' },
       { key: 'benchmark-motion-blur', label: 'Motion Blur Stress', benchmarkScene: 'benchmarkMotionBlurStress' },
       { key: 'benchmark-volumetric-fog', label: 'Volumetric Fog Flythrough', benchmarkScene: 'benchmarkVolumetricFog' },
-      { key: 'scene-disabled-separator', type: 'separator' },
-      { key: 'benchmark-runner', label: 'Run Benchmark Sequence', action: 'run-benchmark-sequence' },
-      { key: 'demo-scenes-separator', type: 'separator' },
-      { key: 'demo-scenes-label', type: 'label', label: 'Demo scenes' },
+      { key: 'benchmark-scenes-separator', type: 'separator' },
+      { key: 'benchmark-runner', label: 'Run Benchmark Sequence', action: 'run-benchmark-sequence' }
+    ]),
+    submenu('scene-demo-scenes', 'Demo Scenes', [
       { key: 'preset-corridor-of-light', label: 'Corridor of Light', preset: 'corridorOfLight' },
       { key: 'preset-corridor-of-light-glass', label: 'Corridor + Glass Sphere', preset: 'corridorOfLightGlassSphere' },
       { key: 'preset-corridor-of-light-mirror', label: 'Corridor + Mirror Cube', preset: 'corridorOfLightMirrorCube' },
@@ -143,40 +137,34 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'preset-material-grid', label: 'Material Grid', preset: 'materialGrid' },
       { key: 'preset-neon-room', label: 'Neon Room', preset: 'neonRoom' }
     ])
-  },
-  {
-    key: 'render',
-    label: 'Render',
-    items: Object.freeze([
+  ]),
+  group('render', 'Render', [
+    submenu('render-playback', 'Playback', [
       { key: 'pause-frames', label: 'Pause Frames', action: 'toggle-frame-pause', shortcut: 'P' },
-      { key: 'pause-rays', label: 'Pause Rays at Converged', action: 'toggle-convergence-pause', shortcut: 'K' },
-      { key: 'render-quality-separator', type: 'separator' },
-      { key: 'quality-label', type: 'label', label: 'Quality' },
+      { key: 'pause-rays', label: 'Pause Rays at Converged', action: 'toggle-convergence-pause', shortcut: 'K' }
+    ]),
+    submenu('render-quality', 'Quality', [
       { key: 'quality-draft', label: 'Draft', qualityPreset: 'draft', shortcut: '1' },
       { key: 'quality-preview', label: 'Preview', qualityPreset: 'preview', shortcut: '2' },
-      { key: 'quality-final', label: 'Final', qualityPreset: 'final', shortcut: '3' },
-      { key: 'render-settings-separator', type: 'separator' },
-      { key: 'debug-label', type: 'label', label: 'Debug views' },
+      { key: 'quality-final', label: 'Final', qualityPreset: 'final', shortcut: '3' }
+    ]),
+    submenu('render-debug-views', 'Debug Views', [
       { key: 'debug-beauty', label: 'Beauty', debugView: 'beauty', pressed: true },
       { key: 'debug-normals', label: 'Normals', debugView: 'normals', pressed: false },
       { key: 'debug-albedo', label: 'Albedo', debugView: 'albedo', pressed: false },
-      { key: 'debug-depth', label: 'Depth', debugView: 'depth', pressed: false },
-      { key: 'debug-settings-separator', type: 'separator' },
-      { key: 'settings-label', type: 'label', label: 'Settings' },
+      { key: 'debug-depth', label: 'Depth', debugView: 'depth', pressed: false }
+    ]),
+    submenu('render-settings', 'Settings Panels', [
       { key: 'render-settings', label: 'Render Settings', panelTarget: 'render-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+3' },
       { key: 'physics-settings', label: 'Physics Settings', panelTarget: 'physics-panel', activationWindowTarget: 'controls' },
       { key: 'camera-settings', label: 'Camera Settings', panelTarget: 'camera-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+4' },
       { key: 'environment-settings', label: 'Environment Settings', panelTarget: 'render-panel', activationWindowTarget: 'controls' },
       { key: 'output-settings', label: 'Resolution / Output', panelTarget: 'output-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+5' }
     ])
-  },
-  {
-    key: 'help',
-    label: 'Help',
-    items: Object.freeze([
-      { key: 'readme', label: 'README', href: 'README.md', target: '_blank', rel: 'noreferrer' }
-    ])
-  }
+  ]),
+  group('help', 'Help', [
+    { key: 'readme', label: 'README', href: 'README.md', target: '_blank', rel: 'noreferrer' }
+  ])
 ]);
 
 const LOCALLY_TOGGLED_ACTIONS = Object.freeze(new Set([

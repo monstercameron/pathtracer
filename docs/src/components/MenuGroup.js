@@ -14,6 +14,11 @@ const renderItemLabel = (item) => (
         : item.label
 );
 
+const renderSubmenuLabel = (item) => html`
+  <span>${item.label}</span>
+  <span className="menu-submenu-arrow" aria-hidden="true"></span>
+`;
+
 const readPressedValue = (item, pressedSignals = {}) => {
   const actionSignal = item.action ? pressedSignals[item.action] : null;
   const windowSignal = item.windowTarget ? pressedSignals[`window:${item.windowTarget}`] : null;
@@ -25,12 +30,30 @@ const readPressedValue = (item, pressedSignals = {}) => {
   return item.pressed === undefined ? undefined : Boolean(item.pressed);
 };
 
-const renderMenuItem = (item, onItemClick, pressedSignals) => {
+const renderMenuItem = (item, onItemClick, pressedSignals, depth = 0) => {
   if (item.type === 'separator') {
     return html`<div key=${item.key} className="menu-separator"></div>`;
   }
   if (item.type === 'label') {
     return html`<div key=${item.key} className="menu-label">${item.label}</div>`;
+  }
+  if (item.items) {
+    return html`
+      <div key=${item.key} className="menu-submenu" data-menu-submenu=${item.key}>
+        <button
+          className="menu-submenu-trigger"
+          type="button"
+          aria-haspopup="menu"
+          aria-label=${item.label}
+          onClick=${(event) => event.stopPropagation()}
+        >
+          ${renderSubmenuLabel(item)}
+        </button>
+        <div className="menu-submenu-popover" role="menu" aria-label=${item.label}>
+          ${item.items.map((childItem) => renderMenuItem(childItem, onItemClick, pressedSignals, depth + 1))}
+        </div>
+      </div>
+    `;
   }
   if (item.href) {
     return html`
@@ -83,7 +106,7 @@ export function MenuGroup({ group, isOpen = false, pressedSignals, onOpen, onClo
   return html`
     <div className=${`menu-group ${isOpen ? 'is-open' : ''}`.trim()}>
       <button className="menu-trigger" type="button" aria-haspopup="true" aria-expanded=${String(isOpen)} onClick=${handleTriggerClick}>
-        ${group.label}
+      ${group.label}
       </button>
       <div className="menu-popover" role="menu">
         ${group.items.map((item) => renderMenuItem(item, handleItemClick, pressedSignals))}

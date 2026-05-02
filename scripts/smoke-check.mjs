@@ -371,6 +371,9 @@ const checkKeyboardShortcutContracts = () => {
   const bundle = readUtf8('webgl-path-tracing.js');
   const html = readUtf8('index.html');
   const reactUiSource = readReactUiSource();
+  const menuBarSource = readUtf8('src', 'components', 'MenuBar.js');
+  const menuGroupSource = readUtf8('src', 'components', 'MenuGroup.js');
+  const appCss = readUtf8('src', 'app.css');
   const readme = readUtf8('README.md');
 
   const ctrlShortcutSelectors = Object.freeze({
@@ -410,10 +413,17 @@ const checkKeyboardShortcutContracts = () => {
   for (const documentedShortcut of ['Ctrl+1', 'Ctrl+2', 'Ctrl+6', 'Ctrl+N', 'Ctrl+S', '`C` toggles', '`P` pauses', '`K` pauses', '`F` toggles', '`I` toggles', '`T` toggles', '`B` toggles', '`L` selects']) {
     assert(`README documents shortcut ${documentedShortcut}`, readme.includes(documentedShortcut));
   }
+
+  assert('main menu renders nested submenu popovers', menuGroupSource.includes('menu-submenu-popover') && menuGroupSource.includes('aria-haspopup="menu"'));
+  assert('main menu has quick-action aligned presets submenu', menuBarSource.includes("submenu('scene-quick-presets'") && menuBarSource.includes('preset-shader-showcase'));
+  assert('main menu nests benchmark scenes', menuBarSource.includes("submenu('scene-benchmark-scenes'") && menuBarSource.includes('benchmarkParticleFluid'));
+  assert('main menu nests panel toggles', menuBarSource.includes("submenu('view-panels'") && menuBarSource.includes("windowTarget: 'benchmark'"));
+  assert('nested submenu CSS exists', appCss.includes('.menu-submenu-popover') && appCss.includes('.menu-submenu:hover > .menu-submenu-popover'));
 };
 
 const checkFloatingWindowContracts = () => {
   const source = readUtf8('src', 'components', 'FloatingWindow.js');
+  const benchmarkSource = readUtf8('src', 'components', 'BenchmarkPanel.js');
   const html = readUtf8('index.html');
   const reactUiSource = readReactUiSource();
   const readme = readUtf8('README.md');
@@ -431,10 +441,20 @@ const checkFloatingWindowContracts = () => {
   assert('floating window close command button', source.includes('data-window-command="close"') && source.includes('setWindowVisible(false)'));
   assert('floating window show clears collapse', source.includes('setCollapsed(false)'));
 
-  for (const windowId of ['scene-tree-window', 'controls', 'benchmark']) {
+  for (const windowId of ['scene-tree-window', 'controls']) {
     assert(`React has floating window ${windowId}`, sourceHasSelector(reactUiSource, `#${windowId}`));
     assert(`HTML tombstones floating window ${windowId}`, html.includes(`react-migrated:${windowId}`));
   }
+  assert('React has standing benchmark panel', sourceHasSelector(reactUiSource, '#benchmark') && benchmarkSource.includes('data-standing-panel'));
+  assert('benchmark panel is not mounted as a floating window', !benchmarkSource.includes('<${FloatingWindow}'));
+  assert(
+    'standing benchmark panel has window controls',
+    benchmarkSource.includes('data-window-command="collapse"') &&
+      benchmarkSource.includes('data-window-command="close"') &&
+      benchmarkSource.includes("setUiWindowVisible('benchmark', false)") &&
+      benchmarkSource.includes('is-collapsed')
+  );
+  assert('HTML tombstones standing benchmark panel', html.includes('react-migrated:benchmark'));
   assert('React has drag handles', source.includes('data-window-drag-handle'));
   assert('React has collapse commands', source.includes('data-window-command="collapse"'));
   assert('React has close commands', source.includes('data-window-command="close"'));
@@ -643,6 +663,23 @@ const checkBenchmarkSignalContracts = () => {
       updateGpuStatusBody.includes('return returnSuccess(gpuInfo);') &&
       !/(?:textContent|classList\.toggle|\.title =)/u.test(updateGpuStatusBody)
   );
+  assert('environment select change rebuilds even after signal sync', (
+    /updateEnvironmentFromSelect\(\) \{[\s\S]*const nextEnvironment = Number\.parseInt\(this\.environmentSelect\.value, 10\);[\s\S]*this\.applicationState\.environment = nextEnvironment;[\s\S]*return this\.syncSceneObjectsToRendererAndPhysics\(\);/u.test(legacyRendererSource) &&
+    !/updateEnvironmentFromSelect\(\) \{[\s\S]*this\.applicationState\.environment === nextEnvironment[\s\S]*return returnSuccess\(undefined\);/u.test(legacyRendererSource)
+  ));
+  assert('benchmark score has a fixed reference render pixel count', (
+    legacyRendererSource.includes('PERFORMANCE_SCORE_REFERENCE_RENDER_PIXELS = DEFAULT_CANVAS_SIZE * DEFAULT_CANVAS_SIZE') &&
+    legacyRendererSource.includes('renderPixelCount: ACTIVE_RAYS_PER_SAMPLE')
+  ));
+  assert('frame-estimated benchmark score is render-resolution normalized', (
+    legacyRendererSource.includes('shouldNormalizePerformanceScoreForRenderResolution') &&
+    legacyRendererSource.includes("measurementSource === 'frame-estimate'") &&
+    legacyRendererSource.includes("measurementSource === 'frame-estimate-pending'") &&
+    legacyRendererSource.includes('activeRaysPerSecond * PERFORMANCE_SCORE_REFERENCE_RENDER_PIXELS / renderPixelCount')
+  ));
+  assert('gpu-timer benchmark score keeps raw ray throughput', (
+    /if \(!shouldNormalizePerformanceScoreForRenderResolution\(benchmarkSnapshot\.measurementSource\)\) \{\s*return activeRaysPerSecond;\s*\}/u.test(legacyRendererSource)
+  ));
   assert('legacy render-loop scheduling routes through bridge', (
     legacyRendererSource.includes('scheduleRenderFrame(application.applicationState, renderFrame, { canvas: application.canvasElement })') &&
     legacyRendererSource.includes('return scheduleRenderFrame(applicationState);') &&

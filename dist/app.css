@@ -80,7 +80,7 @@ body {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  min-width: 210px;
+  min-width: 224px;
   max-height: calc(100vh - 48px);
   box-sizing: border-box;
   padding: 6px;
@@ -101,7 +101,9 @@ body {
 }
 
 .menu-popover button,
-.menu-popover a {
+.menu-popover a,
+.menu-submenu-popover button,
+.menu-submenu-popover a {
   width: 100%;
   min-height: 28px;
   box-sizing: border-box;
@@ -120,14 +122,72 @@ body {
 
 .menu-popover button:hover,
 .menu-popover a:hover,
-.menu-popover button[aria-pressed="true"] {
+.menu-popover button[aria-pressed="true"],
+.menu-submenu-popover button:hover,
+.menu-submenu-popover a:hover,
+.menu-submenu-popover button[aria-pressed="true"],
+.menu-submenu:focus-within > .menu-submenu-trigger,
+.menu-submenu:hover > .menu-submenu-trigger {
   background: #454b53;
 }
 
-.menu-popover button:disabled {
+.menu-popover button:disabled,
+.menu-submenu-popover button:disabled {
   color: #858d98;
   cursor: default;
   background: transparent;
+}
+
+.menu-submenu {
+  position: relative;
+}
+
+.menu-submenu-trigger {
+  font-weight: 800;
+}
+
+.menu-submenu-popover {
+  position: absolute;
+  z-index: 1;
+  top: -6px;
+  left: calc(100% + 6px);
+  min-width: 236px;
+  max-height: min(70vh, 620px);
+  box-sizing: border-box;
+  padding: 6px;
+  display: none;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  overflow-y: auto;
+  color: #f4f5f6;
+  background: rgba(38, 43, 49, 0.99);
+  border: 1px solid #171a1e;
+  border-radius: 6px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.34);
+}
+
+.menu-submenu:hover > .menu-submenu-popover,
+.menu-submenu:focus-within > .menu-submenu-popover {
+  display: grid;
+}
+
+.menu-submenu-arrow {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+}
+
+.menu-submenu-arrow::before {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  content: "";
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
 }
 
 .menu-shortcut {
@@ -504,7 +564,8 @@ canvas:fullscreen {
 }
 
 #app-shell:fullscreen .app-menu,
-#app-shell:fullscreen .floating-window {
+#app-shell:fullscreen .floating-window,
+#app-shell:fullscreen .benchmark-standing-panel {
   z-index: 1000;
 }
 
@@ -1519,27 +1580,89 @@ input[type="color"]::-moz-color-swatch {
 }
 
 .benchmark-panel {
-  left: 18px;
-  bottom: 18px;
-  width: min(1120px, calc(100vw - 390px));
-  min-width: 620px;
-  max-height: min(48vh, 460px);
-  height: auto;
+  position: fixed;
+  z-index: 96;
+  top: 48px;
+  right: 390px;
+  width: 320px;
+  max-width: min(340px, calc(100vw - 36px));
+  height: min(74vh, 680px);
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 0;
   color: #edf1f4;
-  background: #262b31;
-  border: 1px solid #1f2328;
+  background: var(--floating-panel-bg);
+  border: 1px solid #25282d;
   border-radius: 8px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -20px 34px rgba(0, 0, 0, 0.22),
-    0 14px 28px rgba(28, 34, 44, 0.18);
-  resize: horizontal;
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -28px 48px rgba(0, 0, 0, 0.22),
+    inset 0 0 18px rgba(0, 0, 0, 0.22),
+    0 18px 42px rgba(0, 0, 0, 0.34);
 }
 
-.benchmark-panel .floating-window-body {
+.benchmark-panel[hidden] {
+  display: none;
+}
+
+.benchmark-panel.is-collapsed {
+  height: auto;
+}
+
+.benchmark-panel.is-collapsed .benchmark-panel-body {
+  display: none;
+}
+
+.benchmark-titlebar {
+  min-height: 34px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  color: #edf1f4;
+  background:
+    linear-gradient(180deg, rgba(58, 64, 72, 0.98), rgba(35, 39, 45, 0.98));
+  border-bottom: 1px solid rgba(21, 24, 28, 0.82);
+  user-select: none;
+}
+
+.benchmark-titlebar strong {
+  overflow: hidden;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.benchmark-titlebar-end {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.benchmark-titlebar-end .floating-window-actions {
+  flex: 0 0 auto;
+}
+
+.benchmark-titlebar .benchmark-source {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.benchmark-panel-body {
+  min-height: 0;
   padding: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .benchmark-header {
@@ -1560,7 +1683,7 @@ input[type="color"]::-moz-color-swatch {
 
 .benchmark-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -1600,7 +1723,7 @@ input[type="color"]::-moz-color-swatch {
 .benchmark-metric strong {
   overflow: hidden;
   color: #ffffff;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1661,7 +1784,7 @@ input[type="color"]::-moz-color-swatch {
 .benchmark-runner-summary {
   display: grid;
   gap: 6px;
-  max-height: 150px;
+  max-height: 220px;
   overflow: auto;
 }
 
@@ -1762,11 +1885,22 @@ a {
     overflow-y: auto;
   }
 
+  .menu-submenu-popover {
+    position: static;
+    min-width: 0;
+    max-height: none;
+    margin: 2px 0 4px 10px;
+    box-shadow: none;
+  }
+
+  .menu-submenu-arrow::before {
+    transform: rotate(45deg);
+  }
+
   .floating-window,
   #controls,
   #scene-tree-window,
-  #log-panel,
-  .benchmark-panel {
+  #log-panel {
     left: 12px;
     right: auto;
     width: calc(100vw - 24px);
@@ -1785,8 +1919,13 @@ a {
   }
 
   .benchmark-panel {
+    top: auto;
+    right: auto;
     bottom: 12px;
-    max-height: 50vh;
+    left: 12px;
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    height: min(46vh, 420px);
   }
 
   .benchmark-grid {
