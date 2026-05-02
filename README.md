@@ -26,7 +26,7 @@ You can:
 - Rename, duplicate, hide, lock, and position selected scene items from the inspector.
 - Switch between orbit camera and FPS camera modes.
 - Change render scale or exact render dimensions, keep the visible canvas fitted to the page, use canvas-only or panel-preserving fullscreen, and export a clean PNG without the editor selection outline.
-- Move, collapse, close, and reopen the floating inspector and scene tree; toggle the standing benchmark panel.
+- Move, collapse, close, and reopen the floating inspector, scene tree, and standing benchmark panel.
 - Toggle camera rotation.
 - Load preset, demo, and benchmark scenes.
 - Review rolling benchmark metrics, copy stable JSON results, create shareable result URLs, save score-card PNGs, and compare against a local baseline.
@@ -45,7 +45,7 @@ Useful controls:
 
 - Menu bar: uses File/Edit/View/Create/Scene/Render/Help menus with nested submenus that mirror the quick-action clusters: quick presets, primitive creation, panel visibility, render controls, benchmark scenes, and export.
 - Top-menu quick actions: mirrors the most-used scene, primitive, panel, benchmark, fullscreen, pause, and export actions with compact buttons, hover labels, and synced pressed states.
-- Floating panels: move, collapse, close, and reopen the scene tree and accordion inspector; panel layout is restored in the browser.
+- Floating panels: move, collapse, close, and reopen the scene tree, accordion inspector, and standing benchmark panel; panel layout is restored in the browser.
 - Benchmark panel: opens as a regular vertical standing panel with rolling metrics, GPU context, benchmark sequence controls, and result export actions.
 - File menu: saves and loads scene JSON, and exports PNG snapshots.
 - Scene tree: mirrors the active scene, owns the add-item `+` popover for all primitives and visible area lights, exposes settings-panel shortcuts, and stays synced with canvas selection and the selected-object inspector.

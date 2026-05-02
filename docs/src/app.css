@@ -1627,6 +1627,8 @@ input[type="color"]::-moz-color-swatch {
   background:
     linear-gradient(180deg, rgba(58, 64, 72, 0.98), rgba(35, 39, 45, 0.98));
   border-bottom: 1px solid rgba(21, 24, 28, 0.82);
+  cursor: move;
+  touch-action: none;
   user-select: none;
 }
 

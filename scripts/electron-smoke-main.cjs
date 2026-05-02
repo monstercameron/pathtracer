@@ -450,12 +450,14 @@ const menuDropdownSmokeScript = `(async () => {
 const benchmarkPanelControlsScript = `(async () => {
   const panel = document.getElementById('benchmark');
   const panelBody = panel && panel.querySelector('.benchmark-panel-body');
+  const dragHandle = panel && panel.querySelector('[data-window-drag-handle]');
   const collapseButton = panel && panel.querySelector('button[data-window-command="collapse"]');
   const closeButton = panel && panel.querySelector('button[data-window-command="close"]');
   const showButton = document.querySelector('button[data-window-target="benchmark"]');
   if (
     !(panel instanceof HTMLElement) ||
     !(panelBody instanceof HTMLElement) ||
+    !(dragHandle instanceof HTMLElement) ||
     !(collapseButton instanceof HTMLButtonElement) ||
     !(closeButton instanceof HTMLButtonElement) ||
     !(showButton instanceof HTMLButtonElement)
@@ -467,6 +469,49 @@ const benchmarkPanelControlsScript = `(async () => {
     showButton.click();
   }
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+  const beforeDrag = panel.getBoundingClientRect();
+  const startX = beforeDrag.left + Math.min(80, Math.max(20, beforeDrag.width / 3));
+  const startY = beforeDrag.top + 14;
+  const originalSetPointerCapture = dragHandle.setPointerCapture;
+  dragHandle.setPointerCapture = () => undefined;
+  try {
+    dragHandle.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 88,
+      pointerType: 'mouse',
+      button: 0,
+      buttons: 1,
+      clientX: startX,
+      clientY: startY
+    }));
+    dragHandle.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 88,
+      pointerType: 'mouse',
+      button: 0,
+      buttons: 1,
+      clientX: startX + 64,
+      clientY: startY + 38
+    }));
+    dragHandle.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 88,
+      pointerType: 'mouse',
+      button: 0,
+      buttons: 0,
+      clientX: startX + 64,
+      clientY: startY + 38
+    }));
+  } finally {
+    dragHandle.setPointerCapture = originalSetPointerCapture;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const afterDrag = panel.getBoundingClientRect();
+  const moved = Math.abs(afterDrag.left - beforeDrag.left) >= 20 || Math.abs(afterDrag.top - beforeDrag.top) >= 20;
 
   collapseButton.click();
   await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -491,7 +536,8 @@ const benchmarkPanelControlsScript = `(async () => {
   const shown = !panel.hidden && !panel.classList.contains('is-collapsed');
 
   return {
-    ok: collapsed && expanded && hidden && shown,
+    ok: moved && collapsed && expanded && hidden && shown,
+    moved,
     collapsed,
     expanded,
     hidden,
@@ -955,7 +1001,7 @@ const runMenuDropdownSmoke = async (window) => {
 const runBenchmarkPanelControlsSmoke = async (window) => {
   const panelControlsResult = await executeJavaScript(window.webContents, benchmarkPanelControlsScript);
   assert(
-    'benchmark standing panel collapse and close controls work',
+    'benchmark standing panel drag, collapse, and close controls work',
     panelControlsResult && panelControlsResult.ok,
     JSON.stringify(panelControlsResult)
   );
@@ -1116,6 +1162,15 @@ const runSmoke = async () => {
   });
   if (suzannePresetWindow) {
     suzannePresetWindow.destroy();
+  }
+
+  const materialGridPresetWindow = await loadSmokePage({
+    label: 'electron-root-material-grid',
+    filePath: path.join(repoRoot, 'index.html'),
+    query: { preset: 'materialGrid' }
+  });
+  if (materialGridPresetWindow) {
+    materialGridPresetWindow.destroy();
   }
 
   const staticRequestStart = staticServerRequests.length;

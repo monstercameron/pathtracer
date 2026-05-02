@@ -1,5 +1,5 @@
 import { html } from 'htm/preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { uiLogger } from '../logger.js';
 import {
   formattedBounces,
@@ -20,6 +20,68 @@ import {
   formattedSceneComplexityTitle
 } from '../benchmarkStore.js';
 import { setUiWindowVisible, uiWindowVisibilitySignals } from '../store.js';
+import { FLOATING_WINDOW_STORAGE_KEY } from './FloatingWindow.js';
+
+const MIN_VISIBLE_SIZE = 80;
+const VIEWPORT_PADDING = 8;
+
+const toCssSize = (value) => (typeof value === 'number' ? `${value}px` : value);
+
+const readTopViewportBoundary = () => {
+  const documentObject = globalThis.document;
+  const menuElement = documentObject && documentObject.getElementById('app-menu');
+  if (!menuElement || typeof menuElement.getBoundingClientRect !== 'function') {
+    return VIEWPORT_PADDING;
+  }
+
+  const menuRectangle = menuElement.getBoundingClientRect();
+  return Math.max(VIEWPORT_PADDING, Math.ceil(menuRectangle.bottom + VIEWPORT_PADDING));
+};
+
+const clampToViewport = (value, maxValue, minValue = VIEWPORT_PADDING) => Math.min(
+  Math.max(value, minValue),
+  Math.max(minValue, maxValue - MIN_VISIBLE_SIZE)
+);
+
+const readStoredBenchmarkState = () => {
+  try {
+    if (!globalThis.localStorage) {
+      return {};
+    }
+    const states = JSON.parse(globalThis.localStorage.getItem(FLOATING_WINDOW_STORAGE_KEY) || '{}') || {};
+    return states.benchmark || {};
+  } catch (error) {
+    uiLogger.warn('ui:benchmark-panel-storage-read-failed', { storageKey: FLOATING_WINDOW_STORAGE_KEY, error });
+    return {};
+  }
+};
+
+const writeStoredBenchmarkState = (state) => {
+  try {
+    if (!globalThis.localStorage) {
+      return;
+    }
+    const states = JSON.parse(globalThis.localStorage.getItem(FLOATING_WINDOW_STORAGE_KEY) || '{}') || {};
+    states.benchmark = state;
+    globalThis.localStorage.setItem(FLOATING_WINDOW_STORAGE_KEY, JSON.stringify(states));
+  } catch (error) {
+    uiLogger.warn('ui:benchmark-panel-storage-write-failed', { storageKey: FLOATING_WINDOW_STORAGE_KEY, error });
+  }
+};
+
+const readInitialBenchmarkPosition = () => {
+  const storedState = readStoredBenchmarkState();
+  if (!Number.isFinite(storedState.left) || !Number.isFinite(storedState.top)) {
+    return null;
+  }
+
+  return {
+    left: clampToViewport(storedState.left, globalThis.innerWidth || 0),
+    top: clampToViewport(storedState.top, globalThis.innerHeight || 0, readTopViewportBoundary()),
+    right: 'auto',
+    bottom: 'auto'
+  };
+};
 
 const METRICS = Object.freeze([
   {
@@ -92,7 +154,10 @@ export function BenchmarkPanel({
   id = 'benchmark'
 }) {
   const isVisible = uiWindowVisibilitySignals.benchmark.value;
+  const panelRef = useRef(null);
+  const dragStateRef = useRef(null);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [position, setPosition] = useState(readInitialBenchmarkPosition);
 
   useEffect(() => {
     uiLogger.info('ui:panel-init', { panelId: id, panelName: 'BenchmarkPanel', metricCount: METRICS.length });
@@ -103,6 +168,131 @@ export function BenchmarkPanel({
       setIsCollapsed(false);
     }
   }, [isVisible]);
+
+  const persistBenchmarkState = useCallback((overrides = {}) => {
+    const panelElement = panelRef.current;
+    const rectangle = panelElement && typeof panelElement.getBoundingClientRect === 'function'
+      ? panelElement.getBoundingClientRect()
+      : null;
+    writeStoredBenchmarkState({
+      left: rectangle ? Math.round(rectangle.left) : position?.left,
+      top: rectangle ? Math.round(rectangle.top) : position?.top,
+      width: rectangle ? Math.round(rectangle.width) : undefined,
+      height: rectangle ? Math.round(rectangle.height) : undefined,
+      hidden: !isVisible,
+      collapsed: isCollapsed,
+      ...overrides
+    });
+  }, [isCollapsed, isVisible, position]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition((currentPosition) => {
+        if (!currentPosition) {
+          return currentPosition;
+        }
+        return {
+          ...currentPosition,
+          left: clampToViewport(currentPosition.left, globalThis.innerWidth || 0),
+          top: clampToViewport(currentPosition.top, globalThis.innerHeight || 0, readTopViewportBoundary())
+        };
+      });
+    };
+    globalThis.addEventListener?.('resize', handleResize);
+    return () => globalThis.removeEventListener?.('resize', handleResize);
+  }, []);
+
+  const handlePointerDown = useCallback((event) => {
+    if (event.button !== 0 || !(event.target instanceof Element)) {
+      return;
+    }
+    if (event.target.closest('button, input, select, textarea, a')) {
+      return;
+    }
+    if (!panelRef.current) {
+      return;
+    }
+
+    const rectangle = panelRef.current.getBoundingClientRect();
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      pointerOffsetX: event.clientX - rectangle.left,
+      pointerOffsetY: event.clientY - rectangle.top
+    };
+    panelRef.current.style.left = `${rectangle.left}px`;
+    panelRef.current.style.top = `${rectangle.top}px`;
+    panelRef.current.style.right = 'auto';
+    panelRef.current.style.bottom = 'auto';
+    panelRef.current.style.zIndex = '130';
+    uiLogger.debug('ui:benchmark-panel-drag-start', {
+      left: Math.round(rectangle.left),
+      top: Math.round(rectangle.top)
+    });
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch (error) {
+        uiLogger.warn('ui:benchmark-panel-pointer-capture-failed', { error });
+      }
+    }
+    event.preventDefault();
+  }, []);
+
+  const handlePointerMove = useCallback((event) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || !panelRef.current) {
+      return;
+    }
+
+    const nextLeft = clampToViewport(event.clientX - dragState.pointerOffsetX, globalThis.innerWidth || 0);
+    const nextTop = clampToViewport(
+      event.clientY - dragState.pointerOffsetY,
+      globalThis.innerHeight || 0,
+      readTopViewportBoundary()
+    );
+    panelRef.current.style.left = `${nextLeft}px`;
+    panelRef.current.style.top = `${nextTop}px`;
+    panelRef.current.style.right = 'auto';
+    panelRef.current.style.bottom = 'auto';
+    event.preventDefault();
+  }, []);
+
+  const handlePointerUp = useCallback((event) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || !panelRef.current) {
+      return;
+    }
+
+    const rectangle = panelRef.current.getBoundingClientRect();
+    const nextPosition = {
+      left: Math.round(rectangle.left),
+      top: Math.round(rectangle.top),
+      right: 'auto',
+      bottom: 'auto'
+    };
+    dragStateRef.current = null;
+    setPosition(nextPosition);
+    writeStoredBenchmarkState({
+      ...nextPosition,
+      width: Math.round(rectangle.width),
+      height: Math.round(rectangle.height),
+      hidden: !isVisible,
+      collapsed: isCollapsed
+    });
+    uiLogger.debug('ui:benchmark-panel-drag-end', {
+      left: nextPosition.left,
+      top: nextPosition.top,
+      width: Math.round(rectangle.width),
+      height: Math.round(rectangle.height)
+    });
+    if (typeof event.currentTarget.releasePointerCapture === 'function') {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch (error) {
+        uiLogger.warn('ui:benchmark-panel-pointer-release-failed', { error });
+      }
+    }
+  }, [isCollapsed, isVisible]);
 
   const handleToggleCollapse = (event) => {
     event.preventDefault();
@@ -118,20 +308,37 @@ export function BenchmarkPanel({
     event.preventDefault();
     event.stopPropagation();
     uiLogger.info('ui:benchmark-panel-close');
+    persistBenchmarkState({ hidden: true });
     setUiWindowVisible('benchmark', false);
   };
+
+  const style = position ? {
+    left: toCssSize(position.left),
+    top: toCssSize(position.top),
+    right: toCssSize(position.right),
+    bottom: toCssSize(position.bottom)
+  } : undefined;
 
   return html`
     <section
       id=${id}
+      ref=${panelRef}
       className=${`benchmark-panel benchmark-standing-panel ${isCollapsed ? 'is-collapsed' : ''}`.trim()}
       data-standing-panel
       data-window-key="benchmark"
       hidden=${!isVisible}
+      style=${style}
       aria-label="Benchmark"
       role="region"
     >
-      <header className="benchmark-titlebar">
+      <header
+        className="benchmark-titlebar"
+        data-window-drag-handle
+        onPointerDown=${handlePointerDown}
+        onPointerMove=${handlePointerMove}
+        onPointerUp=${handlePointerUp}
+        onPointerCancel=${handlePointerUp}
+      >
         <strong>Benchmark</strong>
         <div className="benchmark-titlebar-end">
           <span id="benchmark-source" className="benchmark-source">${formattedMeasurementSource.value}</span>

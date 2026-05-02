@@ -160,7 +160,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Wire light bounce count (applicationState.lightBounceCount) into a static benchmark context tile
 - [x] Move GPU renderer string from the scene panel into the benchmark panel as a full-width label row
 - [x] Keep perceptual FPS and ray memory bandwidth tiles as high-value persistent metrics
-- [x] Convert the benchmark view into a regular vertical standing panel with collapse/close controls so benchmark metrics stay visible without overlapping draggable editor windows
+- [x] Convert the benchmark view into a movable regular vertical standing panel with collapse/close controls so benchmark metrics stay visible without overlapping draggable editor windows
 - [x] Clarify and enforce three distinct pause modes so they do not interfere with each other
 - [x] Pause camera: stops automatic camera rotation only, the world and physics still update and rays keep accumulating
 - [x] Pause frames: stops the world simulation and physics entirely, no transforms or animations update, but the camera can still be moved freely
