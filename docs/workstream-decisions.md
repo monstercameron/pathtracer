@@ -35,6 +35,12 @@ Emission is now a per-object material modifier instead of only an `EMISSIVE` mat
 
 Tri-planar projection remains blocked on renderer-side material texture bindings. The importer can describe texture assets, but the WebGL hit shader does not yet bind per-material albedo samplers, so adding projection math now would not affect rendered materials.
 
+## Particle Fluid Benchmark
+
+The particle fluid benchmark uses only current primitives and Rapier rigid bodies: subsurface sphere particles are connected with Rapier spring impulse joints, and the glass rounded-box container gets an approximate static cuboid collider. This keeps the scene mesh-free and repeatable while still exercising physics transform invalidation, transparent/subsurface shading, and benchmark runner sequencing.
+
+The fallback benchmark panel owns the initial hot-reload controls for particle count, radius, and spring stiffness. These controls update application state and reload only `benchmarkParticleFluid`; they should move into the React benchmark panel when the React shell becomes the active entrypoint.
+
 ## Canvas Export
 
 `preserveDrawingBuffer` remains enabled for now because PNG export reads the live canvas. Export now renders one clean frame without the selection outline before calling `toBlob`, but disabling `preserveDrawingBuffer` should wait until export renders into a dedicated offscreen target or performs an explicit final readback.
