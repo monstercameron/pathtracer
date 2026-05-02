@@ -105,9 +105,300 @@ const normalizeNumberVector = (value, fallbackValue) => {
   )));
 };
 
+export const TRANSFORM_ANIMATION_COMPONENT_TYPE = 'procedural-transform-animation';
+export const TRANSFORM_ANIMATION_TYPES = Object.freeze({
+  SPIN: 'spin',
+  BOB: 'bob',
+  PULSE: 'pulse',
+  ORBIT: 'orbit',
+  WOBBLE: 'wobble'
+});
+export const TRANSFORM_ANIMATION_TYPE_OPTIONS = Object.freeze([
+  Object.freeze({ value: TRANSFORM_ANIMATION_TYPES.SPIN, label: 'Spin' }),
+  Object.freeze({ value: TRANSFORM_ANIMATION_TYPES.BOB, label: 'Bob' }),
+  Object.freeze({ value: TRANSFORM_ANIMATION_TYPES.PULSE, label: 'Pulse' }),
+  Object.freeze({ value: TRANSFORM_ANIMATION_TYPES.ORBIT, label: 'Orbit' }),
+  Object.freeze({ value: TRANSFORM_ANIMATION_TYPES.WOBBLE, label: 'Wobble' })
+]);
+
+const TRANSFORM_ANIMATION_LABELS = Object.freeze(new Map(
+  TRANSFORM_ANIMATION_TYPE_OPTIONS.map((option) => [option.value, option.label])
+));
+const TRANSFORM_ANIMATION_DEFAULT_CONFIGS = Object.freeze({
+  [TRANSFORM_ANIMATION_TYPES.SPIN]: Object.freeze({
+    speedDegreesPerSecond: 45,
+    phaseDegrees: 0
+  }),
+  [TRANSFORM_ANIMATION_TYPES.BOB]: Object.freeze({
+    amplitude: 0.12,
+    frequencyHertz: 1,
+    phaseDegrees: 0
+  }),
+  [TRANSFORM_ANIMATION_TYPES.PULSE]: Object.freeze({
+    amplitude: 0.12,
+    frequencyHertz: 1,
+    phaseDegrees: 0
+  }),
+  [TRANSFORM_ANIMATION_TYPES.ORBIT]: Object.freeze({
+    center: Object.freeze([0, 0, 0]),
+    radius: 1,
+    speedDegreesPerSecond: 30,
+    phaseDegrees: 0
+  }),
+  [TRANSFORM_ANIMATION_TYPES.WOBBLE]: Object.freeze({
+    amplitudeDegrees: 4,
+    frequencyHertz: 8,
+    seed: 1
+  })
+});
+
+const TRANSFORM_ANIMATION_TYPE_SET = Object.freeze(new Set(Object.values(TRANSFORM_ANIMATION_TYPES)));
+const TRANSFORM_ANIMATION_FULL_TURN_DEGREES = 360;
+
+const normalizeNonNegativeNumber = (value, fallbackValue = 0) => (
+  Math.max(0, normalizeFiniteNumber(value, fallbackValue))
+);
+
+const normalizeTransformAnimationType = (value, fallbackType = TRANSFORM_ANIMATION_TYPES.SPIN) => {
+  const normalizedType = String(value ?? '').trim().toLowerCase();
+  return TRANSFORM_ANIMATION_TYPE_SET.has(normalizedType) ? normalizedType : fallbackType;
+};
+
+const readTransformAnimationLabel = (type) => (
+  TRANSFORM_ANIMATION_LABELS.get(type) ?? TRANSFORM_ANIMATION_LABELS.get(TRANSFORM_ANIMATION_TYPES.SPIN)
+);
+
+const readTransformAnimationFrequency = (source, fallbackValue) => (
+  normalizeNonNegativeNumber(source.frequencyHertz ?? source.frequency ?? source.cyclesPerSecond, fallbackValue)
+);
+
+const readTransformAnimationSpeed = (source, fallbackValue) => (
+  normalizeFiniteNumber(source.speedDegreesPerSecond ?? source.speed ?? source.degreesPerSecond, fallbackValue)
+);
+
+const readTransformAnimationPhase = (source, fallbackValue) => (
+  normalizeFiniteNumber(source.phaseDegrees ?? source.phase ?? source.offsetDegrees, fallbackValue)
+);
+
+const normalizeTransformAnimationConfig = (type, config = {}) => {
+  const source = config && typeof config === 'object' ? config : {};
+  const defaultConfig = TRANSFORM_ANIMATION_DEFAULT_CONFIGS[type] ?? TRANSFORM_ANIMATION_DEFAULT_CONFIGS[TRANSFORM_ANIMATION_TYPES.SPIN];
+
+  if (type === TRANSFORM_ANIMATION_TYPES.BOB) {
+    return Object.freeze({
+      amplitude: normalizeNonNegativeNumber(source.amplitude ?? source.height, defaultConfig.amplitude),
+      frequencyHertz: readTransformAnimationFrequency(source, defaultConfig.frequencyHertz),
+      phaseDegrees: readTransformAnimationPhase(source, defaultConfig.phaseDegrees)
+    });
+  }
+
+  if (type === TRANSFORM_ANIMATION_TYPES.PULSE) {
+    return Object.freeze({
+      amplitude: Math.min(normalizeNonNegativeNumber(source.amplitude ?? source.scaleAmplitude, defaultConfig.amplitude), 0.95),
+      frequencyHertz: readTransformAnimationFrequency(source, defaultConfig.frequencyHertz),
+      phaseDegrees: readTransformAnimationPhase(source, defaultConfig.phaseDegrees)
+    });
+  }
+
+  if (type === TRANSFORM_ANIMATION_TYPES.ORBIT) {
+    return Object.freeze({
+      center: normalizeNumberVector(source.center ?? source.centerPosition ?? source.origin, defaultConfig.center),
+      radius: normalizeNonNegativeNumber(source.radius, defaultConfig.radius),
+      speedDegreesPerSecond: readTransformAnimationSpeed(source, defaultConfig.speedDegreesPerSecond),
+      phaseDegrees: readTransformAnimationPhase(source, defaultConfig.phaseDegrees)
+    });
+  }
+
+  if (type === TRANSFORM_ANIMATION_TYPES.WOBBLE) {
+    return Object.freeze({
+      amplitudeDegrees: normalizeNonNegativeNumber(source.amplitudeDegrees ?? source.amplitude, defaultConfig.amplitudeDegrees),
+      frequencyHertz: readTransformAnimationFrequency(source, defaultConfig.frequencyHertz),
+      seed: normalizeFiniteNumber(source.seed, defaultConfig.seed)
+    });
+  }
+
+  return Object.freeze({
+    speedDegreesPerSecond: readTransformAnimationSpeed(source, defaultConfig.speedDegreesPerSecond),
+    phaseDegrees: readTransformAnimationPhase(source, defaultConfig.phaseDegrees)
+  });
+};
+
+const formatTransformAnimationNumber = (value) => {
+  const normalizedValue = normalizeFiniteNumber(value, 0);
+  return Number.isInteger(normalizedValue) ? String(normalizedValue) : normalizedValue.toFixed(2).replace(/\.?0+$/u, '');
+};
+
+export const formatTransformAnimationConfigSummary = (component) => {
+  if (!component || typeof component !== 'object') {
+    return '';
+  }
+  const type = normalizeTransformAnimationType(component.animationType ?? component.type);
+  const config = normalizeTransformAnimationConfig(type, component.config);
+
+  if (type === TRANSFORM_ANIMATION_TYPES.BOB) {
+    return `${formatTransformAnimationNumber(config.amplitude)}u at ${formatTransformAnimationNumber(config.frequencyHertz)} Hz`;
+  }
+  if (type === TRANSFORM_ANIMATION_TYPES.PULSE) {
+    return `${formatTransformAnimationNumber(config.amplitude * 100)}% at ${formatTransformAnimationNumber(config.frequencyHertz)} Hz`;
+  }
+  if (type === TRANSFORM_ANIMATION_TYPES.ORBIT) {
+    return `r ${formatTransformAnimationNumber(config.radius)}, ${formatTransformAnimationNumber(config.speedDegreesPerSecond)} deg/s`;
+  }
+  if (type === TRANSFORM_ANIMATION_TYPES.WOBBLE) {
+    return `${formatTransformAnimationNumber(config.amplitudeDegrees)} deg at ${formatTransformAnimationNumber(config.frequencyHertz)} Hz`;
+  }
+  return `${formatTransformAnimationNumber(config.speedDegreesPerSecond)} deg/s`;
+};
+
+export class TransformAnimationComponent {
+  constructor(options = {}) {
+    const type = normalizeTransformAnimationType(options.animationType ?? options.type ?? options.kind);
+    const config = normalizeTransformAnimationConfig(type, options.config ?? options);
+    const label = normalizeOptionalText(options.label ?? options.name) ?? readTransformAnimationLabel(type);
+    this.id = normalizeOptionalText(options.id) ?? `transform-${type}`;
+    this.componentType = TRANSFORM_ANIMATION_COMPONENT_TYPE;
+    this.kind = 'animation';
+    this.type = type;
+    this.animationType = type;
+    this.label = label;
+    this.name = label;
+    this.enabled = options.enabled !== false;
+    this.config = config;
+    this.summary = `${this.enabled ? 'On' : 'Off'}: ${formatTransformAnimationConfigSummary({ type, config })}`;
+  }
+}
+
+const normalizeTransformAnimationComponent = (component, index = 0) => {
+  const source = component && typeof component === 'object' ? component : {};
+  const type = normalizeTransformAnimationType(source.animationType ?? source.type ?? source.kind);
+  const id = normalizeOptionalText(source.id) ?? `transform-${type}-${index + 1}`;
+  return Object.freeze(new TransformAnimationComponent({
+    ...source,
+    id,
+    type,
+    config: source.config ?? source.parameters ?? source.settings ?? source,
+    enabled: source.enabled !== false
+  }));
+};
+
+export const normalizeTransformAnimationComponents = (value) => {
+  const sourceComponents = Array.isArray(value)
+    ? value
+    : (value && typeof value === 'object' ? [value] : []);
+  return Object.freeze(sourceComponents.map((component, index) => normalizeTransformAnimationComponent(component, index)));
+};
+
+export const readSceneItemTransformAnimations = (item) => {
+  if (!item || typeof item !== 'object') {
+    return Object.freeze([]);
+  }
+
+  const animationSources = [
+    item.transformAnimations,
+    item.proceduralTransformAnimations,
+    item.components?.transformAnimations,
+    item.components?.proceduralTransformAnimations,
+    item.animationComponent?.componentType === TRANSFORM_ANIMATION_COMPONENT_TYPE ? item.animationComponent : null,
+    item.components?.animation?.componentType === TRANSFORM_ANIMATION_COMPONENT_TYPE ? item.components.animation : null
+  ];
+
+  for (const animationSource of animationSources) {
+    const animations = normalizeTransformAnimationComponents(animationSource);
+    if (animations.length > 0) {
+      return animations;
+    }
+  }
+  return Object.freeze([]);
+};
+
 const readSceneItemPosition = (item) => {
   const position = item && (item.centerPosition ?? item.position ?? item.translation);
   return Array.isArray(position) || ArrayBuffer.isView(position) ? Array.from(position) : null;
+};
+
+const readSceneItemAuthoredPosition = (item) => normalizeNumberVector(readSceneItemPosition(item), DEFAULT_GROUP_POSITION);
+
+const readSceneItemAuthoredRotationDegrees = (item) => normalizeNumberVector(
+  item && (item.rotationEulerDegrees ?? item.rotationEuler ?? item.rotation),
+  DEFAULT_GROUP_ROTATION
+);
+
+const readSceneItemAuthoredScale = (item) => {
+  const scale = item && (item.scale ?? item.uniformScale);
+  if (typeof scale === 'number') {
+    return Object.freeze([scale, scale, scale].map((value) => normalizeFiniteNumber(value, 1)));
+  }
+  return normalizeNumberVector(scale, DEFAULT_GROUP_SCALE);
+};
+
+export const readSceneItemAuthoredTransform = (item) => Object.freeze({
+  position: readSceneItemAuthoredPosition(item),
+  rotationEulerDegrees: readSceneItemAuthoredRotationDegrees(item),
+  scale: readSceneItemAuthoredScale(item)
+});
+
+const readAnimationElapsedSeconds = (elapsedSeconds) => normalizeFiniteNumber(elapsedSeconds, 0);
+const degreesToRadians = (degrees) => degrees * (Math.PI / 180);
+const readCycleAngleRadians = (frequencyHertz, elapsedSeconds, phaseDegrees = 0) => (
+  (Math.PI * 2 * frequencyHertz * elapsedSeconds) + degreesToRadians(phaseDegrees)
+);
+
+const freezeTransformVector = (value) => Object.freeze(value.map((entry) => normalizeFiniteNumber(entry, 0)));
+
+export const evaluateSceneItemTransformAnimations = (
+  item,
+  elapsedSeconds = 0,
+  authoredTransform = readSceneItemAuthoredTransform(item)
+) => {
+  const seconds = readAnimationElapsedSeconds(elapsedSeconds);
+  const basePosition = normalizeNumberVector(authoredTransform.position, DEFAULT_GROUP_POSITION);
+  const baseRotation = normalizeNumberVector(authoredTransform.rotationEulerDegrees, DEFAULT_GROUP_ROTATION);
+  const baseScale = normalizeNumberVector(authoredTransform.scale, DEFAULT_GROUP_SCALE);
+  const position = Array.from(basePosition);
+  const rotationEulerDegrees = Array.from(baseRotation);
+  const scale = Array.from(baseScale);
+  const appliedAnimationIds = [];
+
+  for (const component of readSceneItemTransformAnimations(item)) {
+    if (!component.enabled) {
+      continue;
+    }
+
+    const type = normalizeTransformAnimationType(component.animationType ?? component.type);
+    const config = normalizeTransformAnimationConfig(type, component.config);
+    appliedAnimationIds.push(component.id);
+
+    if (type === TRANSFORM_ANIMATION_TYPES.BOB) {
+      const angle = readCycleAngleRadians(config.frequencyHertz, seconds, config.phaseDegrees);
+      position[1] += Math.sin(angle) * config.amplitude;
+    } else if (type === TRANSFORM_ANIMATION_TYPES.PULSE) {
+      const angle = readCycleAngleRadians(config.frequencyHertz, seconds, config.phaseDegrees);
+      const multiplier = Math.max(0.05, 1 + (Math.sin(angle) * config.amplitude));
+      scale[0] *= multiplier;
+      scale[1] *= multiplier;
+      scale[2] *= multiplier;
+    } else if (type === TRANSFORM_ANIMATION_TYPES.ORBIT) {
+      const orbitAngle = degreesToRadians((config.speedDegreesPerSecond * seconds) + config.phaseDegrees);
+      const currentYDelta = position[1] - basePosition[1];
+      position[0] = config.center[0] + Math.cos(orbitAngle) * config.radius;
+      position[1] = config.center[1] + currentYDelta;
+      position[2] = config.center[2] + Math.sin(orbitAngle) * config.radius;
+    } else if (type === TRANSFORM_ANIMATION_TYPES.WOBBLE) {
+      const wobbleAngle = readCycleAngleRadians(config.frequencyHertz, seconds, config.seed * TRANSFORM_ANIMATION_FULL_TURN_DEGREES);
+      rotationEulerDegrees[0] += Math.sin(wobbleAngle + config.seed * 12.9898) * config.amplitudeDegrees;
+      rotationEulerDegrees[1] += Math.sin(wobbleAngle * 0.73 + config.seed * 37.719) * config.amplitudeDegrees * 0.35;
+      rotationEulerDegrees[2] += Math.sin(wobbleAngle * 1.37 + config.seed * 78.233) * config.amplitudeDegrees;
+    } else {
+      rotationEulerDegrees[1] += (config.speedDegreesPerSecond * seconds) + config.phaseDegrees;
+    }
+  }
+
+  return Object.freeze({
+    position: freezeTransformVector(position),
+    rotationEulerDegrees: freezeTransformVector(rotationEulerDegrees),
+    scale: freezeTransformVector(scale),
+    appliedAnimationIds: Object.freeze(appliedAnimationIds)
+  });
 };
 
 const readSceneItemsPivot = (items) => {
@@ -349,7 +640,33 @@ const readMaterialSummary = (item) => {
   return materialValue;
 };
 
+export const summarizeTransformAnimationStack = (animations) => {
+  const transformAnimations = normalizeTransformAnimationComponents(animations);
+  if (transformAnimations.length === 0) {
+    return '';
+  }
+
+  if (transformAnimations.length === 1) {
+    const [animation] = transformAnimations;
+    return `${animation.label} (${animation.enabled ? 'on' : 'off'})`;
+  }
+
+  const enabledCount = transformAnimations.filter((animation) => animation.enabled).length;
+  const visibleLabels = transformAnimations
+    .slice(0, 3)
+    .map((animation) => animation.label)
+    .join(', ');
+  const suffix = transformAnimations.length > 3 ? ', ...' : '';
+  return `${enabledCount}/${transformAnimations.length} enabled: ${visibleLabels}${suffix}`;
+};
+
 const readAnimationSummary = (item) => {
+  const transformAnimations = readSceneItemTransformAnimations(item);
+  const transformAnimationSummary = summarizeTransformAnimationStack(transformAnimations);
+  if (transformAnimationSummary) {
+    return transformAnimationSummary;
+  }
+
   const animationValue = (
     item.animationName ??
     item.animationLabel ??
@@ -381,6 +698,16 @@ const readPhysicsSummary = (item, physicsEnabled) => {
     return 'Attached';
   }
   return rigidBodyType ?? physicsEnabled ?? 'Attached';
+};
+
+const addTransformAnimationComponentRows = (rows, item) => {
+  readSceneItemTransformAnimations(item).forEach((component, index) => {
+    rows.push(Object.freeze({
+      key: `animation-${component.id}`,
+      label: component.label || `Animation ${index + 1}`,
+      summary: component.summary
+    }));
+  });
 };
 
 const addExplicitComponentRows = (rows, components) => {
@@ -435,6 +762,7 @@ export const readSceneItemComponentRows = (item) => {
     addComponentRow(rows, 'physics', 'Physics', readPhysicsSummary(item, physicsEnabled));
   }
   addComponentRow(rows, 'animation', 'Animation', readAnimationSummary(item));
+  addTransformAnimationComponentRows(rows, item);
 
   addExplicitComponentRows(rows, item.components);
 
@@ -462,6 +790,7 @@ export const normalizeSceneItem = (item, index = 0) => {
   const childEntityIds = sceneItemKind === 'group'
     ? normalizeEntityIdList(item.childEntityIds)
     : undefined;
+  const transformAnimations = readSceneItemTransformAnimations(item);
 
   return Object.freeze({
     ...item,
@@ -480,6 +809,7 @@ export const normalizeSceneItem = (item, index = 0) => {
         components: createGroupComponentMap(childEntityIds, item.components)
       }
       : {}),
+    transformAnimations: transformAnimations.length > 0 ? transformAnimations : undefined,
     source: item
   });
 };
@@ -956,6 +1286,127 @@ export const deleteSceneItems = (itemIds = selectedItemIds.value) => {
 
 export const deleteSelectedSceneItems = () => deleteSceneItems(selectedItemIds.value);
 
+const patchExactSceneItemsById = (itemIds, patcher) => {
+  const sceneItemIds = new Set(sceneItems.value.map((item) => item.id));
+  const patchItemIdSet = new Set(normalizeSelectedItemIds(itemIds).filter((itemId) => sceneItemIds.has(itemId)));
+  if (patchItemIdSet.size === 0) {
+    return false;
+  }
+
+  let didPatch = false;
+  const nextItems = sceneItems.value.map((item) => {
+    if (!patchItemIdSet.has(item.id)) {
+      return item;
+    }
+    const patch = patcher(item);
+    if (!patch || typeof patch !== 'object') {
+      return item;
+    }
+    didPatch = true;
+    return assignSceneItemFields(item, patch);
+  });
+
+  if (didPatch) {
+    updateSceneSignals(nextItems, selectedItemId.value, selectedItemIds.value);
+  }
+  return didPatch;
+};
+
+const createTransformAnimationComponentId = (item, type) => {
+  const existingAnimationIds = new Set(readSceneItemTransformAnimations(item).map((component) => component.id));
+  const baseId = `transform-${normalizeTransformAnimationType(type)}`;
+  if (!existingAnimationIds.has(baseId)) {
+    return baseId;
+  }
+
+  let index = existingAnimationIds.size + 1;
+  let candidateId = `${baseId}-${index}`;
+  while (existingAnimationIds.has(candidateId)) {
+    index += 1;
+    candidateId = `${baseId}-${index}`;
+  }
+  return candidateId;
+};
+
+export const attachTransformAnimationToSceneItem = (itemId, animationType, options = {}) => {
+  let attachedComponent = null;
+  const didPatch = patchExactSceneItemsById([itemId], (item) => {
+    const type = normalizeTransformAnimationType(animationType ?? options.animationType ?? options.type);
+    const existingAnimations = readSceneItemTransformAnimations(item);
+    attachedComponent = normalizeTransformAnimationComponent({
+      ...options,
+      id: normalizeOptionalText(options.id) ?? createTransformAnimationComponentId(item, type),
+      type,
+      config: options.config ?? options,
+      enabled: options.enabled !== false
+    }, existingAnimations.length);
+    return {
+      transformAnimations: Object.freeze([...existingAnimations, attachedComponent])
+    };
+  });
+  return didPatch ? attachedComponent : null;
+};
+
+export const attachTransformAnimationToSelectedItem = (animationType, options = {}) => (
+  selectedItemId.value === null
+    ? null
+    : attachTransformAnimationToSceneItem(selectedItemId.value, animationType, options)
+);
+
+export const updateTransformAnimationComponent = (itemId, animationId, updates = {}) => {
+  const normalizedAnimationId = normalizeOptionalText(animationId);
+  if (normalizedAnimationId === null) {
+    return false;
+  }
+
+  return patchExactSceneItemsById([itemId], (item) => {
+    let didUpdate = false;
+    const nextAnimations = readSceneItemTransformAnimations(item).map((component) => {
+      if (component.id !== normalizedAnimationId) {
+        return component;
+      }
+      didUpdate = true;
+      return normalizeTransformAnimationComponent({
+        ...component,
+        ...updates,
+        id: component.id,
+        type: updates.animationType ?? updates.type ?? component.animationType,
+        label: updates.label ?? updates.name ?? component.label,
+        enabled: updates.enabled ?? component.enabled,
+        config: updates.config
+          ? { ...component.config, ...updates.config }
+          : component.config
+      });
+    });
+    return didUpdate ? { transformAnimations: Object.freeze(nextAnimations) } : null;
+  });
+};
+
+export const updateTransformAnimationConfig = (itemId, animationId, config) => (
+  updateTransformAnimationComponent(itemId, animationId, { config })
+);
+
+export const setTransformAnimationEnabled = (itemId, animationId, enabled) => (
+  updateTransformAnimationComponent(itemId, animationId, { enabled: Boolean(enabled) })
+);
+
+export const removeTransformAnimationFromSceneItem = (itemId, animationId) => {
+  const normalizedAnimationId = normalizeOptionalText(animationId);
+  if (normalizedAnimationId === null) {
+    return false;
+  }
+
+  return patchExactSceneItemsById([itemId], (item) => {
+    const existingAnimations = readSceneItemTransformAnimations(item);
+    const nextAnimations = existingAnimations.filter((component) => component.id !== normalizedAnimationId);
+    return nextAnimations.length === existingAnimations.length
+      ? null
+      : { transformAnimations: nextAnimations.length > 0 ? Object.freeze(nextAnimations) : undefined };
+  });
+};
+
+export const detachTransformAnimationFromSceneItem = removeTransformAnimationFromSceneItem;
+
 const patchSceneItemsById = (itemIds, patcher) => {
   const patchItemIdSet = new Set(expandSceneSelectionIds(itemIds));
   if (patchItemIdSet.size === 0) {
@@ -1120,10 +1571,50 @@ export const runSceneStoreSmokeSamples = () => {
     setSelectedItemIds(['sphere-a', 'cube-b'], 'sphere-a');
 
     const groupItem = groupSelectedSceneItems({ id: 'group-test', name: 'Smoke Group' });
+    const spinAnimation = attachTransformAnimationToSceneItem(groupItem.id, TRANSFORM_ANIMATION_TYPES.SPIN, {
+      speedDegreesPerSecond: 90
+    });
+    const bobAnimation = attachTransformAnimationToSceneItem(groupItem.id, TRANSFORM_ANIMATION_TYPES.BOB, {
+      amplitude: 0.25,
+      frequencyHertz: 1
+    });
+    const pulseAnimation = attachTransformAnimationToSceneItem('sphere-a', TRANSFORM_ANIMATION_TYPES.PULSE, {
+      amplitude: 0.2,
+      frequencyHertz: 0,
+      phaseDegrees: 90
+    });
+    const orbitAnimation = attachTransformAnimationToSceneItem('sphere-a', TRANSFORM_ANIMATION_TYPES.ORBIT, {
+      center: [0, 0, 0],
+      radius: 1,
+      speedDegreesPerSecond: 45
+    });
+    const wobbleAnimation = attachTransformAnimationToSceneItem('sphere-a', TRANSFORM_ANIMATION_TYPES.WOBBLE, {
+      amplitudeDegrees: 6,
+      frequencyHertz: 3,
+      seed: 7
+    });
+    const didDisableBobAnimation = setTransformAnimationEnabled(groupItem.id, bobAnimation?.id, false);
+    const didUpdateOrbitAnimation = updateTransformAnimationConfig('sphere-a', orbitAnimation?.id, {
+      center: [1, 0, 1],
+      radius: 2,
+      speedDegreesPerSecond: 90
+    });
+    const sphereAnimationStateBeforeRemove = evaluateSceneItemTransformAnimations(
+      sceneItems.value.find((item) => item.id === 'sphere-a'),
+      1
+    );
+    const didRemoveWobbleAnimation = removeTransformAnimationFromSceneItem('sphere-a', wobbleAnimation?.id);
+    const groupAnimationState = evaluateSceneItemTransformAnimations(
+      sceneItems.value.find((item) => item.id === groupItem.id),
+      1
+    );
     const groupedState = serializeSceneState();
     const groupedItems = groupedState.items;
     const groupedItem = groupedItems.find((item) => item.id === groupItem.id);
     const groupedChildren = groupedItems.filter((item) => item.parentEntityId === groupItem.id);
+    const groupedAnimationRows = readSceneItemComponentRows(groupedItem)
+      .filter((row) => row.key === 'animation' || row.key.startsWith('animation-'));
+    const groupedSphere = groupedItems.find((item) => item.id === 'sphere-a');
     setSelectedItemId('group-test');
     const expandedGroupSelectionIds = selectedItemIds.value;
     const roundTripState = deserializeSceneState(JSON.stringify(groupedState));
@@ -1142,9 +1633,32 @@ export const runSceneStoreSmokeSamples = () => {
       expandedGroupSelectionIds,
       groupedItemCount: groupedItems.length,
       groupedChildCount: groupedChildren.length,
+      transformAnimationComponentType: spinAnimation?.componentType ?? null,
+      groupedAnimationIds: readSceneItemTransformAnimations(groupedItem).map((animation) => animation.id),
+      groupedAnimationEnabledFlags: readSceneItemTransformAnimations(groupedItem).map((animation) => animation.enabled),
+      groupedAnimationSummary: groupedAnimationRows.find((row) => row.key === 'animation')?.summary ?? '',
+      groupedAnimationRowKeys: groupedAnimationRows.map((row) => row.key),
+      sphereAnimationIdsAfterRemove: readSceneItemTransformAnimations(groupedSphere).map((animation) => animation.id),
+      sphereAnimationTypesAfterRemove: readSceneItemTransformAnimations(groupedSphere).map((animation) => animation.animationType),
+      didDisableBobAnimation,
+      didUpdateOrbitAnimation,
+      didRemoveWobbleAnimation,
+      groupAnimationAppliedIdsAtOneSecond: groupAnimationState.appliedAnimationIds,
+      groupAnimationRotationYAtOneSecond: groupAnimationState.rotationEulerDegrees[1],
+      groupAnimationPositionYAtOneSecond: groupAnimationState.position[1],
+      sphereAnimationAppliedIdsBeforeRemove: sphereAnimationStateBeforeRemove.appliedAnimationIds,
+      sphereAnimationPositionBeforeRemove: sphereAnimationStateBeforeRemove.position,
+      sphereAnimationScaleBeforeRemove: sphereAnimationStateBeforeRemove.scale,
+      sphereAnimationRotationBeforeRemove: sphereAnimationStateBeforeRemove.rotationEulerDegrees,
       groupedSelectedItemId: groupedState.selectedItemId,
       groupedSelectedItemIds: groupedState.selectedItemIds,
       roundTripGroupParent: roundTripState.items.find((item) => item.id === 'group-test')?.parentEntityId ?? null,
+      roundTripGroupAnimationCount: readSceneItemTransformAnimations(
+        roundTripState.items.find((item) => item.id === 'group-test')
+      ).length,
+      roundTripSphereAnimationCount: readSceneItemTransformAnimations(
+        roundTripState.items.find((item) => item.id === 'sphere-a')
+      ).length,
       roundTripChildParentIds: roundTripState.items
         .filter((item) => item.id === 'sphere-a' || item.id === 'cube-b')
         .map((item) => item.parentEntityId),
