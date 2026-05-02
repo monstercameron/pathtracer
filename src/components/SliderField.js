@@ -1,4 +1,5 @@
 import { html } from 'htm/preact';
+import { uiLogger } from '../logger.js';
 
 const readSignalValue = (fieldSignal, fallback) => (
   fieldSignal && typeof fieldSignal === 'object' && 'value' in fieldSignal
@@ -22,6 +23,7 @@ const formatSliderValue = (value, step, unit, formatter) => {
 };
 
 export function SliderField({
+  fieldId,
   id,
   label,
   min,
@@ -31,7 +33,11 @@ export function SliderField({
   unit = '',
   value,
   formatter,
-  onInput
+  onInput,
+  disabled = false,
+  hidden = false,
+  list,
+  children
 }) {
   const currentValue = readSignalValue(signal, value ?? min ?? 0);
   const displayValue = formatSliderValue(currentValue, step, unit, formatter);
@@ -40,6 +46,13 @@ export function SliderField({
     const nextValue = String(step).includes('.') ? Number.parseFloat(rawValue) : Number.parseInt(rawValue, 10);
     if (signal && typeof signal === 'object' && 'value' in signal) {
       signal.value = Number.isNaN(nextValue) ? rawValue : nextValue;
+      uiLogger.debug('ui:slider-input', {
+        id,
+        label,
+        nextValue: Number.isNaN(nextValue) ? rawValue : nextValue
+      });
+    } else if (!onInput) {
+      uiLogger.warn('ui:slider-signal-unavailable', { id, label });
     }
     if (onInput) {
       onInput(Number.isNaN(nextValue) ? rawValue : nextValue, event);
@@ -47,7 +60,7 @@ export function SliderField({
   };
 
   return html`
-    <div className="field slider-field">
+    <div id=${fieldId} className="field slider-field" hidden=${hidden}>
       <label for=${id}>
         ${label}
         <span id=${`${id}-value`} className="slider-value">${displayValue}</span>
@@ -59,8 +72,11 @@ export function SliderField({
         max=${max}
         step=${step}
         value=${currentValue}
+        disabled=${disabled}
+        list=${list}
         onInput=${handleInput}
       />
+      ${children}
     </div>
   `;
 }

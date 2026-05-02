@@ -4,7 +4,18 @@ const renderShortcut = (shortcut) => (
   shortcut ? html`<span className="menu-shortcut">${shortcut}</span>` : null
 );
 
-const renderMenuItem = (item, onItemClick) => {
+const readPressedValue = (item, pressedSignals = {}) => {
+  const actionSignal = item.action ? pressedSignals[item.action] : null;
+  const windowSignal = item.windowTarget ? pressedSignals[`window:${item.windowTarget}`] : null;
+  const panelSignal = item.panelTarget ? pressedSignals[`panel:${item.panelTarget}`] : null;
+  const targetSignal = actionSignal || windowSignal || panelSignal;
+  if (targetSignal) {
+    return Boolean(targetSignal.value);
+  }
+  return item.pressed === undefined ? undefined : Boolean(item.pressed);
+};
+
+const renderMenuItem = (item, onItemClick, pressedSignals) => {
   if (item.type === 'separator') {
     return html`<div key=${item.key} className="menu-separator"></div>`;
   }
@@ -20,6 +31,7 @@ const renderMenuItem = (item, onItemClick) => {
     `;
   }
 
+  const pressedValue = readPressedValue(item, pressedSignals);
   return html`
     <button
       id=${item.id}
@@ -32,9 +44,9 @@ const renderMenuItem = (item, onItemClick) => {
       data-quality-preset=${item.qualityPreset}
       data-benchmark-scene=${item.benchmarkScene}
       data-debug-view=${item.debugView}
-      aria-pressed=${item.pressed === undefined ? undefined : String(Boolean(item.pressed))}
+      aria-pressed=${pressedValue === undefined ? undefined : String(pressedValue)}
       disabled=${item.disabled ? true : undefined}
-      onClick=${onItemClick}
+      onClick=${(event) => onItemClick(event, item)}
     >
       ${item.label}
       ${renderShortcut(item.shortcut)}
@@ -42,14 +54,17 @@ const renderMenuItem = (item, onItemClick) => {
   `;
 };
 
-export function MenuGroup({ group, isOpen = false, onOpen, onClose }) {
+export function MenuGroup({ group, isOpen = false, pressedSignals, onOpen, onClose, onItemClick }) {
   const handleTriggerClick = () => {
     if (onOpen) {
       onOpen(group.key);
     }
   };
 
-  const handleItemClick = () => {
+  const handleItemClick = (event, item) => {
+    if (onItemClick) {
+      onItemClick(event, item);
+    }
     if (onClose) {
       onClose();
     }
@@ -61,7 +76,7 @@ export function MenuGroup({ group, isOpen = false, onOpen, onClose }) {
         ${group.label}
       </button>
       <div className="menu-popover" role="menu">
-        ${group.items.map((item) => renderMenuItem(item, handleItemClick))}
+        ${group.items.map((item) => renderMenuItem(item, handleItemClick, pressedSignals))}
       </div>
     </div>
   `;

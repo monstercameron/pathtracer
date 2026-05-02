@@ -2,15 +2,15 @@
 <html><head>
   <meta charset="utf8">
   <title>WebGL Path Tracing</title>
-  <link rel="stylesheet" href="dist/app.css">
   <link rel="stylesheet" href="src/app.css">
   <script type="importmap">
 {
   "imports": {
-    "preact": "https://esm.sh/preact@10.29.1",
-    "preact/hooks": "https://esm.sh/preact@10.29.1/hooks",
-    "htm/preact": "https://esm.sh/htm@3.1.1/preact",
-    "@preact/signals": "https://esm.sh/@preact/signals@2.9.0"
+    "preact": "./vendor/preact/preact.module.js",
+    "preact/hooks": "./vendor/preact/hooks.module.js",
+    "htm/preact": "./vendor/htm/preact.module.js",
+    "@preact/signals": "./vendor/preact-signals/signals.module.js",
+    "@preact/signals-core": "./vendor/preact-signals/signals-core.module.js"
   }
 }
   </script>
@@ -23,6 +23,9 @@
       <div class="menu-popover" role="menu">
         <button data-action="reset-all">New Scene <span class="menu-shortcut">Ctrl+N</span></button>
         <button data-action="reset-all">Reset Scene</button>
+        <div class="menu-separator"></div>
+        <button data-action="save-scene-json">Save Scene JSON</button>
+        <button data-action="load-scene-json">Load Scene JSON</button>
         <div class="menu-separator"></div>
         <button data-panel-target="output-panel" data-window-target="controls">Output Settings <span class="menu-shortcut">Ctrl+5</span></button>
         <button data-action="save-bitmap">Save PNG <span class="menu-shortcut">Ctrl+S</span></button>
@@ -45,16 +48,11 @@
         <button data-window-target="controls">Inspector <span class="menu-shortcut">I</span></button>
         <button data-window-target="scene-tree-window">Scene Tree <span class="menu-shortcut">T</span></button>
         <button data-window-target="benchmark">Benchmark <span class="menu-shortcut">B</span></button>
-        <button data-panel-target="scene-panel" data-window-target="controls">Create Panel <span class="menu-shortcut">Ctrl+1</span></button>
         <div class="menu-separator"></div>
+        <button id="camera-mode-toggle" data-action="toggle-camera-mode" aria-pressed="false"><span data-camera-mode-label>Camera: Orbit</span></button>
         <button data-action="toggle-camera-playback" aria-pressed="true">Camera Auto-Rotate <span class="menu-shortcut">C</span></button>
         <button id="canvas-fullscreen" data-action="toggle-canvas-fullscreen" aria-pressed="false"><span data-fullscreen-label>Fullscreen</span> <span class="menu-shortcut">F</span></button>
         <button id="fullscreen-panels-toggle" data-action="toggle-fullscreen-panels" aria-pressed="false"><span data-fullscreen-panels-label>Fullscreen Panels</span></button>
-        <div class="menu-separator"></div>
-        <button data-debug-view="beauty" aria-pressed="true">Debug: Beauty</button>
-        <button data-debug-view="normals" aria-pressed="false">Debug: Normals</button>
-        <button data-debug-view="albedo" aria-pressed="false">Debug: Albedo</button>
-        <button data-debug-view="depth" aria-pressed="false">Debug: Depth</button>
       </div>
     </div>
     <div class="menu-group">
@@ -120,7 +118,18 @@
         <button data-benchmark-scene="benchmarkVolumetricFog">Volumetric Fog Flythrough</button>
         <div class="menu-separator"></div>
         <button data-action="run-benchmark-sequence">Run Benchmark Sequence</button>
-        <button disabled>Demo Scenes</button>
+        <div class="menu-separator"></div>
+        <div class="menu-label">Demo scenes</div>
+        <button data-preset="corridorOfLight">Corridor of Light</button>
+        <button data-preset="corridorOfLightGlassSphere">Corridor + Glass Sphere</button>
+        <button data-preset="corridorOfLightMirrorCube">Corridor + Mirror Cube</button>
+        <button data-preset="depthOfFieldPortrait">Depth-of-Field Portrait</button>
+        <button data-preset="shadowStudy">Shadow Study</button>
+        <button data-preset="mirrorRoom">Mirror Room</button>
+        <button data-preset="skySphere">Sky Sphere</button>
+        <button data-preset="fogCorridor">Fog Corridor</button>
+        <button data-preset="materialGrid">Material Grid</button>
+        <button data-preset="neonRoom">Neon Room</button>
       </div>
     </div>
     <div class="menu-group">
@@ -134,8 +143,15 @@
         <button data-quality-preset="preview">Preview <span class="menu-shortcut">2</span></button>
         <button data-quality-preset="final">Final <span class="menu-shortcut">3</span></button>
         <div class="menu-separator"></div>
+        <div class="menu-label">Debug views</div>
+        <button data-debug-view="beauty" aria-pressed="true">Beauty</button>
+        <button data-debug-view="normals" aria-pressed="false">Normals</button>
+        <button data-debug-view="albedo" aria-pressed="false">Albedo</button>
+        <button data-debug-view="depth" aria-pressed="false">Depth</button>
+        <div class="menu-separator"></div>
         <div class="menu-label">Settings</div>
         <button data-panel-target="render-panel" data-window-target="controls">Render Settings <span class="menu-shortcut">Ctrl+3</span></button>
+        <button data-panel-target="physics-panel" data-window-target="controls">Physics Settings</button>
         <button data-panel-target="camera-panel" data-window-target="controls">Camera Settings <span class="menu-shortcut">Ctrl+4</span></button>
         <button data-panel-target="render-panel" data-window-target="controls">Environment Settings</button>
         <button data-panel-target="output-panel" data-window-target="controls">Resolution / Output <span class="menu-shortcut">Ctrl+5</span></button>
@@ -144,31 +160,31 @@
     <div class="menu-group">
       <button class="menu-trigger" aria-haspopup="true">Help</button>
       <div class="menu-popover" role="menu">
-        <button data-panel-target="preset-panel" data-window-target="controls">Preset Scenes <span class="menu-shortcut">Ctrl+6</span></button>
         <a href="README.md" target="_blank" rel="noreferrer">README</a>
       </div>
     </div>
     <div id="menu-quick-actions" class="menu-quick-actions" role="toolbar" aria-label="Quick actions">
-      <button class="menu-quick-action wide" type="button" data-preset="sphereColumn" data-tooltip="Load Sphere Column" title="Load Sphere Column" aria-label="Load Sphere Column">Col</button>
-      <button class="menu-quick-action wide" type="button" data-preset="shaderShowcase" data-tooltip="Load Shader Showcase" title="Load Shader Showcase" aria-label="Load Shader Showcase">Mat</button>
-      <button class="menu-quick-action wide" type="button" data-preset="primitiveShowcase" data-tooltip="Load Primitive Showcase" title="Load Primitive Showcase" aria-label="Load Primitive Showcase">Prim</button>
-      <button class="menu-quick-action wide" type="button" data-preset="areaLightShowcase" data-tooltip="Load Area Light Studio" title="Load Area Light Studio" aria-label="Load Area Light Studio">Lit</button>
+      <button class="menu-quick-action wide" type="button" data-preset="sphereColumn" data-tooltip="Load Sphere Column" title="Load Sphere Column" aria-label="Load Sphere Column">Sphere Column</button>
+      <button class="menu-quick-action wide" type="button" data-preset="shaderShowcase" data-tooltip="Load Shader Showcase" title="Load Shader Showcase" aria-label="Load Shader Showcase">Shader Demo</button>
+      <button class="menu-quick-action wide" type="button" data-preset="primitiveShowcase" data-tooltip="Load Primitive Showcase" title="Load Primitive Showcase" aria-label="Load Primitive Showcase">Primitive Demo</button>
+      <button class="menu-quick-action wide" type="button" data-preset="areaLightShowcase" data-tooltip="Load Area Light Studio" title="Load Area Light Studio" aria-label="Load Area Light Studio">Light Studio</button>
       <span class="menu-quick-divider" aria-hidden="true"></span>
-      <button class="menu-quick-action" type="button" data-action="add-sphere" data-tooltip="Add Sphere" title="Add Sphere" aria-label="Add Sphere">Sphere</button>
-      <button class="menu-quick-action" type="button" data-action="add-cube" data-tooltip="Add Cube" title="Add Cube" aria-label="Add Cube">Box</button>
-      <button class="menu-quick-action" type="button" data-action="add-area-light" data-tooltip="Add Area Light" title="Add Area Light" aria-label="Add Area Light">Light</button>
+      <button class="menu-quick-action" type="button" data-action="add-sphere" data-tooltip="Add Sphere" title="Add Sphere" aria-label="Add Sphere">Add Sphere</button>
+      <button class="menu-quick-action" type="button" data-action="add-cube" data-tooltip="Add Cube" title="Add Cube" aria-label="Add Cube">Add Cube</button>
+      <button class="menu-quick-action" type="button" data-action="add-area-light" data-tooltip="Add Area Light" title="Add Area Light" aria-label="Add Area Light">Add Light</button>
       <span class="menu-quick-divider" aria-hidden="true"></span>
-      <button class="menu-quick-action" type="button" data-panel-target="scene-panel" data-window-target="controls" data-tooltip="Create Panel" title="Create Panel" aria-label="Open Create Panel">Create</button>
-      <button class="menu-quick-action" type="button" data-panel-target="object-panel" data-window-target="controls" data-tooltip="Inspector" title="Inspector" aria-label="Open Inspector">Inspect</button>
+        <button class="menu-quick-action" type="button" data-action="toggle-scene-tree-create" data-tooltip="Add Scene Item" title="Add Scene Item" aria-label="Add scene item" aria-pressed="false">Add</button>
+      <button class="menu-quick-action" type="button" data-panel-target="object-panel" data-window-target="controls" data-tooltip="Object Inspector" title="Object Inspector" aria-label="Open Object Inspector">Object</button>
       <button class="menu-quick-action" type="button" data-panel-target="render-panel" data-window-target="controls" data-tooltip="Render Settings" title="Render Settings" aria-label="Open Render Settings">Render</button>
-      <button class="menu-quick-action" type="button" data-window-target="scene-tree-window" data-tooltip="Scene Tree" title="Scene Tree" aria-label="Toggle Scene Tree">Tree</button>
-      <button class="menu-quick-action" type="button" data-window-target="benchmark" data-tooltip="Benchmark" title="Benchmark" aria-label="Toggle Benchmark">Bench</button>
+      <button class="menu-quick-action" type="button" data-window-target="scene-tree-window" data-tooltip="Scene Tree" title="Scene Tree" aria-label="Toggle Scene Tree">Scene Tree</button>
+      <button class="menu-quick-action" type="button" data-window-target="benchmark" data-tooltip="Benchmark" title="Benchmark" aria-label="Toggle Benchmark">Benchmark</button>
       <span class="menu-quick-divider" aria-hidden="true"></span>
-      <button class="menu-quick-action" type="button" data-action="toggle-frame-pause" data-tooltip="Pause Frames" title="Pause Frames" aria-label="Pause or resume frames">Frames</button>
-      <button class="menu-quick-action" type="button" data-action="toggle-convergence-pause" data-tooltip="Pause Rays at Converged" title="Pause Rays at Converged" aria-label="Toggle convergence pause">Rays</button>
-      <button class="menu-quick-action" type="button" data-action="toggle-fullscreen-panels" data-tooltip="Show Panels in Fullscreen" title="Show Panels in Fullscreen" aria-label="Show panels in fullscreen" aria-pressed="false">UI</button>
-      <button class="menu-quick-action" type="button" data-action="toggle-canvas-fullscreen" data-tooltip="Fullscreen" title="Fullscreen" aria-label="Toggle fullscreen">FS</button>
-      <button class="menu-quick-action" type="button" data-action="save-bitmap" data-tooltip="Save PNG" title="Save PNG" aria-label="Save PNG">PNG</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-frame-pause" data-tooltip="Pause Frames" title="Pause Frames" aria-label="Pause or resume frames">Pause Frames</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-convergence-pause" data-tooltip="Pause Rays at Converged" title="Pause Rays at Converged" aria-label="Toggle convergence pause">Pause Rays</button>
+      <button class="menu-quick-action" type="button" data-action="reset-physics-interactions" data-tooltip="Reset Physics" title="Reset Physics" aria-label="Reset physics interactions">Reset Physics</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-fullscreen-panels" data-tooltip="Show Panels in Fullscreen" title="Show Panels in Fullscreen" aria-label="Show panels in fullscreen" aria-pressed="false">Panels</button>
+      <button class="menu-quick-action" type="button" data-action="toggle-canvas-fullscreen" data-tooltip="Fullscreen" title="Fullscreen" aria-label="Toggle fullscreen">Fullscreen</button>
+      <button class="menu-quick-action" type="button" data-action="save-bitmap" data-tooltip="Save PNG" title="Save PNG" aria-label="Save PNG">Save PNG</button>
     </div>
   </nav>
 
@@ -183,6 +199,18 @@
       <div class="loading-title">Loading renderer</div>
       <div id="loading-status" class="loading-status">Initialising renderer...</div>
       <div id="loading-detail" class="loading-detail">Blank frames during setup are expected while the renderer builds the scene.</div>
+      <div id="loading-error" class="loading-error" role="alert" hidden>
+        <div class="loading-error-header">
+          <strong>Startup error</strong>
+          <button id="copy-loading-error" class="loading-error-copy" type="button" title="Copy error details" aria-label="Copy error details">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 7h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"></path>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
+        <pre id="loading-error-stack"></pre>
+      </div>
     </div>
   </div>
 
@@ -190,45 +218,51 @@
       <header class="floating-window-titlebar" data-window-drag-handle>
         <strong>Scene Tree</strong>
         <div class="floating-window-actions">
-          <button data-window-command="collapse" aria-label="Collapse scene tree">-</button>
-          <button data-window-command="close" aria-label="Close scene tree">x</button>
+          <button data-window-command="collapse" aria-label="Collapse scene tree"><span class="window-command-icon window-command-collapse" aria-hidden="true"></span></button>
+          <button data-window-command="close" aria-label="Close scene tree"><span class="window-command-icon window-command-close" aria-hidden="true"></span></button>
         </div>
       </header>
       <div class="floating-window-body">
-        <div id="scene-tree-count" class="scene-tree-summary">0 items</div>
+        <div class="scene-tree-create">
+          <div id="scene-tree-header" class="scene-tree-header">
+            <span id="scene-tree-count" class="scene-tree-summary">0 items</span>
+            <button id="scene-tree-add" class="scene-tree-add-button" type="button" data-action="toggle-scene-tree-create" aria-controls="scene-tree-add-menu" aria-expanded="false" aria-pressed="false" title="Add primitive (Ctrl+1)" aria-label="Add primitive">
+              <span class="scene-tree-add-plus" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div id="scene-tree-add-menu" class="scene-tree-add-popover" role="menu" hidden>
+            <button data-action="add-sphere">Sphere</button>
+            <button data-action="add-cube">Cube</button>
+            <button data-action="add-cylinder">Cylinder</button>
+            <button data-action="add-cone">Cone</button>
+            <button data-action="add-frustum">Frustum</button>
+            <button data-action="add-capsule">Capsule</button>
+            <button data-action="add-ellipsoid">Ellipsoid</button>
+            <button data-action="add-torus">Torus</button>
+            <button data-action="add-rounded-box">Rounded Box</button>
+            <button data-action="add-plane">Plane</button>
+            <button data-action="add-disk">Disk</button>
+            <button data-action="add-triangle">Triangle</button>
+            <button data-action="add-wedge">Wedge</button>
+            <button data-action="add-prism">Prism</button>
+            <button data-action="add-metaballs">Metaballs</button>
+            <button data-action="add-csg-shape">CSG Shape</button>
+            <button data-action="add-mandelbulb">Mandelbulb</button>
+            <button data-action="add-sdf-fractal">SDF Fractal</button>
+            <button class="wide-control" data-action="add-area-light">Area Light</button>
+          </div>
+        </div>
         <div class="scene-tree-tools">
           <div class="section-title">Selection</div>
           <button data-action="select-light">Select Light</button>
           <button data-action="delete-selection">Delete Selected</button>
           <div class="section-title">Settings</div>
-          <button data-panel-target="scene-panel" data-window-target="controls">Create</button>
           <button data-panel-target="object-panel" data-window-target="controls">Object</button>
           <button data-panel-target="render-panel" data-window-target="controls">Render</button>
+          <button data-panel-target="physics-panel" data-window-target="controls">Physics</button>
           <button data-panel-target="camera-panel" data-window-target="controls">Camera</button>
           <button data-panel-target="output-panel" data-window-target="controls">Output</button>
           <button data-panel-target="preset-panel" data-window-target="controls">Presets</button>
-        </div>
-        <div class="scene-tree-create">
-          <div class="section-title">Create primitive</div>
-          <button data-action="add-sphere">Sphere</button>
-          <button data-action="add-cube">Cube</button>
-          <button data-action="add-cylinder">Cylinder</button>
-          <button data-action="add-cone">Cone</button>
-          <button data-action="add-frustum">Frustum</button>
-          <button data-action="add-capsule">Capsule</button>
-          <button data-action="add-ellipsoid">Ellipsoid</button>
-          <button data-action="add-torus">Torus</button>
-          <button data-action="add-rounded-box">Rounded Box</button>
-          <button data-action="add-plane">Plane</button>
-          <button data-action="add-disk">Disk</button>
-          <button data-action="add-triangle">Triangle</button>
-          <button data-action="add-wedge">Wedge</button>
-          <button data-action="add-prism">Prism</button>
-          <button data-action="add-metaballs">Metaballs</button>
-          <button data-action="add-csg-shape">CSG Shape</button>
-          <button data-action="add-mandelbulb">Mandelbulb</button>
-          <button data-action="add-sdf-fractal">SDF Fractal</button>
-          <button class="wide-control" data-action="add-area-light">Area Light</button>
         </div>
         <div id="scene-tree-list" class="scene-tree-list" role="listbox" aria-label="Scene items"></div>
       </div>
@@ -238,50 +272,18 @@
       <header class="floating-window-titlebar" data-window-drag-handle>
         <strong>Inspector</strong>
         <div class="floating-window-actions">
-          <button data-window-command="collapse" aria-label="Collapse inspector">-</button>
-          <button data-window-command="close" aria-label="Close inspector">x</button>
+          <button data-window-command="collapse" aria-label="Collapse inspector"><span class="window-command-icon window-command-collapse" aria-hidden="true"></span></button>
+          <button data-window-command="close" aria-label="Close inspector"><span class="window-command-icon window-command-close" aria-hidden="true"></span></button>
         </div>
       </header>
       <div class="floating-window-body">
-      <details class="inspector-section" data-inspector-section="scene" style="--section-accent: #4a90e2" open>
-        <summary><span data-inspector-section-label>Create</span></summary>
-      <div id="scene-panel" class="control-panel" data-control-panel>
-        <button id="camera-playback" class="camera-playback" data-action="toggle-camera-playback" aria-pressed="true">Pause Camera</button>
-        <button id="frame-pause" class="render-pause-toggle" data-action="toggle-frame-pause" aria-pressed="false">Pause Frames</button>
-        <button id="convergence-pause" class="render-pause-toggle" data-action="toggle-convergence-pause" aria-pressed="false">Pause Rays at Converged</button>
-
-        <div class="control-section primitive-actions">
-        <div class="section-title">Add primitive</div>
-        <button data-action="add-sphere">Sphere</button>
-        <button data-action="add-cube">Cube</button>
-        <button data-action="add-cylinder">Cylinder</button>
-        <button data-action="add-cone">Cone</button>
-        <button data-action="add-frustum">Frustum</button>
-        <button data-action="add-capsule">Capsule</button>
-        <button data-action="add-ellipsoid">Ellipsoid</button>
-        <button data-action="add-torus">Torus</button>
-        <button data-action="add-rounded-box">Rounded Box</button>
-        <button data-action="add-plane">Plane</button>
-        <button data-action="add-disk">Disk</button>
-        <button data-action="add-triangle">Triangle</button>
-        <button data-action="add-wedge">Wedge</button>
-        <button data-action="add-prism">Prism</button>
-        <button data-action="add-metaballs">Metaballs</button>
-        <button data-action="add-csg-shape">CSG Shape</button>
-        <button data-action="add-mandelbulb">Mandelbulb</button>
-        <button data-action="add-sdf-fractal">SDF Fractal</button>
-        <button class="wide-control" data-action="add-area-light">Area Light</button>
-        </div>
-      </div>
-      </details>
-
-      <details class="inspector-section" data-inspector-section="object" style="--section-accent: #4a90e2">
+      <details class="inspector-section" data-inspector-section="object" style="--section-accent: #63a7ff">
         <summary><span data-inspector-section-label>Nothing selected</span></summary>
       <div id="object-panel" class="control-panel" data-control-panel>
         <div class="control-section">
           <div class="section-title">Selected item</div>
           <div id="selected-item-name" class="selection-readout">No selection</div>
-          <div class="field">
+          <div class="field" data-selection-control="geometry">
             <label for="selected-item-name-input">Name</label>
             <input id="selected-item-name-input" type="text" placeholder="Scene item">
             <button data-action="rename-selection">Rename</button>
@@ -303,36 +305,91 @@
               <input id="selected-position-z" type="number" min="-2" max="2" step="0.05" placeholder="Z">
             </div>
           </div>
-          <div class="field">
-            <label for="selected-physics-enabled">Physics</label>
-            <div class="button-row two-up">
-              <label><input id="selected-physics-enabled" type="checkbox" disabled> Enabled</label>
-              <select id="selected-physics-body-type" aria-label="Physics body type" disabled>
-                <option value="dynamic">Dynamic</option>
-                <option value="fixed">Fixed</option>
-              </select>
+          <div data-selection-control="geometry">
+            <div class="field">
+              <label for="selected-physics-enabled">Physics</label>
+              <div class="button-row two-up">
+                <label class="checkbox-field"><input id="selected-physics-enabled" type="checkbox" disabled> Enabled</label>
+                <select id="selected-physics-body-type" aria-label="Physics body type" disabled>
+                  <option value="dynamic">Dynamic</option>
+                  <option value="kinematic">Kinematic</option>
+                  <option value="static">Static</option>
+                </select>
+              </div>
             </div>
-          </div>
-          <div class="field slider-field">
-            <label for="selected-physics-friction">
-              Friction
-              <span id="selected-physics-friction-value" class="slider-value">0.00</span>
-            </label>
-            <input id="selected-physics-friction" type="range" min="0" max="1" step="0.01" value="0" disabled>
-          </div>
-          <div class="field slider-field">
-            <label for="selected-physics-restitution">
-              Restitution
-              <span id="selected-physics-restitution-value" class="slider-value">0.00</span>
-            </label>
-            <input id="selected-physics-restitution" type="range" min="0" max="1" step="0.01" value="0" disabled>
-          </div>
-          <div class="field">
-            <label><input id="selected-physics-collide-with-objects" type="checkbox" disabled checked> Collide with objects</label>
+            <div class="field slider-field">
+              <label for="selected-physics-mass">
+                Mass
+                <span id="selected-physics-mass-value" class="slider-value">1.00</span>
+              </label>
+              <input id="selected-physics-mass" type="range" min="0.1" max="10" step="0.1" value="1" disabled>
+            </div>
+            <div class="field slider-field">
+              <label for="selected-physics-gravity-scale">
+                Gravity
+                <span id="selected-physics-gravity-scale-value" class="slider-value">1.00</span>
+              </label>
+              <input id="selected-physics-gravity-scale" type="range" min="0" max="3" step="0.05" value="1" disabled>
+            </div>
+            <div class="field slider-field">
+              <label for="selected-physics-friction">
+                Friction
+                <span id="selected-physics-friction-value" class="slider-value">0.00</span>
+              </label>
+              <input id="selected-physics-friction" type="range" min="0" max="1" step="0.01" value="0" disabled>
+            </div>
+            <div class="field slider-field">
+              <label for="selected-physics-restitution">
+                Restitution
+                <span id="selected-physics-restitution-value" class="slider-value">0.00</span>
+              </label>
+              <input id="selected-physics-restitution" type="range" min="0" max="1" step="0.01" value="0" disabled>
+            </div>
+            <div class="field">
+              <label class="checkbox-field"><input id="selected-physics-collide-with-objects" type="checkbox" disabled checked> Collide with objects</label>
+            </div>
+            <div id="selected-physics-help" class="field-help">Select a supported sphere or cube to edit physics.</div>
           </div>
         </div>
 
-        <div class="control-section">
+        <div id="selected-light-controls" class="control-section" data-selection-control="light" hidden>
+          <div class="section-title">Light controls</div>
+          <div class="field slider-field">
+            <label for="selected-light-intensity">
+              Brightness
+              <span id="selected-light-intensity-value" class="slider-value">0.50</span>
+            </label>
+            <input id="selected-light-intensity" type="range" min="0.1" max="1" step="0.01" value="0.5">
+          </div>
+          <div class="field slider-field">
+            <label for="selected-light-temperature">
+              Color temp
+              <span id="selected-light-temperature-value" class="slider-value">6500 K</span>
+            </label>
+            <input id="selected-light-temperature" type="range" min="1800" max="10000" step="100" value="6500">
+          </div>
+          <div class="field slider-field">
+            <label for="selected-light-size">
+              Size
+              <span id="selected-light-size-value" class="slider-value">0.10</span>
+            </label>
+            <input id="selected-light-size" type="range" min="0.02" max="0.5" step="0.01" value="0.1">
+          </div>
+          <div class="field">
+            <label for="selected-light-color">Color</label>
+            <div class="color-control">
+              <input id="selected-light-color" type="color" value="#ffffff" aria-label="Selected light color">
+              <span class="color-control-swatch" aria-hidden="true"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-section" data-selection-control="geometry">
+          <div class="section-title">Components</div>
+          <div class="selection-readout">No components</div>
+        </div>
+
+        <div class="control-section" data-selection-control="geometry">
         <div class="field">
           <label for="material">Object shader</label>
           <select id="material">
@@ -355,12 +412,70 @@
             <option value="16">Velvet Sheen</option>
             <option value="17">Voronoi Cracks</option>
             <option value="18">Diffraction Grating</option>
+            <option value="19">Anisotropic GGX</option>
+            <option value="20">Blackbody</option>
+            <option value="21">Emissive</option>
+            <option value="22">Toon</option>
+            <option value="23">X-Ray</option>
           </select>
           <button data-action="apply-object-shader">Apply to Selection</button>
-          <span id="glossiness-factor">
-            with glossiness factor: 0 &lt; <input id="glossiness" value="0.6"> &lt; 1
-          </span>
+          <div id="glossiness-factor" class="field slider-field">
+            <label for="glossiness">
+              Glossiness
+              <span id="glossiness-value" class="slider-value">0.60</span>
+            </label>
+            <input id="glossiness" type="range" min="0" max="1" step="0.01" value="0.6">
+          </div>
+          <div id="emissive-controls" hidden>
+            <div class="field slider-field">
+              <label for="emissive-intensity">
+                Emission Strength
+                <span id="emissive-intensity-value" class="slider-value">1.65</span>
+              </label>
+              <input id="emissive-intensity" type="range" min="0" max="6" step="0.05" value="1.65">
+            </div>
+            <div class="field">
+              <label for="emissive-color">Emission Color</label>
+              <div class="color-control">
+                <input id="emissive-color" type="color" value="#a3ebff" aria-label="Selected object emission color">
+                <span class="color-control-swatch" aria-hidden="true"></span>
+              </div>
+            </div>
+          </div>
         </div>
+        </div>
+      </div>
+      </details>
+
+      <details class="inspector-section" data-inspector-section="physics" style="--section-accent: #4db6ac">
+        <summary><span data-inspector-section-label>Physics</span></summary>
+      <div id="physics-panel" class="control-panel" data-control-panel>
+        <div class="control-section physics-world-settings">
+          <div class="section-title">Physics world</div>
+          <div class="field">
+            <label for="global-gravity-direction">Gravity direction</label>
+            <select id="global-gravity-direction">
+              <option value="down" selected>Down</option>
+              <option value="up">Up</option>
+              <option value="zero-g">Zero-G</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="field slider-field">
+            <label for="global-gravity-magnitude">
+              Gravity magnitude
+              <span id="global-gravity-magnitude-value" class="slider-value">9.81</span>
+            </label>
+            <input id="global-gravity-magnitude" type="range" min="0" max="20" step="0.01" value="9.81">
+          </div>
+          <div class="field slider-field">
+            <label>Custom direction</label>
+            <div class="button-row">
+              <input id="global-gravity-custom-x" type="number" min="-1" max="1" step="0.05" value="0.00" aria-label="Custom gravity X direction" disabled>
+              <input id="global-gravity-custom-y" type="number" min="-1" max="1" step="0.05" value="-1.00" aria-label="Custom gravity Y direction" disabled>
+              <input id="global-gravity-custom-z" type="number" min="-1" max="1" step="0.05" value="0.00" aria-label="Custom gravity Z direction" disabled>
+            </div>
+          </div>
         </div>
       </div>
       </details>
@@ -378,6 +493,13 @@
           </select>
           </div>
         </div>
+
+      <div class="control-section render-state-controls">
+        <div class="section-title">Render state</div>
+        <button id="camera-playback" class="camera-playback" data-action="toggle-camera-playback" aria-pressed="true">Pause Camera</button>
+        <button id="frame-pause" class="render-pause-toggle" data-action="toggle-frame-pause" aria-pressed="false">Pause Frames</button>
+        <button id="convergence-pause" class="render-pause-toggle" data-action="toggle-convergence-pause" aria-pressed="false">Pause Rays at Converged</button>
+      </div>
 
       <div class="control-section render-settings">
         <div class="section-title">Quality preset</div>
@@ -406,7 +528,7 @@
 
         <div class="field slider-field">
           <label for="light-intensity">
-            Light intensity
+            Light brightness
             <span id="light-intensity-value" class="slider-value">0.50</span>
           </label>
           <input id="light-intensity" type="range" min="0.1" max="1" step="0.01" value="0.5">
@@ -423,7 +545,10 @@
 
         <div class="field">
           <label for="light-color">Light color</label>
-          <input id="light-color" type="color" value="#ffffff" aria-label="Light color">
+          <div class="color-control">
+            <input id="light-color" type="color" value="#ffffff" aria-label="Light color">
+            <span class="color-control-swatch" aria-hidden="true"></span>
+          </div>
         </div>
 
         <div class="field slider-field">
@@ -532,18 +657,36 @@
           </select>
           <div id="renderer-backend-status" class="export-status" role="status" aria-live="polite">WebGL active</div>
         </div>
+        <div class="field">
+          <label for="render-scale-mode">Scale Mode</label>
+          <select id="render-scale-mode">
+            <option value="fractional" selected>Fractional HQ</option>
+            <option value="pixel-perfect">Pixel Perfect</option>
+          </select>
+        </div>
         <div class="field slider-field">
           <label for="render-scale">
             Render Scale
-            <span id="render-scale-value" class="slider-value">100%</span>
+            <span id="render-scale-value" class="slider-value">1x</span>
           </label>
-          <input id="render-scale" type="range" min="0.25" max="2" step="0.25" value="1" list="render-scale-ticks">
-          <datalist id="render-scale-ticks">
-            <option value="0.25" label="25%"></option>
-            <option value="0.5" label="50%"></option>
-            <option value="1" label="100%"></option>
-            <option value="1.5" label="150%"></option>
-            <option value="2" label="200%"></option>
+          <input id="render-scale" type="range" min="0.25" max="3" step="0.25" value="1" list="render-scale-fractional-ticks">
+          <datalist id="render-scale-fractional-ticks">
+            <option value="0.25"></option>
+            <option value="0.5"></option>
+            <option value="0.75"></option>
+            <option value="1"></option>
+            <option value="1.25"></option>
+            <option value="1.5"></option>
+            <option value="1.75"></option>
+            <option value="2"></option>
+            <option value="2.5"></option>
+            <option value="3"></option>
+          </datalist>
+          <datalist id="render-scale-pixel-perfect-ticks">
+            <option value="1"></option>
+            <option value="4"></option>
+            <option value="6"></option>
+            <option value="8"></option>
           </datalist>
           <div id="render-scale-resolution" class="export-status" role="status" aria-live="polite">Canvas-sized render target</div>
         </div>
@@ -566,17 +709,17 @@
         <div class="field">
           <label for="custom-render-width">Custom render resolution</label>
           <div class="resolution-pair">
-            <input id="custom-render-width" type="number" min="256" max="2048" step="1" value="512" aria-label="Custom render width">
-            <input id="custom-render-height" type="number" min="256" max="2048" step="1" value="512" aria-label="Custom render height">
+            <input id="custom-render-width" type="number" min="1" max="8192" step="1" value="512" aria-label="Custom render width">
+            <input id="custom-render-height" type="number" min="1" max="8192" step="1" value="512" aria-label="Custom render height">
           </div>
-          <div id="ui-canvas-resolution" class="export-status" role="status" aria-live="polite">Canvas fit: page size</div>
+          <div id="ui-canvas-resolution" class="export-status" role="status" aria-live="polite">Canvas: page size - UI: render aspect</div>
         </div>
         <div class="button-row two-up">
           <button data-action="apply-resolution">Apply Size</button>
           <button data-action="toggle-canvas-fullscreen">Fullscreen</button>
         </div>
         <button data-action="save-bitmap">Save PNG</button>
-        <div id="export-status" class="export-status" role="status" aria-live="polite">512 x 512 square</div>
+        <div id="export-status" class="export-status" role="status" aria-live="polite">Canvas-sized render target</div>
       </div>
 
       <div class="control-section color-settings">
@@ -620,6 +763,16 @@
             <span id="color-gamma-value" class="slider-value">1.00</span>
           </label>
           <input id="color-gamma" type="range" min="0.2" max="3" step="0.05" value="1">
+        </div>
+
+        <div class="field">
+          <label for="tone-mapping">Tone mapping</label>
+          <select id="tone-mapping">
+            <option value="0" selected>Linear</option>
+            <option value="1">Reinhard</option>
+            <option value="2">ACES</option>
+            <option value="3">Uncharted 2</option>
+          </select>
         </div>
 
         <button class="color-reset" data-action="reset-color-correction">Reset Color</button>
@@ -681,6 +834,17 @@
         <button data-benchmark-scene="benchmarkCausticPool">Caustic Pool</button>
         <button data-benchmark-scene="benchmarkMotionBlurStress">Motion Blur Stress</button>
         <button data-benchmark-scene="benchmarkVolumetricFog">Volumetric Fog Flythrough</button>
+        <div class="section-title">Demo scenes</div>
+        <button data-preset="corridorOfLight">Corridor of Light</button>
+        <button data-preset="corridorOfLightGlassSphere">Corridor + Glass Sphere</button>
+        <button data-preset="corridorOfLightMirrorCube">Corridor + Mirror Cube</button>
+        <button data-preset="depthOfFieldPortrait">Depth-of-Field Portrait</button>
+        <button data-preset="shadowStudy">Shadow Study</button>
+        <button data-preset="mirrorRoom">Mirror Room</button>
+        <button data-preset="skySphere">Sky Sphere</button>
+        <button data-preset="fogCorridor">Fog Corridor</button>
+        <button data-preset="materialGrid">Material Grid</button>
+        <button data-preset="neonRoom">Neon Room</button>
         <button class="reset-all" data-action="reset-all">Reset All</button>
       </div>
       </div>
@@ -693,8 +857,8 @@
     <header class="floating-window-titlebar" data-window-drag-handle>
       <strong>Benchmark</strong>
       <div class="floating-window-actions">
-        <button data-window-command="collapse" aria-label="Collapse benchmark">-</button>
-        <button data-window-command="close" aria-label="Close benchmark">x</button>
+        <button data-window-command="collapse" aria-label="Collapse benchmark"><span class="window-command-icon window-command-collapse" aria-hidden="true"></span></button>
+        <button data-window-command="close" aria-label="Close benchmark"><span class="window-command-icon window-command-close" aria-hidden="true"></span></button>
       </div>
     </header>
     <div class="floating-window-body">
@@ -703,11 +867,11 @@
       <div id="benchmark-source" class="benchmark-source">Warming up</div>
     </div>
     <div class="benchmark-grid">
-      <div class="benchmark-metric">
+      <div class="benchmark-metric" title="Composite score from rolling active rays per second. Scores appear after enough trace samples are collected.">
         <strong id="benchmark-performance-score">...</strong>
         <span>Score</span>
       </div>
-      <div class="benchmark-metric">
+      <div class="benchmark-metric" title="Rolling rate of actively traced camera rays, excluding paused frames.">
         <strong id="benchmark-rays-per-second">...</strong>
         <span>Active rays/s</span>
       </div>
@@ -718,17 +882,33 @@
         <strong id="benchmark-ray-bandwidth">...</strong>
         <span>Ray mem BW</span>
       </div>
-      <div class="benchmark-metric">
+      <div class="benchmark-metric" title="Rolling visual frame pacing after render and display passes.">
         <strong id="benchmark-perceptual-fps">...</strong>
         <span>Perceptual FPS</span>
       </div>
-      <div class="benchmark-metric">
+      <div class="benchmark-metric" title="Current offscreen render-target resolution.">
         <strong id="benchmark-resolution">...</strong>
         <span>Resolution</span>
       </div>
-      <div class="benchmark-metric">
+      <div class="benchmark-metric" title="Configured light-bounce count for each traced path.">
         <strong id="benchmark-bounces">...</strong>
         <span>Bounces</span>
+      </div>
+      <div class="benchmark-metric" title="Accumulated samples since the last camera, scene, or quality reset.">
+        <strong id="benchmark-samples">...</strong>
+        <span>Samples</span>
+      </div>
+      <div class="benchmark-metric" title="Progress toward the convergence pause threshold.">
+        <strong id="benchmark-convergence">...</strong>
+        <span>Convergence</span>
+      </div>
+      <div class="benchmark-metric" title="Estimated GPU memory held by path-tracing color buffers.">
+        <strong id="benchmark-gpu-memory">...</strong>
+        <span>GPU buffers</span>
+      </div>
+      <div class="benchmark-metric" title="Weighted complexity score for visible renderable scene objects and materials.">
+        <strong id="benchmark-scene-complexity">...</strong>
+        <span>Scene weight</span>
       </div>
     </div>
     <div id="benchmark-gpu-renderer" class="benchmark-gpu-label">...</div>
@@ -751,6 +931,10 @@
       <div class="button-row two-up">
         <button data-action="copy-benchmark-results">Copy Results</button>
         <button data-action="save-benchmark-baseline">Save As Baseline</button>
+      </div>
+      <div class="button-row two-up benchmark-result-actions">
+        <button data-action="share-benchmark-results">Share Result</button>
+        <button data-action="save-benchmark-score-card">Export Score Card</button>
       </div>
       <div id="benchmark-runner-status" class="benchmark-source">Idle</div>
       <div id="benchmark-runner-summary" class="benchmark-runner-summary"></div>

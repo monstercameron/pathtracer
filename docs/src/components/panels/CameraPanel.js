@@ -1,4 +1,6 @@
 import { html } from 'htm/preact';
+import { useEffect } from 'preact/hooks';
+import { uiLogger } from '../../logger.js';
 import {
   cameraAperture,
   cameraFieldOfViewDegrees,
@@ -11,6 +13,10 @@ import { SliderField } from '../SliderField.js';
 const fixed2 = (value) => Number(value).toFixed(2);
 
 export function CameraPanel({ id = 'camera-panel' }) {
+  useEffect(() => {
+    uiLogger.info('ui:panel-init', { panelId: id, panelName: 'CameraPanel' });
+  }, [id]);
+
   return html`
     <div id=${id} className="control-panel" data-control-panel>
       <div className="control-section camera-settings">

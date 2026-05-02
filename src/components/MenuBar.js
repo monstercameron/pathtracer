@@ -1,5 +1,18 @@
 import { html } from 'htm/preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { uiLogger } from '../logger.js';
+import {
+  deleteSelectedSceneItems,
+  groupSelectedSceneItems,
+  selectedItemIds,
+  ungroupSelectedSceneItems
+} from '../sceneStore.js';
+import {
+  openUiPanel,
+  quickActionPressedSignals,
+  setUiWindowVisible,
+  toggleUiWindowVisible
+} from '../store.js';
 import { MenuGroup } from './MenuGroup.js';
 import { QuickActions } from './QuickActions.js';
 
@@ -11,7 +24,7 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'new-scene', label: 'New Scene', action: 'reset-all', shortcut: 'Ctrl+N' },
       { key: 'reset-scene', label: 'Reset Scene', action: 'reset-all' },
       { key: 'file-output-separator', type: 'separator' },
-      { key: 'output-settings', label: 'Output Settings', panelTarget: 'output-panel', windowTarget: 'controls', shortcut: 'Ctrl+5' },
+      { key: 'output-settings', label: 'Output Settings', panelTarget: 'output-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+5' },
       { key: 'save-png', label: 'Save PNG', action: 'save-bitmap', shortcut: 'Ctrl+S' }
     ])
   },
@@ -24,6 +37,8 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'edit-separator', type: 'separator' },
       { key: 'select-light', label: 'Select Light', action: 'select-light', shortcut: 'L' },
       { key: 'delete-selection', label: 'Delete Selection', action: 'delete-selection', shortcut: 'Del' },
+      { key: 'group-selection', label: 'Group Selected', action: 'group-selection', shortcut: 'Ctrl+G' },
+      { key: 'ungroup-selection', label: 'Ungroup', action: 'ungroup-selection', shortcut: 'Ctrl+Shift+G' },
       { key: 'duplicate-selected', label: 'Duplicate Selected', shortcut: 'Ctrl+D', disabled: true }
     ])
   },
@@ -34,16 +49,11 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'inspector', label: 'Inspector', windowTarget: 'controls', shortcut: 'I' },
       { key: 'scene-tree', label: 'Scene Tree', windowTarget: 'scene-tree-window', shortcut: 'T' },
       { key: 'benchmark', label: 'Benchmark', windowTarget: 'benchmark', shortcut: 'B' },
-      { key: 'create-panel', label: 'Create Panel', panelTarget: 'scene-panel', windowTarget: 'controls', shortcut: 'Ctrl+1' },
+      { key: 'log-panel', label: 'Log Panel', windowTarget: 'log-panel' },
       { key: 'view-separator', type: 'separator' },
       { key: 'camera-auto-rotate', label: 'Camera Auto-Rotate', action: 'toggle-camera-playback', shortcut: 'C', pressed: true },
       { key: 'fullscreen', id: 'canvas-fullscreen', label: 'Fullscreen', action: 'toggle-canvas-fullscreen', shortcut: 'F', pressed: false },
-      { key: 'fullscreen-panels', id: 'fullscreen-panels-toggle', label: 'Fullscreen Panels', action: 'toggle-fullscreen-panels', pressed: false },
-      { key: 'debug-separator', type: 'separator' },
-      { key: 'debug-beauty', label: 'Debug: Beauty', debugView: 'beauty', pressed: true },
-      { key: 'debug-normals', label: 'Debug: Normals', debugView: 'normals', pressed: false },
-      { key: 'debug-albedo', label: 'Debug: Albedo', debugView: 'albedo', pressed: false },
-      { key: 'debug-depth', label: 'Debug: Depth', debugView: 'depth', pressed: false }
+      { key: 'fullscreen-panels', id: 'fullscreen-panels-toggle', label: 'Fullscreen Panels', action: 'toggle-fullscreen-panels', pressed: false }
     ])
   },
   {
@@ -111,7 +121,16 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'benchmark-volumetric-fog', label: 'Volumetric Fog Flythrough', benchmarkScene: 'benchmarkVolumetricFog' },
       { key: 'scene-disabled-separator', type: 'separator' },
       { key: 'benchmark-runner', label: 'Run Benchmark Sequence', action: 'run-benchmark-sequence' },
-      { key: 'demo-scenes', label: 'Demo Scenes', disabled: true }
+      { key: 'demo-scenes-separator', type: 'separator' },
+      { key: 'demo-scenes-label', type: 'label', label: 'Demo scenes' },
+      { key: 'preset-corridor-of-light', label: 'Corridor of Light', preset: 'corridorOfLight' },
+      { key: 'preset-depth-of-field-portrait', label: 'Depth-of-Field Portrait', preset: 'depthOfFieldPortrait' },
+      { key: 'preset-shadow-study', label: 'Shadow Study', preset: 'shadowStudy' },
+      { key: 'preset-mirror-room', label: 'Mirror Room', preset: 'mirrorRoom' },
+      { key: 'preset-sky-sphere', label: 'Sky Sphere', preset: 'skySphere' },
+      { key: 'preset-fog-corridor', label: 'Fog Corridor', preset: 'fogCorridor' },
+      { key: 'preset-material-grid', label: 'Material Grid', preset: 'materialGrid' },
+      { key: 'preset-neon-room', label: 'Neon Room', preset: 'neonRoom' }
     ])
   },
   {
@@ -126,37 +145,174 @@ export const MENU_GROUPS = Object.freeze([
       { key: 'quality-preview', label: 'Preview', qualityPreset: 'preview', shortcut: '2' },
       { key: 'quality-final', label: 'Final', qualityPreset: 'final', shortcut: '3' },
       { key: 'render-settings-separator', type: 'separator' },
+      { key: 'debug-label', type: 'label', label: 'Debug views' },
+      { key: 'debug-beauty', label: 'Beauty', debugView: 'beauty', pressed: true },
+      { key: 'debug-normals', label: 'Normals', debugView: 'normals', pressed: false },
+      { key: 'debug-albedo', label: 'Albedo', debugView: 'albedo', pressed: false },
+      { key: 'debug-depth', label: 'Depth', debugView: 'depth', pressed: false },
+      { key: 'debug-settings-separator', type: 'separator' },
       { key: 'settings-label', type: 'label', label: 'Settings' },
-      { key: 'render-settings', label: 'Render Settings', panelTarget: 'render-panel', windowTarget: 'controls', shortcut: 'Ctrl+3' },
-      { key: 'camera-settings', label: 'Camera Settings', panelTarget: 'camera-panel', windowTarget: 'controls', shortcut: 'Ctrl+4' },
-      { key: 'environment-settings', label: 'Environment Settings', panelTarget: 'render-panel', windowTarget: 'controls' },
-      { key: 'output-settings', label: 'Resolution / Output', panelTarget: 'output-panel', windowTarget: 'controls', shortcut: 'Ctrl+5' }
+      { key: 'render-settings', label: 'Render Settings', panelTarget: 'render-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+3' },
+      { key: 'camera-settings', label: 'Camera Settings', panelTarget: 'camera-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+4' },
+      { key: 'environment-settings', label: 'Environment Settings', panelTarget: 'render-panel', activationWindowTarget: 'controls' },
+      { key: 'output-settings', label: 'Resolution / Output', panelTarget: 'output-panel', activationWindowTarget: 'controls', shortcut: 'Ctrl+5' }
     ])
   },
   {
     key: 'help',
     label: 'Help',
     items: Object.freeze([
-      { key: 'preset-scenes', label: 'Preset Scenes', panelTarget: 'preset-panel', windowTarget: 'controls', shortcut: 'Ctrl+6' },
       { key: 'readme', label: 'README', href: 'README.md', target: '_blank', rel: 'noreferrer' }
     ])
   }
 ]);
 
+const LOCALLY_TOGGLED_ACTIONS = Object.freeze(new Set([
+  'toggle-camera-playback',
+  'toggle-frame-pause',
+  'toggle-convergence-pause',
+  'toggle-light-cycle',
+  'toggle-focus-pick',
+  'toggle-canvas-fullscreen',
+  'toggle-fullscreen-panels'
+]));
+
+const isEditableShortcutTarget = (target) => (
+  target instanceof HTMLInputElement ||
+  target instanceof HTMLTextAreaElement ||
+  target instanceof HTMLSelectElement ||
+  Boolean(target && target.isContentEditable)
+);
+
 export function MenuBar({ groups = MENU_GROUPS }) {
   const [openMenuKey, setOpenMenuKey] = useState(null);
   const navRef = useRef(null);
 
+  const runSelectionAction = (actionName, source) => {
+    if (actionName === 'group-selection') {
+      const groupItem = groupSelectedSceneItems();
+      uiLogger.info(groupItem ? 'ui:menu-group-selected' : 'ui:menu-group-selected-noop', {
+        source,
+        selectedItemIds: selectedItemIds.value,
+        groupId: groupItem?.id ?? null
+      });
+      return true;
+    }
+    if (actionName === 'ungroup-selection') {
+      const didUngroup = ungroupSelectedSceneItems();
+      uiLogger.info(didUngroup ? 'ui:menu-ungroup-selected' : 'ui:menu-ungroup-selected-noop', {
+        source,
+        selectedItemIds: selectedItemIds.value
+      });
+      return true;
+    }
+    if (actionName === 'delete-selection') {
+      const didDelete = deleteSelectedSceneItems();
+      uiLogger.info(didDelete ? 'ui:menu-delete-selected' : 'ui:menu-delete-selected-noop', {
+        source,
+        selectedItemIds: selectedItemIds.value
+      });
+      return true;
+    }
+    return false;
+  };
+
   useEffect(() => {
-    const documentObject = navRef.current ? navRef.current.ownerDocument : document;
+    const documentObject = navRef.current
+      ? navRef.current.ownerDocument
+      : (typeof document === 'undefined' ? null : document);
+    if (!documentObject || typeof documentObject.addEventListener !== 'function') {
+      uiLogger.warn('ui:menu-event-target-unavailable');
+      return undefined;
+    }
     const handlePointerDown = (event) => {
       if (navRef.current && !navRef.current.contains(event.target)) {
         setOpenMenuKey(null);
       }
     };
-    documentObject.addEventListener('pointerdown', handlePointerDown);
-    return () => documentObject.removeEventListener('pointerdown', handlePointerDown);
+    const handleKeyDown = (event) => {
+      if (
+        event.repeat ||
+        event.altKey ||
+        !(event.ctrlKey || event.metaKey) ||
+        event.code !== 'KeyG' ||
+        isEditableShortcutTarget(event.target)
+      ) {
+        return;
+      }
+
+      runSelectionAction(event.shiftKey ? 'ungroup-selection' : 'group-selection', 'keyboard');
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    try {
+      documentObject.addEventListener('pointerdown', handlePointerDown);
+      documentObject.addEventListener('keydown', handleKeyDown);
+      uiLogger.info('ui:menu-init', { groupCount: groups.length });
+    } catch (error) {
+      uiLogger.warn('ui:menu-event-listener-add-failed', { eventName: 'pointerdown/keydown', error });
+      return undefined;
+    }
+    return () => {
+      try {
+        documentObject.removeEventListener('pointerdown', handlePointerDown);
+        documentObject.removeEventListener('keydown', handleKeyDown);
+      } catch (error) {
+        uiLogger.warn('ui:menu-event-listener-remove-failed', { eventName: 'pointerdown/keydown', error });
+      }
+    };
   }, []);
+
+  const handleButtonClick = (event, item = {}) => {
+    const targetButton = event.currentTarget;
+    if (!(targetButton instanceof HTMLButtonElement)) {
+      uiLogger.warn('ui:menu-action-invalid-target', { itemKey: item.key });
+      return;
+    }
+
+    const targetPanelId = targetButton.dataset.panelTarget;
+    const targetWindowId = targetButton.dataset.windowTarget || item.activationWindowTarget;
+    uiLogger.info('ui:menu-action', {
+      itemKey: item.key,
+      action: targetButton.dataset.action || null,
+      preset: targetButton.dataset.preset || null,
+      panelTarget: targetPanelId || null,
+      windowTarget: targetWindowId || null,
+      qualityPreset: targetButton.dataset.qualityPreset || null,
+      benchmarkScene: targetButton.dataset.benchmarkScene || null,
+      debugView: targetButton.dataset.debugView || null
+    });
+    if (targetPanelId) {
+      if (targetWindowId) {
+        setUiWindowVisible(targetWindowId, true);
+      }
+      openUiPanel(targetPanelId);
+      return;
+    }
+
+    if (targetWindowId) {
+      toggleUiWindowVisible(targetWindowId);
+      return;
+    }
+
+    const actionName = targetButton.dataset.action;
+    if (runSelectionAction(actionName, 'menu')) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    const pressedSignal = actionName ? quickActionPressedSignals[actionName] : null;
+    if (pressedSignal && LOCALLY_TOGGLED_ACTIONS.has(actionName)) {
+      const previousValue = Boolean(pressedSignal.value);
+      pressedSignal.value = !Boolean(pressedSignal.value);
+      uiLogger.info('ui:local-action-toggle', {
+        action: actionName,
+        previousValue,
+        nextValue: Boolean(pressedSignal.value)
+      });
+    }
+  };
 
   return html`
     <nav ref=${navRef} className="app-menu" aria-label="Application menu">
@@ -165,11 +321,13 @@ export function MenuBar({ groups = MENU_GROUPS }) {
           key=${group.key}
           group=${group}
           isOpen=${openMenuKey === group.key}
+          pressedSignals=${quickActionPressedSignals}
           onOpen=${setOpenMenuKey}
           onClose=${() => setOpenMenuKey(null)}
+          onItemClick=${handleButtonClick}
         />
       `)}
-      <${QuickActions} />
+      <${QuickActions} pressedSignals=${quickActionPressedSignals} onButtonClick=${handleButtonClick} />
     </nav>
   `;
 }

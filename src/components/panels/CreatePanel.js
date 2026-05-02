@@ -1,9 +1,6 @@
 import { html } from 'htm/preact';
-import {
-  isCameraAutoRotating,
-  isConvergencePauseEnabled,
-  isFramePaused
-} from '../../store.js';
+import { useEffect } from 'preact/hooks';
+import { uiLogger } from '../../logger.js';
 
 export const PRIMITIVE_ACTIONS = Object.freeze([
   { action: 'add-sphere', label: 'Sphere' },
@@ -28,18 +25,12 @@ export const PRIMITIVE_ACTIONS = Object.freeze([
 ]);
 
 export function CreatePanel({ id = 'scene-panel' }) {
+  useEffect(() => {
+    uiLogger.info('ui:panel-init', { panelId: id, panelName: 'CreatePanel', actionCount: PRIMITIVE_ACTIONS.length });
+  }, [id]);
+
   return html`
     <div id=${id} className="control-panel" data-control-panel>
-      <button id="camera-playback" className="camera-playback" type="button" data-action="toggle-camera-playback" aria-pressed=${String(isCameraAutoRotating.value)}>
-        ${isCameraAutoRotating.value ? 'Pause Camera' : 'Play Camera'}
-      </button>
-      <button id="frame-pause" className="render-pause-toggle" type="button" data-action="toggle-frame-pause" aria-pressed=${String(isFramePaused.value)}>
-        ${isFramePaused.value ? 'Resume Frames' : 'Pause Frames'}
-      </button>
-      <button id="convergence-pause" className="render-pause-toggle" type="button" data-action="toggle-convergence-pause" aria-pressed=${String(isConvergencePauseEnabled.value)}>
-        Pause Rays at Converged
-      </button>
-
       <div className="control-section primitive-actions">
         <div className="section-title">Add primitive</div>
         ${PRIMITIVE_ACTIONS.map((item) => html`

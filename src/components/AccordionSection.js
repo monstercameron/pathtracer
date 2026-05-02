@@ -1,5 +1,6 @@
 import { html } from 'htm/preact';
 import { useEffect, useState } from 'preact/hooks';
+import { uiLogger } from '../logger.js';
 
 const readStoredOpenState = (storageKey, fallback) => {
   if (!storageKey || typeof window === 'undefined' || !window.localStorage) {
@@ -8,7 +9,8 @@ const readStoredOpenState = (storageKey, fallback) => {
   try {
     const storedValue = window.localStorage.getItem(storageKey);
     return storedValue === 'true' ? true : (storedValue === 'false' ? false : fallback);
-  } catch {
+  } catch (error) {
+    uiLogger.warn('ui:accordion-storage-read-failed', { storageKey, error });
     return fallback;
   }
 };
@@ -19,8 +21,8 @@ const writeStoredOpenState = (storageKey, isOpen) => {
   }
   try {
     window.localStorage.setItem(storageKey, isOpen ? 'true' : 'false');
-  } catch {
-    // Local storage can fail in private contexts; the details element still works.
+  } catch (error) {
+    uiLogger.warn('ui:accordion-storage-write-failed', { storageKey, isOpen, error });
   }
 };
 
@@ -31,21 +33,53 @@ export function AccordionSection({
   defaultOpen = false,
   storageKey,
   controlledOpen,
+  openSignal,
   children
 }) {
   const [isOpen, setIsOpen] = useState(() => readStoredOpenState(storageKey, defaultOpen));
-  const open = typeof controlledOpen === 'boolean' ? controlledOpen : isOpen;
+  const signalOpen = openSignal ? Boolean(openSignal.value) : undefined;
+  const open = typeof controlledOpen === 'boolean'
+    ? controlledOpen
+    : (openSignal ? signalOpen : isOpen);
 
   useEffect(() => {
-    if (typeof controlledOpen !== 'boolean') {
-      setIsOpen(readStoredOpenState(storageKey, defaultOpen));
+    uiLogger.info('ui:accordion-init', {
+      sectionKey,
+      storageKey,
+      defaultOpen,
+      controlled: typeof controlledOpen === 'boolean',
+      hasOpenSignal: Boolean(openSignal)
+    });
+  }, [controlledOpen, defaultOpen, openSignal, sectionKey, storageKey]);
+
+  useEffect(() => {
+    if (typeof controlledOpen === 'boolean') {
+      return;
     }
-  }, [controlledOpen, defaultOpen, storageKey]);
+    const storedOpen = readStoredOpenState(storageKey, defaultOpen);
+    if (openSignal) {
+      openSignal.value = storedOpen;
+    } else {
+      setIsOpen(storedOpen);
+    }
+  }, [controlledOpen, defaultOpen, openSignal, storageKey]);
 
   const handleToggle = (event) => {
     const nextOpen = event.currentTarget.open;
     if (typeof controlledOpen !== 'boolean') {
-      setIsOpen(nextOpen);
+      if (open !== nextOpen) {
+        uiLogger.info('ui:accordion-toggle', {
+          sectionKey,
+          storageKey,
+          previousValue: open,
+          nextValue: nextOpen
+        });
+      }
+      if (openSignal) {
+        openSignal.value = nextOpen;
+      } else {
+        setIsOpen(nextOpen);
+      }
       writeStoredOpenState(storageKey, nextOpen);
     }
   };
