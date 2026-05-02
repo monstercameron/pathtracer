@@ -1,6 +1,6 @@
 # TODOs
 
-Audit note: checked items reflect implemented behavior or documented decisions as of 2026-05-01. Unchecked items are still real implementation work, not hidden scope.
+Audit note: checked items reflect implemented behavior or documented decisions as of 2026-05-02. Unchecked items are still real implementation work, not hidden scope.
 
 ## Workstream 1: Scene Data And Documents
 - [x] Make every object in the scene a separate ECS item
@@ -160,7 +160,7 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Wire light bounce count (applicationState.lightBounceCount) into a static benchmark context tile
 - [x] Move GPU renderer string from the scene panel into the benchmark panel as a full-width label row
 - [x] Keep perceptual FPS and ray memory bandwidth tiles as high-value persistent metrics
-- [x] Make the benchmark floating window wider and shorter â€” expand it horizontally so all tiles fit in fewer rows, reduce its default height so it is a thin horizontal band rather than a tall column
+- [x] Convert the benchmark view into a regular vertical standing panel with collapse/close controls so benchmark metrics stay visible without overlapping draggable editor windows
 - [x] Clarify and enforce three distinct pause modes so they do not interfere with each other
 - [x] Pause camera: stops automatic camera rotation only, the world and physics still update and rays keep accumulating
 - [x] Pause frames: stops the world simulation and physics entirely, no transforms or animations update, but the camera can still be moved freely
@@ -180,6 +180,8 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Add a **"Share Result" button** to the benchmark panel that encodes the current score, GPU renderer string, canvas resolution, bounce count, scene name, and ISO date as a compact base64 JSON in the URL hash (`#result=<base64>`); copies the full URL to the clipboard and shows a transient "Copied!" toast â€” no server required, the URL is self-contained
 - [x] Add an **"Export Score Card" PNG** button to the benchmark summary: use the 2D Canvas API to render a 800Ã—400 summary card with score, GPU name, scene name, resolution, bounce count, date, and delta-vs-baseline if a baseline exists; trigger an automatic download via a transient `<a download>` element so benchmark results are self-documenting shareable images
 - [x] Add **metric explanation tooltips** (HTML `title` attribute on each tile `<dt>`) to the benchmark panel: "Score â€” composite ray throughput Ã— quality factor, higher is better"; "Active rays/s â€” rays reaching at least one surface per second weighted by bounce depth"; "Ray mem BW â€” estimated bytes read/written to the accumulation texture per second at current resolution and sample rate"; "Perceptual FPS â€” rendered frames per second smoothed over 1 s, independent of accumulation sample count"
+
+- [x] Normalize frame-estimated benchmark scores to a fixed 512 x 512 reference render target so score comparisons are not dominated by render resolution, while raw active rays/s still reports current render-target throughput
 
 ## Workstream 5: App UI, Output, And Global Tools
 - [x] Add a menu strip at the top of the page for global tools and settings
@@ -241,10 +243,13 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Render menu: add debug-view actions for Beauty, Normals, Albedo, and Depth; fix the Fullscreen Panels button so it shows no shortcut hint instead of the live state value "Off"
 - [x] Remove the inspector Create panel and route Ctrl+1 to the scene-tree add popover alongside the top quick Add action
 - [x] Render menu: keep only render-execution controls â€” Pause Frames (P), Pause Rays (K), and quality preset buttons (Draft 1 / Preview 2 / Final 3); move Render Settings (Ctrl+3), Camera Settings (Ctrl+4), and Environment Settings here as a settings group; remove benchmark scene entries and Output (both moved)
+- [x] Keep Render-panel environment switching wired to a scene rebuild even after React signal sync has already updated the shared environment state
 - [x] Quick actions toolbar: rename terse labels to recognisable words such as `Sphere`, `Light`, `Add`, `Object`, `Render`, and `Benchmark`
 - [x] Quick actions toolbar: rename pause buttons from `P` and `K` (shortcut letters, meaningless as labels) to `â€–Frm` and `â€–Rays` so the action is legible without a tooltip
 - [x] Quick actions toolbar: remove the `Std` (standard benchmark) button â€” the standard benchmark is now reachable via the Scene menu and the toolbar is already too wide; remove `Cyl` and `Tor` shape shortcuts for the same reason
 - [x] Quick actions toolbar: ensure the four preset scene buttons (Col, Mat, Prim, Lit) remain as the leftmost group since they are the most common scene-switch actions
+- [x] Convert quick-action-adjacent menu groups into nested submenus for presets, benchmark scenes, panel visibility, render quality/debug views, and export actions so top-level menus match the toolbar's mental model
+
 ### Accordion Inspector Redesign
 - [x] Replace the tab row (`<div>` of `<button data-panel-target>` elements) in `#controls` with a vertical accordion using native `<details>`/`<summary>` elements: one `<details>` per section (Object, Render, Camera, Environment, Output); each wraps the existing control markup verbatim so no logic changes are needed in this pass
 - [x] Drive the Object section's `open` attribute from JS selection events: add `open` when `syncSelectedItemReadout()` selects a non-null item, remove it when selection clears; set the summary text to the selected item's display name when open and "Nothing selected" when closed so it doubles as a selection readout
@@ -293,6 +298,8 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Guard shader recompilation against rapid slider input: add a 100 ms trailing debounce to the `rebuildScene` + `clearSamples` sequence triggered by range `input` events so dragging a bounce-count or rays-per-pixel slider does not fire a new `gl.compileShader` for every pixel of travel
 - [x] Wrap every scene preset factory call in a try/catch inside `loadPresetScene`; on factory error log the failure with the scene key, recover to a blank scene via `createEmptyScene()`, and surface the error message in `#error` so the app stays usable rather than freezing with an empty or broken canvas
 - [x] Add a startup smoke-test: after `initializeRapierRuntime` resolves, iterate every registered benchmark scene factory, call it with an empty array, and assert the returned object list is non-empty and contains no `undefined` entries; report failures at `error` level with the offending key so regressions in scene factories are caught before a user loads that scene
+
+- [x] Show a scene-change progress dialog that lists renderer offload, shader/program release, memory cleanup, new asset/component loading, shader compilation, and ready steps while scene changes are paced through clean teardown and reload
 
 ### Physics Controls And Joints
 - [x] Add a global gravity control in the Scene or Physics settings panel: a direction dropdown (Down / Up / Zero-G / Custom) and a magnitude slider (0â€“20, default 9.81); write the resulting `{x, y, z}` vector to `world.gravity` at the start of each physics step so any scene can be switched to zero-G or reversed gravity at runtime without a preset change
@@ -456,6 +463,8 @@ Audit note: checked items reflect implemented behavior or documented decisions a
 - [x] Render the GPU renderer label row from the `gpuRenderer` signal
 - [x] Render the source label from the `measurementSource` signal
 - [x] Use computed signals for formatted display strings so formatting runs only when raw benchmark values change
+
+- [x] Preserve collapse and close windowing controls on the standing benchmark panel after moving it out of the generic floating-window wrapper
 
 ### Component: RenderCanvas
 - [x] Create `src/components/RenderCanvas.js` as a thin wrapper that renders `<canvas id="canvas">` and `<div id="error">` and forwards a canvas ref
