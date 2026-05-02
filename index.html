@@ -112,6 +112,7 @@
         <button data-benchmark-scene="default">Standard Benchmark <span class="menu-shortcut">Fixed</span></button>
         <button data-benchmark-scene="benchmarkShaderGauntlet">Shader Gauntlet</button>
         <button data-benchmark-scene="benchmarkPhysicsChaos">Physics Chaos</button>
+        <button data-benchmark-scene="benchmarkParticleFluid">Particle Fluid</button>
         <button data-benchmark-scene="benchmarkSdfComplexity">SDF Complexity</button>
         <button data-benchmark-scene="benchmarkCausticPool">Caustic Pool</button>
         <button data-benchmark-scene="benchmarkMotionBlurStress">Motion Blur Stress</button>
@@ -830,6 +831,7 @@
         <button data-benchmark-scene="default">Standard Benchmark</button>
         <button data-benchmark-scene="benchmarkShaderGauntlet">Shader Gauntlet</button>
         <button data-benchmark-scene="benchmarkPhysicsChaos">Physics Chaos</button>
+        <button data-benchmark-scene="benchmarkParticleFluid">Particle Fluid</button>
         <button data-benchmark-scene="benchmarkSdfComplexity">SDF Complexity</button>
         <button data-benchmark-scene="benchmarkCausticPool">Caustic Pool</button>
         <button data-benchmark-scene="benchmarkMotionBlurStress">Motion Blur Stress</button>
@@ -912,6 +914,26 @@
       </div>
     </div>
     <div id="benchmark-gpu-renderer" class="benchmark-gpu-label">...</div>
+    <div id="particle-fluid-controls" class="benchmark-runner" hidden>
+      <div class="section-title">Particle fluid</div>
+      <div class="button-row two-up">
+        <label>
+          Count
+          <input id="particle-fluid-count" type="number" min="8" max="48" step="1" value="24">
+        </label>
+        <label>
+          Radius
+          <input id="particle-fluid-radius" type="number" min="0.035" max="0.095" step="0.005" value="0.06">
+        </label>
+      </div>
+      <div class="button-row two-up">
+        <label>
+          Stiffness
+          <input id="particle-fluid-stiffness" type="number" min="40" max="240" step="5" value="120">
+        </label>
+        <button data-action="apply-particle-fluid-settings">Apply Fluid Settings</button>
+      </div>
+    </div>
     <div class="benchmark-runner">
       <div class="section-title">Benchmark sequence</div>
       <div class="button-row two-up">
