@@ -111,7 +111,34 @@ const closeServer = (server) => new Promise((resolve) => {
   server.close(() => resolve());
 });
 
+const readLocalHttpUrl = (url) => new Promise((resolve) => {
+  http.get(url, (response) => {
+    const chunks = [];
+    response.on('data', (chunk) => chunks.push(chunk));
+    response.on('end', () => {
+      resolve({
+        statusCode: response.statusCode,
+        body: Buffer.concat(chunks).toString('utf8')
+      });
+    });
+  }).on('error', (error) => {
+    resolve({
+      statusCode: 0,
+      body: error && error.message ? error.message : String(error)
+    });
+  });
+});
+
 const executeJavaScript = (webContents, script) => webContents.executeJavaScript(script, true);
+
+const reloadWindow = (window) => new Promise((resolve) => {
+  const timeoutId = setTimeout(resolve, 10000);
+  window.webContents.once('did-finish-load', () => {
+    clearTimeout(timeoutId);
+    resolve();
+  });
+  window.reload();
+});
 
 const waitForCondition = async (webContents, name, script, predicate, timeoutMilliseconds = 20000) => {
   const startMilliseconds = Date.now();
@@ -429,6 +456,25 @@ const floatingPersistenceScript = `(async () => {
   };
 })()`;
 
+const floatingReloadStateScript = `(() => {
+  const storageKey = 'pathtracer.floatingWindows.v1';
+  const windowElement = document.getElementById('benchmark');
+  const storedState = JSON.parse(localStorage.getItem(storageKey) || '{}').benchmark || null;
+  return {
+    ready: Boolean(
+      windowElement &&
+      storedState &&
+      storedState.hidden === true &&
+      storedState.collapsed === true &&
+      windowElement.hidden === true &&
+      windowElement.classList.contains('is-collapsed')
+    ),
+    storedState,
+    hidden: windowElement ? windowElement.hidden : null,
+    collapsed: windowElement ? windowElement.classList.contains('is-collapsed') : null
+  };
+})()`;
+
 const benchmarkThrottleScript = `(async () => {
   const observedElements = [
     '#benchmark-samples',
@@ -609,11 +655,11 @@ const runFloatingSmoke = async (window) => {
     JSON.stringify(floatingResult)
   );
 
-  await window.reload();
+  await reloadWindow(window);
   await waitForCondition(
     window.webContents,
-    'floating persistence reload reaches first rendered frame',
-    pageReadyScript,
+    'floating persistence reload reapplies stored state',
+    floatingReloadStateScript,
     (value) => Boolean(value && value.ready),
     25000
   );
@@ -662,14 +708,20 @@ const runSmoke = async () => {
   app.commandLine.appendSwitch('force_high_performance_gpu');
   app.commandLine.appendSwitch('ignore-gpu-blocklist');
   app.commandLine.appendSwitch('disable-http-cache');
+  app.commandLine.appendSwitch('no-proxy-server');
 
   await app.whenReady();
+  await session.defaultSession.setProxy({ mode: 'direct' });
 
-  session.defaultSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
+  session.defaultSession.webRequest.onCompleted({ urls: ['http://*/*', 'https://*/*'] }, (details) => {
     if (/^https?:/i.test(details.url) && !isLocalHttpUrl(details.url)) {
       externalRequests.push(details.url);
     }
-    callback({ cancel: false });
+  });
+  session.defaultSession.webRequest.onErrorOccurred({ urls: ['http://*/*', 'https://*/*'] }, (details) => {
+    if (/^https?:/i.test(details.url) && !isLocalHttpUrl(details.url)) {
+      externalRequests.push(`${details.url} (${details.error})`);
+    }
   });
 
   const rootWindow = await loadSmokePage({
@@ -679,13 +731,19 @@ const runSmoke = async () => {
 
   if (rootWindow) {
     await runKeyboardSmoke(rootWindow);
-    await runFloatingSmoke(rootWindow);
     await runBenchmarkThrottleSmoke(rootWindow);
+    await runFloatingSmoke(rootWindow);
     rootWindow.destroy();
   }
 
   const staticServer = await startStaticServer(path.join(repoRoot, 'docs'));
   try {
+    const serverCheck = await readLocalHttpUrl(staticServer.url);
+    assert(
+      'browser docs local server serves index',
+      serverCheck.statusCode === 200 && serverCheck.body.includes('<script type="importmap">'),
+      `status ${serverCheck.statusCode}: ${serverCheck.body.slice(0, 160)}`
+    );
     const docsWindow = await loadSmokePage({
       label: 'browser-docs-http',
       url: staticServer.url

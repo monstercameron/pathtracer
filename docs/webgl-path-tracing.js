@@ -12261,6 +12261,107 @@ class UserInterfaceController {
     return this.selectionRenderer.pathTracer.clearSamples();
   }
 
+  readParticleFluidSettingsFromControls() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const particleCountInput = readOptionalElement(documentObject, 'particle-fluid-count');
+    const particleRadiusInput = readOptionalElement(documentObject, 'particle-fluid-radius');
+    const particleStiffnessInput = readOptionalElement(documentObject, 'particle-fluid-stiffness');
+    if (
+      !(particleCountInput instanceof HTMLInputElement) ||
+      !(particleRadiusInput instanceof HTMLInputElement) ||
+      !(particleStiffnessInput instanceof HTMLInputElement)
+    ) {
+      return returnFailure('missing-particle-fluid-controls', 'Particle fluid controls are not available.');
+    }
+
+    const [particleCount, countError] = parseBoundedInteger(
+      particleCountInput.value,
+      DEFAULT_PARTICLE_FLUID_PARTICLE_COUNT,
+      MIN_PARTICLE_FLUID_PARTICLE_COUNT,
+      MAX_PARTICLE_FLUID_PARTICLE_COUNT
+    );
+    if (countError) {
+      return returnFailure(countError.code, countError.message, countError.details);
+    }
+
+    const [radius, radiusError] = parseBoundedNumber(
+      particleRadiusInput.value,
+      DEFAULT_PARTICLE_FLUID_RADIUS,
+      MIN_PARTICLE_FLUID_RADIUS,
+      MAX_PARTICLE_FLUID_RADIUS
+    );
+    if (radiusError) {
+      return returnFailure(radiusError.code, radiusError.message, radiusError.details);
+    }
+
+    const [springStiffness, stiffnessError] = parseBoundedNumber(
+      particleStiffnessInput.value,
+      DEFAULT_PARTICLE_FLUID_SPRING_STIFFNESS,
+      MIN_PARTICLE_FLUID_SPRING_STIFFNESS,
+      MAX_PARTICLE_FLUID_SPRING_STIFFNESS
+    );
+    if (stiffnessError) {
+      return returnFailure(stiffnessError.code, stiffnessError.message, stiffnessError.details);
+    }
+
+    const particleFluidSettings = normalizeParticleFluidSettings({ particleCount, radius, springStiffness });
+    this.applicationState.particleFluidSettings = particleFluidSettings;
+    particleCountInput.value = String(particleFluidSettings.particleCount);
+    particleRadiusInput.value = particleFluidSettings.radius.toFixed(3);
+    particleStiffnessInput.value = String(Math.round(particleFluidSettings.springStiffness));
+    return returnSuccess(particleFluidSettings);
+  }
+
+  syncParticleFluidBenchmarkControls() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const controlsElement = readOptionalElement(documentObject, 'particle-fluid-controls');
+    const particleCountInput = readOptionalElement(documentObject, 'particle-fluid-count');
+    const particleRadiusInput = readOptionalElement(documentObject, 'particle-fluid-radius');
+    const particleStiffnessInput = readOptionalElement(documentObject, 'particle-fluid-stiffness');
+    if (
+      !(controlsElement instanceof HTMLElement) ||
+      !(particleCountInput instanceof HTMLInputElement) ||
+      !(particleRadiusInput instanceof HTMLInputElement) ||
+      !(particleStiffnessInput instanceof HTMLInputElement)
+    ) {
+      return returnSuccess(undefined);
+    }
+
+    controlsElement.hidden = this.applicationState.activeBenchmarkSceneName !== 'benchmarkParticleFluid';
+    const particleFluidSettings = readApplicationStateParticleFluidSettings(this.applicationState);
+    particleCountInput.value = String(particleFluidSettings.particleCount);
+    particleRadiusInput.value = particleFluidSettings.radius.toFixed(3);
+    particleStiffnessInput.value = String(Math.round(particleFluidSettings.springStiffness));
+    return returnSuccess(undefined);
+  }
+
+  applyParticleFluidSettingsFromControls() {
+    const documentObject = this.canvasElement.ownerDocument;
+    const [particleFluidSettings, settingsError] = this.readParticleFluidSettingsFromControls();
+    if (settingsError) {
+      return returnFailure(settingsError.code, settingsError.message, settingsError.details);
+    }
+
+    const [, loadingError] = updateLoadingStatus(
+      documentObject,
+      `Reloading particle fluid: ${particleFluidSettings.particleCount} particles...`
+    );
+    if (loadingError) {
+      return returnFailure(loadingError.code, loadingError.message, loadingError.details);
+    }
+
+    const [, stopRunnerError] = this.stopBenchmarkRunner();
+    if (stopRunnerError) {
+      return returnFailure(stopRunnerError.code, stopRunnerError.message, stopRunnerError.details);
+    }
+
+    const [, sceneError] = this.loadBenchmarkScene('benchmarkParticleFluid');
+    if (sceneError) {
+      return returnFailure(sceneError.code, sceneError.message, sceneError.details);
+    }
+    return queueLoadingOverlayDismiss(documentObject);
+  }
+
   startBenchmarkRunner() {
     return this.benchmarkRunner.start(performance.now());
   }
@@ -13258,6 +13359,7 @@ class UserInterfaceController {
       () => this.syncRenderDebugViewButtons(),
       () => this.syncSelectedItemReadout(),
       () => this.syncResolutionControlsFromState(),
+      () => this.syncParticleFluidBenchmarkControls(),
       () => this.syncFullscreenCanvasButton(),
       () => this.syncFullscreenPanelsButton()
     ];
@@ -13292,6 +13394,7 @@ class UserInterfaceController {
     if (gravityDefaultsError) {
       return returnFailure(gravityDefaultsError.code, gravityDefaultsError.message, gravityDefaultsError.details);
     }
+    state.particleFluidSettings = createDefaultParticleFluidSettings();
     state.fogDensity = DEFAULT_FOG_DENSITY;
     state.skyBrightness = DEFAULT_SKY_BRIGHTNESS;
     state.isLightIntensityCycling = false;
@@ -19082,6 +19185,9 @@ const attachControlHandlers = (controlRootElement, errorElement, uiController) =
     }
     if (actionName === 'save-benchmark-score-card') {
       return runAndDisplayError(errorElement, () => uiController.saveBenchmarkScoreCard());
+    }
+    if (actionName === 'apply-particle-fluid-settings') {
+      return runAndDisplayError(errorElement, () => uiController.applyParticleFluidSettingsFromControls());
     }
     if (actionName === 'reset-all') {
       return runAndDisplayError(errorElement, () => uiController.resetAllToDefaults());
