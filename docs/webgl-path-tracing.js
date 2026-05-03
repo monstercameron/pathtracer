@@ -10239,7 +10239,7 @@ const readSceneObjectEntityId = (sceneObject) => {
   if (!sceneObject || typeof sceneObject !== 'object') {
     return null;
   }
-  return normalizeSceneEntityId(sceneObject.entityId ?? sceneObject.objectId);
+  return normalizeSceneEntityId(sceneObject.entityId ?? sceneObject.objectId ?? sceneObject.id);
 };
 
 const readSceneObjectParentEntityId = (sceneObject) => (
